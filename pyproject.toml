@@ -1,0 +1,31 @@
+[project]
+name = "windvane"
+version = "0.1.0"
+description = "Keeps the state and steers the session for Claude Code: checkpoints the recorder drafts, compaction at the right point, project memory and rules, all from hooks the model never has to call."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Alex Lisenko" }]
+keywords = ["claude", "claude-code", "plugin", "memory", "checkpoint", "compaction", "agent"]
+dependencies = []
+
+[project.optional-dependencies]
+semantic = [
+    "sentence-transformers>=2.7.0",
+    "numpy>=1.24.0",
+]
+test = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["engine/windvane"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["engine"]

@@ -1,0 +1,51 @@
+{
+  "name": "windvane",
+  "version": "0.1.0",
+  "description": "Keeps the state and steers the session: the recorder drafts the checkpoint, compaction happens at the right point with the state banked, the rules and the checkpoint ride inside the compacted conversation and every subagent's prompt, tool results are trimmed and secrets redacted at the door, project memory and rules are a tool call away, and a token ledger, a pane and a status segment show where the session stands.",
+  "author": { "name": "windvane" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "python": {
+      "type": "string",
+      "title": "Python",
+      "description": "The interpreter that runs the engine (3.10 or later). Empty means python on PATH; the WINDVANE_PYTHON environment variable wins over this row.",
+      "default": ""
+    },
+    "status_segment": {
+      "type": "boolean",
+      "title": "Status segment",
+      "description": "Show the context fill and checkpoint age in the status line.",
+      "default": true
+    },
+    "result_budget": {
+      "type": "string",
+      "title": "Tool result budget",
+      "description": "Characters a tool result keeps before its middle is cut (head and tail stay).",
+      "default": "60000"
+    },
+    "semantic": {
+      "type": "boolean",
+      "title": "Semantic scoring",
+      "description": "Use the sentence-transformers encoder for decision capture and memory search when the semantic extra is installed. Off, the regex tier scores.",
+      "default": false
+    },
+    "alert_command": {
+      "type": "string",
+      "title": "Alert command",
+      "description": "A shell command that receives one line ({message} or stdin) when an unattended run halts, hits a usage limit or needs input. Empty means no alerts.",
+      "default": ""
+    },
+    "strict_pack": {
+      "type": "boolean",
+      "title": "Strict rule pack",
+      "description": "Seed the opt-in strict pack (style and workflow rules) beside the default pack in every new project.",
+      "default": false
+    },
+    "autonomy": {
+      "type": "boolean",
+      "title": "Autonomy mode",
+      "description": "Stall nudges and the halt brake for unattended runs. Off for an attended session.",
+      "default": false
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "windvane",
+  "description": "The windvane plugin for Claude Code, installed from this repository.",
+  "owner": { "name": "windvane" },
+  "plugins": [
+    {
+      "name": "windvane",
+      "description": "Keeps the state and steers the session: drafted checkpoints, compaction at the right point, project memory and rules.",
+      "source": ".",
+      "category": "productivity"
+    }
+  ]
+}

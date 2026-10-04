@@ -1,0 +1,342 @@
+// windvane's hooks module: the session keeps its own state.
+//
+// The mirror. windvane's hooks read the context fill from
+//   sessions/<sid>.ctx.json. This module writes it every 10 s from
+//   $.session.usage(), plus a sessions/<sid>.mod marker that keeps
+//   statusline writers out.
+// The status line: "windvane ctx 51% · ckpt 12m", the checkpoint age read
+//   from the project's ring (latest_handoff.json). The status_segment
+//   option set to false hides it; the band and the pane stay.
+// Compaction at windvane's point, after the save. The engine's pressure
+//   bands are mirrored here: once the fill is inside the checkpoint band
+//   AND a deliberate checkpoint save has landed since the band was entered,
+//   the next turn boundary compacts. Compaction then happens with the state
+//   banked, at windvane's number, instead of at Claude Code's trigger with
+//   whatever happened to be saved.
+//
+// Each other piece lives in its own module, registered from here: the band
+// above the prompt (band.tsx), the /windvane pane (pane.tsx), /remember
+// (remember.ts), /windvane-strict (strict.ts), /windvane-export (export.ts),
+// /windvane-import (import.ts), tool results trimmed and secrets redacted at
+// the door (door.ts), the per-project token and cost ledger with
+// /windvane-cost (ledger.ts), the rules and file mistakes at the head of
+// every subagent's prompt (agents.ts), the compacted conversation carrying
+// the rules and the checkpoint (compact.ts), windvane's command hooks
+// answered by the daemon over loopback HTTP where nothing else hooks the
+// event (bridge.ts), and the tools the model calls (tools.ts). The store
+// reads they share live in ring.ts, the engine's interpreter and the options
+// in engine.ts. The engine takes one unmatched hook per event per plugin and
+// follows $ only within one file, so their session.start and turn.complete
+// work is done here (startUi, startLedger, recordTurn), and each module gets
+// the options it needs as plain values.
+import { atom, update } from 'claude-code'
+import type { EngineInterface, Register, ToolCallInput, ToolCallResult, TurnCompleteInput } from 'claude-code'
+
+import { registerAgents } from './agents'
+import { BAND_HIDDEN_KEY, registerBand } from './band'
+import { registerBridge } from './bridge'
+import { registerCompact } from './compact'
+import { registerDoor } from './door'
+import { PLUGIN, VERSION, settingsOf } from './engine'
+import { EXPORT_COMMAND, registerExport } from './export'
+import { IMPORT_COMMAND, registerImport } from './import'
+import { LEDGER_COMMAND, add, asEntry, costBaseline, ledgerKey, localDay, registerLedger, turnEntry } from './ledger'
+import { PANE_COMMAND, registerPane } from './pane'
+import { REMEMBER_COMMAND, registerRemember } from './remember'
+import { ageText, normalizePath, readLatest, readManifest, ringsFor, storePath } from './ring'
+import { STRICT_COMMAND, registerStrict } from './strict'
+import { TOOL_NAMES, TOOL_SPECS, registerTools } from './tools'
+import type { Io } from './ring'
+
+// $.state values the band and the pane draw from (../types/index.d.ts).
+const pressure = atom({ plugin: 'windvane', key: 'pressure' } as const, null)
+const bandHidden = atom({ plugin: 'windvane', key: 'bandHidden' } as const, false)
+
+const MIRROR_EVERY_MS = 10_000
+const COMPACT_DELAY_MS = 250
+
+// The engine's pressure constants (its config knobs' defaults), mirrored.
+// Keep in step with the engine.
+const OUTPUT_RESERVE = 32_000
+const CHECKPOINT_MARGIN = 20_000
+const CHECKPOINT_MARGIN_SMALL = 10_000
+const SMALL_WINDOW = 200_000
+const HEADSUP_FRACTION = 0.1
+const DEFAULT_COMPACT_1M = 967_000
+
+type Context = { percent?: number; tokens?: number; window: number }
+
+type Mirror = {
+  session_id: string
+  ts: number
+  source: 'mod'
+  plugin: string
+  total_input_tokens?: number
+  context_window_size: number
+  used_percentage?: number
+  model_id: string
+  model_name: string
+  total_cost_usd?: number
+  five_hour_pct?: number
+  five_hour_resets_at?: number
+  seven_day_pct?: number
+  seven_day_resets_at?: number
+}
+
+function thresholds(window: number, point: number) {
+  const margin = window <= SMALL_WINDOW ? CHECKPOINT_MARGIN_SMALL : CHECKPOINT_MARGIN
+  const triggerAt = Math.floor(point - OUTPUT_RESERVE)
+  const checkpointAt = Math.floor(triggerAt - margin)
+  let headsupAt = Math.floor(point - HEADSUP_FRACTION * window)
+  if (headsupAt >= checkpointAt) headsupAt = Math.floor(checkpointAt - (HEADSUP_FRACTION * window) / 2)
+  return { headsupAt, checkpointAt, triggerAt }
+}
+
+function defaultPoint(window: number): number {
+  return window > SMALL_WINDOW ? Math.min(DEFAULT_COMPACT_1M, window) : window
+}
+
+function epochSeconds(iso?: string): number | undefined {
+  if (!iso) return undefined
+  const ms = Date.parse(iso)
+  return Number.isFinite(ms) ? ms / 1000 : undefined
+}
+
+function percentOf(context: Context): number | undefined {
+  if (context.percent !== undefined) return Math.round(context.percent)
+  if (context.tokens !== undefined && context.window > 0) return Math.round((100 * context.tokens) / context.window)
+  return undefined
+}
+
+function tokensOf(context: Context): number | undefined {
+  if (context.tokens !== undefined) return context.tokens
+  if (context.percent !== undefined && context.window > 0) return Math.round((context.percent / 100) * context.window)
+  return undefined
+}
+
+function ioOf($: EngineInterface): Io {
+  return { read: p => $.fs.read(p) as Promise<string>, exists: p => $.fs.exists(p) }
+}
+
+// The UI at session.start: the band's Hide from the last session, and the
+// commands. A failure costs that piece alone, never the mirror.
+async function startUi($: EngineInterface): Promise<void> {
+  try {
+    if ((await $.store.get(BAND_HIDDEN_KEY)) === true) await update($, bandHidden, () => true)
+  } catch (err) {
+    $.ui.log(`${PLUGIN}: band: ${String(err)}`)
+  }
+  for (const spec of [PANE_COMMAND, REMEMBER_COMMAND, LEDGER_COMMAND, STRICT_COMMAND, EXPORT_COMMAND, IMPORT_COMMAND]) {
+    try {
+      await $.command.register(spec)
+    } catch (err) {
+      $.ui.log(`${PLUGIN}: /${spec.name}: ${String(err)}`)
+    }
+  }
+  // The tools the model calls, served by tools.ts.
+  for (const spec of TOOL_SPECS) {
+    try {
+      await $.tool.register(spec)
+    } catch (err) {
+      $.ui.log(`${PLUGIN}: tool ${spec.name}: ${String(err)}`)
+    }
+  }
+}
+
+// The ledger at session.start: the cost it counts from.
+async function startLedger($: EngineInterface): Promise<void> {
+  costBaseline((await $.session.usage()).cost?.usd)
+}
+
+// The ledger at turn.complete: a main-loop turn added to the project's entry
+// for the local day.
+async function recordTurn($: EngineInterface, e: TurnCompleteInput): Promise<void> {
+  if (e.agentId !== undefined) return
+  const entry = turnEntry(e.usage, (await $.session.usage()).cost?.usd)
+  const key = ledgerKey(await $.session.cwd(), localDay(await $.clock.now()))
+  await $.store.set(key, add(asEntry(await $.store.get(key)), entry))
+}
+
+export const register: Register = (on, options) => {
+  // The options are fixed for this load; a change reloads the module.
+  const settings = settingsOf(options)
+
+  // Per-load state; a reload starts it over, the files on disk do not.
+  let sid = ''
+  let store = ''
+  let sessions = ''
+  let rings: string[] = []
+  // Times are $.clock's (ms since the epoch).
+  let bandEnteredAt: number | undefined // undefined: not in the checkpoint band
+  let lastSaveAt: number | undefined // a deliberate checkpoint save that succeeded
+  let compactAsked = false // compact_now succeeded this turn
+  let compactRequested = false // a compaction is scheduled
+
+  // A deliberate save that succeeded: checkpoint(save), or
+  // compact_now, which banks the draft and asks for the compaction at the
+  // turn boundary. tools.ts serves both and answers a failure with a deny;
+  // these hooks are registered ahead of it so they sit above it and see its
+  // answer. The engine carries the arguments at the top level of the event.
+  const noteSave = (e: ToolCallInput, ran: ToolCallResult, compactNow: boolean, at: number): ToolCallResult => {
+    const op = (e as unknown as { operation?: string }).operation
+    const ok = ran.deny === undefined && ran.isError !== true
+    if (ok && (compactNow || op === 'save')) lastSaveAt = at
+    if (ok && compactNow && (e as unknown as { agentId?: string }).agentId === undefined) compactAsked = true
+    return ran
+  }
+  on('tool.call', { tool: TOOL_NAMES.checkpoint }, async ($, e, next) => {
+    const ran = await next(e)
+    return noteSave(e, ran, false, await $.clock.now())
+  })
+  on('tool.call', { tool: TOOL_NAMES.compact_now }, async ($, e, next) => {
+    const ran = await next(e)
+    return noteSave(e, ran, true, await $.clock.now())
+  })
+
+  // Inside the band with a save made since the band was entered.
+  const savedInBand = () => bandEnteredAt !== undefined && lastSaveAt !== undefined && lastSaveAt >= bandEnteredAt
+
+  registerBand(on)
+  registerPane(on)
+  registerRemember(on, settings)
+  registerStrict(on, settings)
+  registerExport(on, settings)
+  registerImport(on, settings)
+  registerDoor(on, settings)
+  registerLedger(on)
+  registerAgents(on, settings)
+  registerCompact(on, settings)
+  registerBridge(on)
+  registerTools(on, settings)
+
+  on('session.start', async ($, e, next) => {
+    // The other pieces start first, each on its own: a failure there leaves
+    // the mirror running, and the mirror's early return leaves them running.
+    await startUi($)
+    try {
+      await startLedger($)
+    } catch (err) {
+      $.ui.log(`${PLUGIN}: ledger off: ${String(err)}`)
+    }
+
+    sid = await $.session.id()
+    const model = await $.session.model()
+
+    store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
+    sessions = `${store}/sessions`
+    const mirrorPath = `${sessions}/${sid}.ctx.json`
+    const markerPath = `${sessions}/${sid}.mod`
+
+    // The rings this session can save into, through the store's manifest.
+    try {
+      const root = normalizePath(await $.session.root())
+      const cwd = normalizePath(await $.session.cwd())
+      rings = ringsFor(await readManifest(ioOf($), store), store, cwd, root)
+    } catch {
+      rings = []
+    }
+
+    // The engine creates the sessions folder (its session-start hook, within
+    // seconds of the first session after an install). Until it exists each
+    // tick is skipped and the next one looks again; the mirror is never
+    // switched off for the session.
+    let sessionsReady = false
+
+    const tick = async () => {
+      if (!sessionsReady) {
+        if (!(await $.fs.exists(sessions))) return
+        sessionsReady = true
+      }
+      const usage = await $.session.usage()
+      const five = usage.rateLimits.find(r => r.kind === 'five_hour')
+      const seven = usage.rateLimits.find(r => r.kind === 'seven_day')
+      const rec: Mirror = {
+        session_id: sid,
+        ts: Date.now() / 1000,
+        source: 'mod',
+        plugin: PLUGIN,
+        total_input_tokens: usage.context.tokens,
+        context_window_size: usage.context.window,
+        used_percentage: usage.context.percent,
+        model_id: model,
+        model_name: model,
+        total_cost_usd: usage.cost?.usd,
+        five_hour_pct: five?.percentUsed,
+        five_hour_resets_at: epochSeconds(five?.resetsAt),
+        seven_day_pct: seven?.percentUsed,
+        seven_day_resets_at: epochSeconds(seven?.resetsAt),
+      }
+      await $.fs.write(mirrorPath, JSON.stringify(rec))
+      await $.fs.write(markerPath, JSON.stringify({ plugin: PLUGIN, version: VERSION, ts: rec.ts }))
+
+      // Band bookkeeping for the compaction, against Claude Code's own
+      // compaction window.
+      const tokens = tokensOf(usage.context)
+      const point = (await $.session.usage({ breakdown: 'summary' })).context.breakdown?.rawMaxTokens
+        ?? defaultPoint(usage.context.window)
+      const th = thresholds(usage.context.window, point)
+      if (tokens !== undefined && tokens >= th.checkpointAt) {
+        if (bandEnteredAt === undefined) bandEnteredAt = await $.clock.now()
+      } else {
+        bandEnteredAt = undefined
+      }
+
+      const latest = await readLatest(ioOf($), rings, store)
+      const pct = percentOf(usage.context)
+      const band = bandEnteredAt !== undefined && !savedInBand() ? ' · checkpoint now' : ''
+      if (settings.statusSegment) $.ui.status(`${PLUGIN} ctx ${pct === undefined ? '?' : pct + '%'} · ${ageText(latest?.created)}${band}`)
+      // The same figures for the band above the prompt.
+      await update($, pressure, () => ({ percent: pct, checkpointCreated: latest?.created, inBand: band !== '' }))
+    }
+
+    await tick()
+    $.clock.every(MIRROR_EVERY_MS, () => {
+      void tick()
+    })
+    return next(e)
+  })
+
+  // The turn boundary: compact_now asked for it, or the fill is inside the
+  // band with a checkpoint banked since the band was entered; compact now,
+  // at windvane's number. The compaction runs from a timer so the hook's own
+  // budget is not spent on it, and once the turn is over ($.session.compact
+  // rejects while a turn runs).
+  on('turn.complete', async ($, e, next) => {
+    if ((e as unknown as { agentId?: string }).agentId !== undefined) return next(e)
+    if ((compactAsked || savedInBand()) && !compactRequested) {
+      compactRequested = true
+      compactAsked = false
+      const usage = await $.session.usage()
+      const tokens = tokensOf(usage.context)
+      $.ui.toast(`${PLUGIN}: checkpoint banked, compacting at ${Math.round((tokens ?? 0) / 1000)}K`)
+      $.clock.after(COMPACT_DELAY_MS, () => {
+        void (async () => {
+          try {
+            await $.session.compact()
+          } catch (err) {
+            $.ui.log(`${PLUGIN}: compaction failed: ${String(err)}`)
+          } finally {
+            compactRequested = false
+            bandEnteredAt = undefined
+          }
+        })()
+      })
+    }
+    const done = await next(e)
+    // The ledger counts the turn once it is done.
+    try {
+      await recordTurn($, e)
+    } catch (err) {
+      $.ui.log(`${PLUGIN}: ledger: ${String(err)}`)
+    }
+    return done
+  })
+
+  // Any compaction, ours or the engine's, opens a new cycle.
+  on('session.compact', ($, e, next) => {
+    bandEnteredAt = undefined
+    compactAsked = false
+    compactRequested = false
+    return next(e)
+  })
+}

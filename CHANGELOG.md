@@ -1,0 +1,22 @@
+# Changelog
+
+## 0.1.0 (unreleased)
+
+The first build. windvane supersedes claude-engram: the same engine, rewritten as a Claude Code plugin with a hooks module and no dependencies, in place of settings hooks and an MCP server.
+
+New relative to its predecessor:
+
+- **Plugin tools instead of an MCP server.** The model calls six tools (checkpoint, compact_now, memory, log, mine, deps). The mod serves each call through the daemon and falls back to a subprocess when the daemon is down.
+- **The drafted checkpoint.** The recorder drafts the whole record from the previous checkpoint, the transcript, the task list, the git commits and the hook state. A bare `checkpoint(save)` accepts it and a given field amends it. A turn that edited files and banked nothing deliberate banks the draft at turn end, at most once per ten minutes.
+- **Compaction at the point.** The mod mirrors the pressure bands. Inside the checkpoint band, with a deliberate save landed since the band was entered, the next turn boundary compacts. `compact_now` asks for the same.
+- **The brief inside the compacted conversation.** The rules and the checkpoint are placed right after the summary, and the session-start banner leaves them out so they appear once.
+- **The rules at the head of every subagent's prompt,** with the past mistakes for the files the prompt names.
+- **The door.** Tool results are trimmed to a character budget, keeping head and tail, and private keys, vendor keys and literal secret values are redacted before the result is stored.
+- **The ledger.** Tokens and cost are recorded per project and per day, read with `/windvane-cost`.
+- **The pane, the band and the status segment.** `/windvane` opens a pane with the checkpoint, the rules and the mistakes for the last file touched. A band above the prompt says what windvane last put in front of the model. A status segment shows the context fill and the checkpoint age.
+- **The daemon over HTTP.** The daemon answers hook events and tool calls on a loopback listener, guarded by a header and a host check, besides the line protocol the thin hook client uses.
+- **The hook bridge.** When every command hook that would fire for an event is windvane's, the mod answers from the daemon and no hook process starts. Otherwise the command hooks run as before.
+- **Pack tiers.** The default pack has 16 rules, three of them with detectors. The strict pack has 11 rules and is opt-in through the `strict_pack` row or `/windvane-strict`.
+- **Scaffold off by default.** The `structure` setting that creates CLAUDE.md, `.learnings/` and `session-logs/` is off until a project turns it on.
+- **Export and import commands.** `/windvane-export` writes a project's rules, mistakes, decisions, checkpoints and run reports as Markdown. `/windvane-import` copies a claude-engram store into the windvane store and never changes the source.
+- **Plugin config rows** for the interpreter, the status segment, the result budget, the semantic tier, the alert command, the strict pack and autonomy mode.

@@ -1,0 +1,131 @@
+{
+  "modules": ["./register.ts"],
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" prompt_json", "timeout": 5, "statusMessage": "Capturing decisions..."}
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" pre_edit_json", "timeout": 3, "statusMessage": "Checking memories..."}
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" pre_read_json", "timeout": 3}
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" pre_bash_json", "timeout": 3}
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" pre_tool_json", "timeout": 3}
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" notification_json", "timeout": 3}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" bash_json", "timeout": 3}
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" post_edit_json", "timeout": 3}
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode|TaskUpdate",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" post_milestone_json", "timeout": 3}
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" post_batch_json", "timeout": 3}
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" stop_failure_json", "timeout": 5}
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" tool_failure_json", "timeout": 3}
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" pre_compact_json", "timeout": 10, "statusMessage": "Saving checkpoint..."}
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" post_compact_json", "timeout": 5}
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" session_start_json", "timeout": 10, "statusMessage": "Restoring session..."}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" stop_json", "timeout": 5, "statusMessage": "Saving session..."}
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py\" session_end_json", "timeout": 5}
+        ]
+      }
+    ]
+  }
+}

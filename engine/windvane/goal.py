@@ -1,0 +1,423 @@
+"""
+The /goal bracket: windvane around Claude Code's own goal loop.
+
+The native loop is the loop -- a session-scoped Stop hook, an evaluator
+that reads the transcript, verdicts recorded as ``goal_status``
+attachments, restored on resume. A goal is set only by typing ``/goal``:
+no flag, setting, hook output or tool call can set one, and the model
+cannot type a slash command. So windvane does not run a loop of its own.
+It WATCHES the transcript for the goal and brackets it:
+
+* ``scan_goal(transcript_path)`` reads the transcript tail for the verified
+  record shapes: the sentinel (``goal_status`` with ``sentinel: true`` and
+  the condition) when a goal is set; a verdict (``goal_status`` with
+  ``met``/``reason``, ``failed: true`` when judged impossible) after each
+  evaluation; a met goal auto-clears; ``/goal clear|stop|off|reset|none|
+  cancel`` arrives as a ``<command-name>/goal</command-name>`` user record.
+  (All observed on a headless run, Claude Code 2.1.268.)
+* ``observe(state, ...)`` at Stop, UserPromptSubmit and SessionEnd keeps
+  ``run.auto`` in the session state in step with the goal: ``running``
+  from the sentinel; ``met`` / ``failed`` / ``cleared`` from the transcript;
+  ``halted`` from the strike cap; ``capped`` from the turn cap
+  (``goal_turn_cap``), which arms the same halt (windvane cannot end a
+  /goal loop -- hooks merge most-restrictive -- so the cap starves it and
+  the alert asks a person to ``/goal clear``). While the run is running,
+  autonomy mode is on (``config.autonomy_on(state)``): stall nudges, the
+  halt, alerts, unattended = deny.
+* A start writes the run manifest (``write_start_manifest``). Each end
+  sends one alert (``end_alert_text``) and writes the run report.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+from pathlib import Path
+from typing import Any, Optional
+
+DEFAULT_TURN_CAP = 150  # default of the goal_turn_cap knob
+TAIL_BYTES = 2_000_000
+CLEAR_WORDS = frozenset({"clear", "stop", "off", "reset", "none", "cancel"})
+
+RUNNING = "running"
+ENDED = ("met", "failed", "cleared", "capped", "halted", "stopped")
+
+_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+
+
+def _run(state: dict) -> dict:
+    r = state.get("run")
+    if not isinstance(r, dict):
+        r = {}
+        state["run"] = r
+    return r
+
+
+def auto(state: dict) -> Optional[dict]:
+    a = _run(state).get("auto")
+    return a if isinstance(a, dict) else None
+
+
+def running(state: dict) -> bool:
+    # Reads the run record only: config.autonomy_on calls this, so it must
+    # never call back into autonomy_on.
+    a = auto(state)
+    return bool(a and a.get("status") == RUNNING)
+
+
+def turn_cap(project_dir: str = "") -> int:
+    """The ``goal_turn_cap`` knob (``WINDVANE_GOAL_TURN_CAP``, the project's
+    ``.windvane/config.json``, the plugin setting, the user file)."""
+    try:
+        from windvane import config
+
+        n = config.knob_int("goal_turn_cap", project_dir, DEFAULT_TURN_CAP)
+        if n > 0:
+            return n
+    except Exception:
+        pass
+    return DEFAULT_TURN_CAP
+
+
+# ---------------------------------------------------------------------------
+# The transcript: where the goal lives
+# ---------------------------------------------------------------------------
+
+
+def _tail_lines(path: str, tail_bytes: int = TAIL_BYTES) -> list[bytes]:
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > tail_bytes:
+                fh.seek(size - tail_bytes)
+                fh.readline()  # drop the partial line
+            data = fh.read()
+    except Exception:
+        return []
+    return data.splitlines()
+
+
+_EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+
+
+def recent_edit_files(transcript_path: str, tail_bytes: int = TAIL_BYTES, limit: int = 40) -> list:
+    """The files this session's transcript shows it edited, oldest first,
+    each once (its last position kept). The transcript is the record Claude
+    Code itself writes and the one windvane already parses; the hook state's
+    per-turn list is cleared at every Stop, so it cannot say which project a
+    session is about."""
+    if not transcript_path:
+        return []
+    seen: dict = {}
+    for raw in _tail_lines(transcript_path, tail_bytes):
+        if b'"tool_use"' not in raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except Exception:
+            continue
+        msg = d.get("message") if isinstance(d, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if str(block.get("name") or "") not in _EDIT_TOOLS:
+                continue
+            _ti = block.get("input")
+            ti: dict = _ti if isinstance(_ti, dict) else {}
+            fp = str(ti.get("file_path") or ti.get("notebook_path") or "").strip()
+            if fp:
+                seen.pop(fp, None)
+                seen[fp] = True
+    return list(seen)[-limit:]
+
+
+def scan_goal(transcript_path: str, tail_bytes: int = TAIL_BYTES) -> dict:
+    """The goal as the transcript tells it. ``active`` is the sentinel with no
+    end after it; ``ended`` is met / failed / cleared for the LAST goal seen."""
+    out: dict[str, Any] = {
+        "seen": False,
+        "active": False,
+        "condition": "",
+        "set_at": "",
+        "ended": None,
+        "verdicts": 0,
+        "last_reason": "",
+        "last_met": None,
+    }
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return out
+    for raw in _tail_lines(transcript_path, tail_bytes):
+        if b'"goal_status"' not in raw and b"<command-name>/goal</command-name>" not in raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except Exception:
+            continue
+        att = rec.get("attachment")
+        if isinstance(att, dict) and att.get("type") == "goal_status":
+            # The record that ends a goal can carry the sentinel flag too:
+            # on 2.1.268 the met record was {met: true, sentinel: true}
+            # with no reason. Read as a fresh set, it started a phantom run
+            # that counted three days of ordinary turns to the cap and
+            # halted a session with no goal (2026-09-14). A verdict is a
+            # verdict first; only a met-false, failed-false sentinel sets.
+            if att.get("sentinel") and not att.get("met") and not att.get("failed"):
+                out.update(
+                    seen=True,
+                    active=True,
+                    condition=str(att.get("condition") or ""),
+                    set_at=str(rec.get("timestamp") or ""),
+                    ended=None,
+                    verdicts=0,
+                    last_reason="",
+                    last_met=None,
+                )
+                continue
+            if not out["seen"]:
+                # A verdict with no sentinel in the tail: the goal was set
+                # before the window. Treat it as seen and active.
+                out.update(seen=True, active=True, condition=str(att.get("condition") or out["condition"]))
+            out["verdicts"] = int(out["verdicts"]) + 1
+            out["last_reason"] = str(att.get("reason") or "")[:300]
+            out["last_met"] = bool(att.get("met"))
+            if att.get("met"):
+                out["active"], out["ended"] = False, "met"
+            elif att.get("failed"):
+                out["active"], out["ended"] = False, "failed"
+            continue
+        if rec.get("type") == "user":
+            # A slash command is a user record whose content is a plain
+            # string. A tool_result (a list) that echoes the same text -- a
+            # test fixture read back, a transcript grep -- is not a command;
+            # seen 2026-09-10 when a fixture's text sat inside a Write's
+            # tool_use in the live transcript.
+            content = (rec.get("message") or {}).get("content")
+            if not isinstance(content, str):
+                continue
+            text = content
+            if "<command-name>/goal</command-name>" not in text:
+                continue
+            m = _ARGS_RE.search(text)
+            args = (m.group(1) if m else "").strip().lower()
+            if args in CLEAR_WORDS and out["seen"] and out["active"]:
+                out["active"], out["ended"] = False, "cleared"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The run record
+# ---------------------------------------------------------------------------
+
+
+def _start(state: dict, scan: dict, project_dir: str) -> dict:
+    a = {
+        "goal": " ".join(str(scan.get("condition") or "").split())[:500],
+        "set_at": str(scan.get("set_at") or ""),
+        "started_at": time.time(),
+        "status": RUNNING,
+        "why": "",
+        "turns": 0,
+        "max_turns": turn_cap(project_dir),
+        "verdicts": 0,
+        "project": project_dir or "",
+        "source": "goal",
+    }
+    r = _run(state)
+    r["auto"] = a
+    r["goal"] = a["goal"]  # every checkpoint carries it (repo_state.goal_for_session)
+    return a
+
+
+def stop(state: dict, status: str = "stopped", why: str = "") -> dict:
+    a = auto(state)
+    if not a or a.get("status") != RUNNING:
+        return {"ok": False, "why": "no run is running"}
+    a["status"] = status if status in ENDED else "stopped"
+    a["why"] = str(why or "")[:300]
+    a["ended_at"] = time.time()
+    if a.get("source") == "goal":
+        # The goal is over: later checkpoints must not carry it (seen live:
+        # a met goal stamped on every checkpoint for the rest of the day).
+        _run(state).pop("goal", None)
+    return {"ok": True, "auto": a}
+
+
+def observe(
+    state: dict,
+    transcript_path: str,
+    project_dir: str = "",
+    turn: bool = False,
+) -> Optional[dict]:
+    """Bring ``run.auto`` in step with the transcript's goal. ``turn=True``
+    at Stop counts the turn. Returns ``{"event": "started"|"ended", "auto":
+    a}`` when the status changed, else None. The caller saves the state,
+    writes the manifest (start), sends the alert and writes the report (end)."""
+    tp = transcript_path or str(_run(state).get("transcript_path") or "")
+    scan = scan_goal(tp)
+    a = auto(state)
+    if a and a.get("status") == RUNNING:
+        if turn:
+            a["turns"] = int(a.get("turns", 0)) + 1
+        a["verdicts"] = int(scan.get("verdicts") or 0)
+        if scan.get("last_reason"):
+            a["last_reason"] = scan["last_reason"]
+        _stall = state.get("stall")
+        st: dict = _stall if isinstance(_stall, dict) else {}
+        halted = st.get("halted")
+        if isinstance(halted, dict):
+            if halted.get("reason") == "turn cap":
+                stop(state, "capped", f"turn cap {a.get('max_turns')} reached; halted until /goal clear")
+            else:
+                stop(state, "halted", f"strike cap at turn {halted.get('turn')}")
+            return {"event": "ended", "auto": a}
+        if scan.get("seen") and scan.get("set_at") and scan["set_at"] != a.get("set_at") and scan.get("active"):
+            # A new goal replaced ours without a recorded end.
+            stop(state, "cleared", "replaced by a new /goal")
+            new = _start(state, scan, project_dir)
+            if turn:
+                new["turns"] = 1
+            return {"event": "started", "auto": new, "replaced": a}
+        if scan.get("ended"):
+            stop(state, str(scan["ended"]), scan.get("last_reason") or f"goal {scan['ended']}")
+            return {"event": "ended", "auto": a}
+        if not scan.get("seen"):
+            # Our record says running, the transcript tail shows no goal at
+            # all. A live /goal writes a verdict after every Stop, so a
+            # tail with none is a goal that is over (its records scrolled
+            # out of the window, or a shape the scan did not read). Never
+            # count toward the cap on a goal that cannot be seen.
+            stop(state, "cleared", "no goal record in the transcript tail")
+            return {"event": "ended", "auto": a}
+        if turn and int(a["turns"]) >= int(a.get("max_turns") or DEFAULT_TURN_CAP):
+            # windvane cannot end a /goal loop; the halt starves it and the
+            # alert asks a person to /goal clear.
+            from windvane import stall as _stall_mod
+
+            sst = _stall_mod.stall_state(state)
+            if not sst.get("halted"):
+                sst["halted"] = {
+                    "at": time.time(),
+                    "turn": int(a["turns"]),
+                    "strikes": int(sst.get("strikes", 0)),
+                    "denied": 0,
+                    "reason": "turn cap",
+                }
+                _stall_mod._event(sst, int(a["turns"]), "halt", f"turn cap {a['max_turns']} under /goal")
+                sst["pending_halt"] = True
+            stop(state, "capped", f"turn cap {a.get('max_turns')} reached; halted until /goal clear")
+            return {"event": "ended", "auto": a}
+        return None
+    if scan.get("active") and scan.get("seen"):
+        if a and a.get("set_at") and a["set_at"] == scan.get("set_at"):
+            return None  # the same goal, already ended in our record
+        new = _start(state, scan, project_dir)
+        if turn:
+            new["turns"] = 1  # the Stop that first saw the goal is its first turn
+        return {"event": "started", "auto": new}
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The manifest (written when a goal starts)
+# ---------------------------------------------------------------------------
+
+
+def _rules_snapshot(project_dir: str) -> list[dict]:
+    try:
+        from windvane.compliance import rules_with_detectors
+        from windvane.storage import load_project_memory
+
+        return [
+            {"id": r["id"], "rule": r["content"][:160], "detector": bool(r.get("detector")), "note": (r.get("detector") or {}).get("note", "")}
+            for r in rules_with_detectors(load_project_memory(project_dir))
+        ]
+    except Exception:
+        return []
+
+
+def _git_head(project_dir: str) -> str:
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=project_dir, capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def write_manifest(project_dir: str, session_id: str, data: dict) -> Optional[Path]:
+    """``<project>/.windvane/runs/<date>-<session8>.manifest.json``. None on failure."""
+    try:
+        d = Path(project_dir) / ".windvane" / "runs"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{time.strftime('%Y-%m-%d')}-{session_id[:8]}.manifest.json"
+        p.write_bytes((json.dumps(data, indent=2, default=str) + "\n").encode("utf-8"))
+        return p
+    except Exception:
+        return None
+
+
+def write_start_manifest(project_dir: str, session_id: str, a: dict) -> Optional[Path]:
+    """The manifest for a goal that just started (``observe`` returned
+    ``started`` with this ``auto`` record): the goal, the cap, the start
+    commit and the rules in scope with their detectors."""
+    return write_manifest(
+        project_dir,
+        session_id,
+        {
+            "session_id": session_id,
+            "project": project_dir,
+            "goal": a.get("goal", ""),
+            "mode": "goal",
+            "max_turns": a.get("max_turns"),
+            "start_commit": _git_head(project_dir),
+            "started_at": a.get("started_at"),
+            "rules": _rules_snapshot(project_dir),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# The end
+# ---------------------------------------------------------------------------
+
+
+def end_alert_text(a: dict, session_id: str) -> str:
+    sid = (session_id or "")[:8]
+    st = a.get("status")
+    goal = str(a.get("goal", ""))[:80]
+    if st == "met":
+        return f"goal met in session {sid} after {a.get('turns')} turns: {goal}"
+    if st == "failed":
+        return f"goal judged impossible in session {sid} after {a.get('turns')} turns: {goal}"
+    if st == "cleared":
+        return f"goal cleared in session {sid} after {a.get('turns')} turns: {goal}"
+    if st == "capped":
+        return (
+            f"goal run {sid} hit its turn cap ({a.get('max_turns')}) unmet; every tool is denied until "
+            "a person types /goal clear and runs python -m windvane.stall release"
+        )
+    if st == "halted":
+        return f"goal run {sid} halted: no progress; release with python -m windvane.stall release, or /goal clear"
+    return f"goal run {sid} {st}: {a.get('why', '')[:100]}"
+
+
+def summary(state: dict) -> Optional[dict]:
+    a = auto(state)
+    if not a:
+        return None
+    out = dict(a)
+    if out.get("started_at") and out.get("ended_at"):
+        out["duration_s"] = round(float(out["ended_at"]) - float(out["started_at"]))
+    return out
+
+
+def env_or_state_autonomy(state: Optional[dict]) -> bool:
+    """Autonomy mode: the knob, or a /goal running (``config.autonomy_on``)."""
+    from windvane import config
+
+    return config.autonomy_on(state)

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# Working notes a session keeps beside the repo; never part of it
+.learnings/
+session-logs/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# The engine's own laid types (written by Claude Code when the plugin loads)
+.claude-plugin/types/
+
+# Demo renders are built from the tape; keep only the tape and the published gif
+demo/*.mp4
+demo/fixture/
