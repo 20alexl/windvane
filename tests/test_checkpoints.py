@@ -354,6 +354,38 @@ def test_a_save_from_a_worktree_records_that_checkout_and_the_restore_reads_git_
     assert repo_state.checkout_for(str(repo), str(elsewhere)) == str(repo)
 
 
+def test_a_hub_around_the_project_is_not_its_checkout_even_from_the_projects_own_cwd(tmp_path, monkeypatch):
+    """The project is a repository nested in a larger one (a hub of spokes)
+    and the session runs at the hub. The engine's process often has the
+    project as its cwd (the plugin's folder is the project on a development
+    machine), and an empty path resolved there, so the hub's HEAD landed on
+    the project's checkpoint (2026-10-05)."""
+    pytest.importorskip("windvane.repo_state")
+    hub = tmp_path / "hub"
+    spoke = hub / "spoke"
+    spoke.mkdir(parents=True)
+    if _git(hub, "init", "-q").returncode != 0 or _git(spoke, "init", "-q").returncode != 0:
+        pytest.skip("git is not available")
+    for d in (hub, spoke):
+        for k, v in (("user.email", "t@example.invalid"), ("user.name", "t"), ("commit.gpgsign", "false")):
+            _git(d, "config", k, v)
+        (d / "a.py").write_text("x = 1\n")
+        _git(d, "add", "a.py")
+        _git(d, "commit", "-q", "-m", "first")
+    from windvane import repo_state
+
+    assert repo_state._norm("") == ""
+    monkeypatch.chdir(spoke)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(hub))
+    assert repo_state._norm(repo_state.checkout_for(str(spoke))) == repo_state._norm(str(spoke))
+    rec: dict = {}
+    repo_state.stamp(rec, str(spoke))
+    assert rec["commit"] == _git(spoke, "rev-parse", "--short", "HEAD").stdout.strip()
+    assert "repo_path" not in rec
+    # The hub's own checkpoint still reads the hub.
+    assert repo_state._norm(repo_state.checkout_for(str(hub))) == repo_state._norm(str(hub))
+
+
 # ── hygiene ─────────────────────────────────────────────────────────────────
 
 

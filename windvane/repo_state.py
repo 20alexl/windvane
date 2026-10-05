@@ -87,6 +87,11 @@ def branch(project_dir: str) -> str:
 
 
 def _norm(path: str) -> str:
+    """``path`` absolute with forward slashes; '' stays '' (``Path('')``
+    resolves to the process's cwd, and a checkout read in the plugin's
+    folder took the hub repository around it for the project's, 2026-10-05)."""
+    if not path:
+        return ""
     try:
         return str(Path(path).resolve()).replace("\\", "/").rstrip("/")
     except Exception:
@@ -125,7 +130,8 @@ def checkout_for(project_path: str, where: str = "") -> str:
     try:
         from windvane.paths import worktree_main
 
-        if _norm(worktree_main(repo)).lower() == proj.lower():
+        main = worktree_main(repo)
+        if main and _norm(main).lower() == proj.lower():
             return repo
     except Exception:
         pass
