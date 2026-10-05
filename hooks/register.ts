@@ -35,11 +35,11 @@
 // declared here (../types/index.d.ts), read and written here, and handed to
 // the drawings as plain values.
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionMessage, ToolCallInput, ToolCallResult, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, Register, SessionMessage, TurnCompleteInput } from 'claude-code'
 
 import { briefFor } from './agents'
 import { BAND_HIDDEN_KEY, drawBand, parseWindvane, textOf } from './band'
-import { bridgeDecision, forgetCall, noteCallLoop } from './bridge'
+import { bridgeDecision, noteCallLoop } from './bridge'
 import type { Json } from './bridge'
 import { compactBrief } from './compact'
 import { readBudget, rewrite } from './door'
@@ -414,27 +414,15 @@ export const register: Register = (on, options) => {
   const early = settings.earlyCompaction
   let doorBudget: number | undefined // the door's budget, read once per load
 
-  // A deliberate save that succeeded: checkpoint(save), or
-  // compact_now, which banks the draft and asks for the compaction at the
-  // turn boundary. The serving hooks below answer a failure with a deny;
-  // these hooks are registered ahead of them so they sit above and see the
-  // answer. The engine carries the arguments at the top level of the event.
-  const noteSave = (e: ToolCallInput, ran: ToolCallResult, compactNow: boolean, at: number): void => {
-    const op = (e as unknown as { operation?: string }).operation
-    const ok = ran.deny === undefined && ran.isError !== true
-    if (ok && (compactNow || op === 'save')) lastSaveAt = at
-    if (ok && compactNow && (e as unknown as { agentId?: string }).agentId === undefined) compactAsked = true
+  // A deliberate save that succeeded: checkpoint(save), or compact_now,
+  // which banks the draft and asks for the compaction at the turn boundary.
+  // The serving hooks below call this once the engine has answered without
+  // an error. The engine carries the arguments at the top level of the event.
+  const noteSave = (call: unknown, compactNow: boolean, at: number): void => {
+    const { operation, agentId } = call as { operation?: string; agentId?: string }
+    if (compactNow || operation === 'save') lastSaveAt = at
+    if (compactNow && agentId === undefined) compactAsked = true
   }
-  on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e, next) => {
-    const ran = await next(e)
-    noteSave(e, ran, false, await $.clock.now())
-    return ran
-  })
-  on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e, next) => {
-    const ran = await next(e)
-    noteSave(e, ran, true, await $.clock.now())
-    return ran
-  })
 
   // Inside the band with a save made since the band was entered.
   const savedInBand = () => bandState.enteredAt !== undefined && lastSaveAt !== undefined && lastSaveAt >= bandState.enteredAt
@@ -484,24 +472,19 @@ export const register: Register = (on, options) => {
     return { text: 'windvane pane opened.' }
   })
 
-  // The file the model last touched; a subagent's touches are its own.
-  // Also the loop each call runs in, for the bridge: classic.PreToolUse,
-  // which fires beneath this hook, names none (bridge.ts).
+  // The file the model last touched, noted as the call is made (a denied
+  // edit still says which file the model is on); a subagent's touches are
+  // its own. Also the loop each call runs in, for the bridge:
+  // classic.PreToolUse, which fires beneath this hook, names none (bridge.ts).
   on('tool.call', async ($, e, next) => {
     noteCallLoop(e.tool_use_id, e.agentId)
-    let ran
-    try {
-      ran = await next(e)
-    } finally {
-      forgetCall(e.tool_use_id)
-    }
     const path = (e as unknown as { file_path?: unknown; notebook_path?: unknown }).file_path
       ?? (e as unknown as { notebook_path?: unknown }).notebook_path
-    if (e.agentId === undefined && TOUCH_TOOLS.has(String(e.tool)) && typeof path === 'string' && path && ran.deny === undefined) {
+    if (e.agentId === undefined && TOUCH_TOOLS.has(String(e.tool)) && typeof path === 'string' && path) {
       const file = normalizePath(path)
       await update($, lastFile, () => file)
     }
-    return ran
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: 'windvane' }, async ($, e) => {
@@ -578,15 +561,18 @@ export const register: Register = (on, options) => {
 
   // The tools the model calls (tools.ts): one matched hook per tool, each
   // matcher naming its tool literally. Each answers for itself: a failure is
-  // a deny, else the reply is the result.
+  // a deny, else the reply is the result. A checkpoint save or a compact_now
+  // that the engine answered is a deliberate save (noteSave).
   on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e) => {
     const got = await serve(hostOf($), 'checkpoint', e, settings)
     if ('deny' in got) return { deny: got.deny }
+    noteSave(e, false, await $.clock.now())
     return { result: got.result }
   })
   on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e) => {
     const got = await serve(hostOf($), 'compact_now', e, settings)
     if ('deny' in got) return { deny: got.deny }
+    noteSave(e, true, await $.clock.now())
     return { result: got.result }
   })
   on('tool.call', { tool: 'mcp__windvane__memory' }, async ($, e) => {

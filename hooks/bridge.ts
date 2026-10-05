@@ -317,8 +317,9 @@ export function readAnswer(status: number, body: string): { output: string } | {
 
 // classic.PreToolUse's envelope names no loop, but a subagent's call must
 // reach windvane as one (no injection, never halted). The plugin's matcher-less
-// tool.call hook (pane.tsx), which runs above every classic.PreToolUse,
-// notes the loop of each call by its tool_use_id.
+// tool.call hook (register.ts), which runs above every classic.PreToolUse,
+// notes the loop of each call by its tool_use_id. The map keeps the newest
+// 512 calls; an entry is needed only while its call runs.
 const callLoops = new Map<string, string>()
 
 export function noteCallLoop(toolUseId: unknown, agentId: string | undefined): void {
@@ -328,10 +329,6 @@ export function noteCallLoop(toolUseId: unknown, agentId: string | undefined): v
     const first = callLoops.keys().next().value
     if (first !== undefined) callLoops.delete(first)
   }
-}
-
-export function forgetCall(toolUseId: unknown): void {
-  if (typeof toolUseId === 'string') callLoops.delete(toolUseId)
 }
 
 export function loopOf(toolUseId: unknown): string | undefined {

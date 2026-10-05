@@ -6,8 +6,8 @@
 //   context needed, handoff note, goal;
 // - the project's rules (the cwd's registered project and the ancestors it
 //   inherits from, as the engine's project memory loader walks them);
-// - the mistakes for the file the model last touched (Edit, Write, Read),
-//   matched as the pre-edit check matches them.
+// - the mistakes for the file the model last touched (Edit, Write, Read,
+//   noted as the call is made), matched as the pre-edit check matches them.
 //
 // The pane reads the store when it opens and when Refresh is pressed.
 // register.ts hooks the command, the tool calls that name the file and the
