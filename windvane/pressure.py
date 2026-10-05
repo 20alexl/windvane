@@ -982,12 +982,20 @@ def nudge(state: dict, session_id: str, project_dir: str = "") -> tuple[str, boo
     changed = False
     texts: list[str] = []
 
-    if a["band"] == "checkpoint" and not ps["checkpoint_done"]:
+    # Right after a compaction nothing is due: the checkpoint the banner
+    # restored is current until a turn ends, and the fill Claude Code reports
+    # is the pre-compaction size until the next request records the
+    # rewritten conversation's (a mirror written in between carries it with
+    # a fresh timestamp). The bands wait for the first Stop of the new cycle
+    # (a CHECKPOINT NOW landed on the continue prompt, 2026-10-05).
+    settled = not ps.get("compacted_at") or float(ps.get("last_stop_at") or 0.0) > float(ps["compacted_at"])
+
+    if a["band"] == "checkpoint" and not ps["checkpoint_done"] and settled:
         ps["checkpoint_done"] = True
         ps["headsup_done"] = True
         changed = True
         texts.append(checkpoint_text(a))
-    elif a["band"] == "headsup" and not ps["headsup_done"]:
+    elif a["band"] == "headsup" and not ps["headsup_done"] and settled:
         ps["headsup_done"] = True
         changed = True
         texts.append(headsup_text(a, int(ps["cycle"])))

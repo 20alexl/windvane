@@ -73,7 +73,6 @@ const lastFile = atom({ plugin: 'windvane', key: 'lastFile' } as const, null)
 const paneView = atom({ plugin: 'windvane', key: 'pane' } as const, null)
 
 const MIRROR_EVERY_MS = 10_000
-const COMPACT_DELAY_MS = 250
 
 // The prompt that resumes the work after a compaction windvane started
 // (continue_after_compact). The engine runs it as a turn of its own once the
@@ -122,6 +121,9 @@ type Mirror = {
   // rawMaxTokens, or the default point), so a store can be read when the band
   // did not open where it was expected. The engine resolves its own.
   compaction_point?: number
+  // The fill is left out: the reading still shows the pre-compaction size
+  // (see staleTokens in register).
+  stale_after_compaction?: true
 }
 
 // usage.rateLimits as the mirror's rate_limits dict, one entry per kind.
@@ -195,6 +197,15 @@ function tokensOf(context: Context): number | undefined {
   if (context.tokens !== undefined) return context.tokens
   if (context.percent !== undefined && context.window > 0) return Math.round((context.percent / 100) * context.window)
   return undefined
+}
+
+// The fill as the session reports it now; undefined when it cannot be read.
+async function fillOf($: EngineInterface): Promise<number | undefined> {
+  try {
+    return tokensOf((await $.session.usage()).context)
+  } catch {
+    return undefined
+  }
 }
 
 // The engine interface as the other modules take it (Host, engine.ts):
@@ -400,7 +411,13 @@ export const register: Register = (on, options) => {
   const bandState: BandState = { early: false } // the checkpoint band (updateBand)
   let lastSaveAt: number | undefined // a deliberate checkpoint save that succeeded
   let compactAsked = false // compact_now succeeded this turn
-  let compactRequested = false // a compaction is scheduled
+  let compactRequested = false // a compaction is under way
+  // The fill as read right after a compaction. Claude Code's usage figures
+  // keep the pre-compaction size until the next request records the
+  // rewritten conversation's, so a reading equal to this one says nothing:
+  // the band stays closed and the mirror carries no fill until the reading
+  // changes or a turn completes.
+  let staleTokens: number | undefined
   // When the turn that asked for the compaction began, and when the person
   // last submitted a prompt of their own. A prompt the person types while a
   // compaction runs is queued and runs before anything a plugin submits; the
@@ -691,7 +708,14 @@ export const register: Register = (on, options) => {
         sessionsReady = true
       }
       const usage = await $.session.usage()
-      await updateBand($, usage, early, bandState)
+      const stale = staleTokens !== undefined && tokensOf(usage.context) === staleTokens
+      if (stale) {
+        bandState.enteredAt = undefined
+        bandState.early = false
+      } else {
+        staleTokens = undefined
+        await updateBand($, usage, early, bandState)
+      }
       const five = usage.rateLimits.find(r => r.kind === 'five_hour')
       const seven = usage.rateLimits.find(r => r.kind === 'seven_day')
       const rec: Mirror = {
@@ -699,9 +723,9 @@ export const register: Register = (on, options) => {
         ts: Date.now() / 1000,
         source: 'mod',
         plugin: PLUGIN,
-        total_input_tokens: usage.context.tokens,
+        total_input_tokens: stale ? undefined : usage.context.tokens,
         context_window_size: usage.context.window,
-        used_percentage: usage.context.percent,
+        used_percentage: stale ? undefined : usage.context.percent,
         model_id: model,
         model_name: model,
         total_cost_usd: usage.cost?.usd,
@@ -713,11 +737,12 @@ export const register: Register = (on, options) => {
       }
       if (bandState.early && early !== undefined) rec.early_band = early.label
       if (bandState.point !== undefined) rec.compaction_point = bandState.point
+      if (stale) rec.stale_after_compaction = true
       await $.fs.write(mirrorPath, JSON.stringify(rec))
       await $.fs.write(markerPath, JSON.stringify({ plugin: PLUGIN, version: VERSION, ts: rec.ts }))
 
       const latest = await readLatest(ioOf($), rings, store)
-      const pct = percentOf(usage.context, bandState.point)
+      const pct = stale ? undefined : percentOf(usage.context, bandState.point)
       const band = bandState.enteredAt !== undefined && !savedInBand() ? ' · checkpoint now' : ''
       if (settings.statusSegment) $.ui.status(`${PLUGIN} ctx ${pct === undefined ? '?' : pct + '%'} · ${ageText(latest?.created)}${band}`)
       // The same figures for the band above the prompt.
@@ -731,47 +756,33 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A compaction is over: the band opens again from a fresh reading, and the
+  // fill reads as it did before the compaction until the next request
+  // (staleTokens, read by the caller through fillOf).
+  const noteCompacted = (fill: number | undefined): void => {
+    staleTokens = fill
+    bandState.enteredAt = undefined
+    bandState.early = false
+    compactAsked = false
+    compactRequested = false
+  }
+
   // The turn boundary: compact_now asked for it, or the fill is inside the
   // band with a checkpoint banked since the band was entered; compact now,
-  // at windvane's number. The compaction runs from a timer so the hook's own
-  // budget is not spent on it, and once the turn is over ($.session.compact
-  // rejects while a turn runs).
+  // at windvane's number. The compaction runs inside this hook, where the
+  // engine says it belongs: the conversation compacts between turns, and a
+  // compaction left to a timer lost the race against a prompt queued for
+  // the next turn ("a turn is running"). The hook's budget stops while a $
+  // call is in flight, so the compaction costs it nothing.
   on('turn.complete', async ($, e, next) => {
     if ((e as unknown as { agentId?: string }).agentId !== undefined) return next(e)
-    if ((compactAsked || savedInBand()) && !compactRequested) {
-      compactRequested = true
-      compactAsked = false
-      turnBeganAt = (await $.clock.now()) - Math.max(0, e.durationMs ?? 0)
-      const usage = await $.session.usage()
-      const tokens = tokensOf(usage.context)
-      const why = bandState.early && early !== undefined ? ` (early_compaction ${early.label})` : ''
-      $.ui.toast(`${PLUGIN}: checkpoint banked, compacting at ${Math.round((tokens ?? 0) / 1000)}K${why}`)
-      $.clock.after(COMPACT_DELAY_MS, () => {
-        void (async () => {
-          let compacted = false
-          try {
-            const out = await $.session.compact()
-            compacted = !('skip' in out && out.skip)
-          } catch (err) {
-            $.ui.log(`${PLUGIN}: compaction failed: ${String(err)}`)
-          } finally {
-            compactRequested = false
-            bandState.enteredAt = undefined
-            bandState.early = false
-          }
-          if (!compacted || !settings.continueAfterCompact) return
-          if (continueStale()) {
-            $.ui.log(`${PLUGIN}: the person continued the session during the compaction; no resume prompt`)
-            return
-          }
-          try {
-            await $.prompt.submit({ text: CONTINUE_TEXT })
-          } catch (err) {
-            $.ui.log(`${PLUGIN}: the continue after the compaction failed: ${String(err)}`)
-          }
-        })()
-      })
-    }
+    // A turn ended: the next reading is the rewritten conversation's.
+    staleTokens = undefined
+    // Decided before the ledger judges the band again below: the band a
+    // costly turn opened at its end is what the save in this turn answered.
+    const compacting = (compactAsked || savedInBand()) && !compactRequested
+    const why = bandState.early && early !== undefined ? ` (early_compaction ${early.label})` : ''
+    if (compacting) compactRequested = true
     const done = await next(e)
     // The ledger counts the turn once it is done. What the turn cost is the
     // early_compaction row's dollar signal, so the band is judged again here
@@ -783,15 +794,47 @@ export const register: Register = (on, options) => {
     } catch (err) {
       $.ui.log(`${PLUGIN}: ledger: ${String(err)}`)
     }
+    if (compacting) {
+      turnBeganAt = (await $.clock.now()) - Math.max(0, e.durationMs ?? 0)
+      const tokens = await fillOf($)
+      $.ui.toast(`${PLUGIN}: checkpoint banked, compacting at ${Math.round((tokens ?? 0) / 1000)}K${why}`)
+      let compacted = false
+      try {
+        const out = await $.session.compact()
+        compacted = !('skip' in out && out.skip)
+        // Done, or vetoed by a hook: either way this band is answered.
+        noteCompacted(compacted ? await fillOf($) : undefined)
+      } catch (err) {
+        // Refused (a turn had begun after all) or failed: the save still
+        // stands in the band, so the next turn end asks again. Nothing is
+        // lost, and nothing is said in the transcript.
+        compactRequested = false
+        $.ui.log(`${PLUGIN}: compaction not done, retried at the next turn end: ${String(err)}`, { to: 'debug' })
+      }
+      if (compacted && settings.continueAfterCompact) {
+        // The resume prompt once the hook has returned: a prompt the person
+        // queued during the compaction runs first, and that case is read
+        // where the prompt is submitted.
+        $.clock.after(0, () => {
+          if (continueStale()) {
+            $.ui.log(`${PLUGIN}: the person continued the session during the compaction; no resume prompt`)
+            return
+          }
+          void $.prompt.submit({ text: CONTINUE_TEXT }).catch(err => {
+            $.ui.log(`${PLUGIN}: the continue after the compaction failed: ${String(err)}`)
+          })
+        })
+      }
+    }
     return done
   })
 
-  // Any compaction, ours or the engine's, opens a new cycle.
-  on('session.compact', ($, e, next) => {
-    bandState.enteredAt = undefined
-    bandState.early = false
-    compactAsked = false
-    compactRequested = false
-    return next(e)
+  // Any compaction that stood, the engine's or the person's, opens a new
+  // cycle once it is done (a vetoed or refused one leaves the band as it
+  // was, so the save still counts at the next turn end).
+  on('session.compact', async ($, e, next) => {
+    const out = await next(e)
+    if (e.trigger !== 'precompute' && !('skip' in out && out.skip)) noteCompacted(await fillOf($))
+    return out
   })
 }

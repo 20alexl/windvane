@@ -160,9 +160,16 @@ type Counters = {
   briefs: number
   prompts?: string[]
   veto?: boolean
+  // The engine refuses the compaction (a turn had begun): the call rejects.
+  refuse?: boolean
+  // The compaction takes until this settles (the person may type meanwhile).
+  hold?: Promise<void>
+  logs?: string[]
   noSessions?: boolean
   // The session's priced cost, when the test moves it between turns.
   cost?: number
+  // The fill, when the test moves it; else inBand's figure.
+  tokens?: number
   // Every file the mod wrote, by forward-slash path, when the test reads them.
   written?: Record<string, string>
   toasts?: string[]
@@ -179,8 +186,10 @@ function inBand(
   on('session.model', () => ({ value: 'claude-test' }))
   on('session.root', () => ({ value: 'E:/demo' }))
   on('session.cwd', () => ({ value: 'E:/demo/proj' }))
-  on('session.usage', () => ({ value: { ...usageAt(tokens), ...(counters.cost === undefined ? {} : { cost: { usd: counters.cost } }) } }))
-  on('session.compact', () => {
+  on('session.usage', () => ({ value: { ...usageAt(counters.tokens ?? tokens), ...(counters.cost === undefined ? {} : { cost: { usd: counters.cost } }) } }))
+  on('session.compact', async () => {
+    if (counters.refuse) throw new Error('$.session.compact: a turn is running (t9); the conversation compacts between turns')
+    if (counters.hold) await counters.hold
     if (counters.veto) return { skip: 'blocked by a hook' }
     counters.compactions += 1
     return { messages: [SUMMARY] }
@@ -204,7 +213,10 @@ function inBand(
     counters.toasts?.push(JSON.stringify(e))
     return { value: undefined }
   })
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', ($, e) => {
+    counters.logs?.push(JSON.stringify(e))
+    return { value: undefined }
+  })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('process.run', ($, e) => {
     const brief = e.argv.includes('windvane.brief')
@@ -253,19 +265,77 @@ test('compact_now banks, then compacts once when the turn ends', async ($, on) =
 test('a prompt the person typed while the compaction ran means no continue prompt', async ($, on) => {
   const counters: Counters = { compactions: 0, statuses: [], briefs: 0 }
   const clock = mock.clock(on)
+  let release!: () => void
+  counters.hold = new Promise<void>(resolve => {
+    release = resolve
+  })
+  inBand(on, counters)
+
+  await $.session.start(START)
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  // The turn ends and the compaction runs inside the turn-end hook. Typed
+  // while it runs: the engine queues the prompt, and it runs before anything
+  // a plugin submits, so a continue would be stale.
+  const ending = $.turn.complete(turnEnd())
+  await clock.advance(200)
+  await $.prompt.submit({ text: 'and also rename the module', wait: false, origin: { kind: 'composer' } } as never)
+  release()
+  await ending
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  expect(counters.prompts).toEqual(['and also rename the module'])
+})
+
+test('a compaction the engine refuses is asked for again at the next turn end, with nothing said', async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, refuse: true, logs: [] }
+  const clock = mock.clock(on)
   inBand(on, counters)
 
   await $.session.start(START)
   await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
   await $.turn.complete(turnEnd())
-  // Typed while the compaction is on its way (before the 250 ms the mod
-  // waits before compacting): the engine queues it, and it runs before
-  // anything a plugin submits, so a continue would be stale.
-  await clock.advance(200)
-  await $.prompt.submit({ text: 'and also rename the module', wait: false, origin: { kind: 'composer' } } as never)
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(0)
+  // The refusal goes to the debug log alone, never into the transcript.
+  const said = counters.logs!.filter(l => l.includes('compaction'))
+  expect(said.length).toBe(1)
+  expect(said[0]).toContain('"to":"debug"')
+  // The save still stands in the band: the next turn end compacts.
+  counters.refuse = false
+  await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(counters.compactions).toBe(1)
-  expect(counters.prompts).toEqual(['and also rename the module'])
+  expect(counters.prompts?.length).toBe(1)
+})
+
+test('after a compaction the fill reads stale until it changes: no band, no fill in the mirror', async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, tokens: 700_000 }
+  const clock = mock.clock(on)
+  inBand(on, counters)
+  const mirror = () => JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}')
+
+  await $.session.start(START)
+  expect(mirror().total_input_tokens).toBe(700_000)
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+
+  // Claude Code reports the pre-compaction size until the next request: the
+  // same figure says nothing, so the mirror carries no fill, the segment
+  // shows none and the band stays closed.
+  await clock.advance(10_000)
+  expect(mirror().total_input_tokens).toBe(undefined)
+  expect(mirror().stale_after_compaction).toBe(true)
+  expect(counters.statuses.at(-1)).toContain('ctx ?')
+  expect(counters.statuses.at(-1)).not.toContain('checkpoint now')
+
+  // The reading changed: the fill is the rewritten conversation's.
+  counters.tokens = 120_000
+  await clock.advance(10_000)
+  expect(mirror().total_input_tokens).toBe(120_000)
+  expect(mirror().stale_after_compaction).toBe(undefined)
+  expect(counters.statuses.at(-1)).toContain('ctx 16%')
 })
 
 test('a delivery into the running turn is not the person continuing: the continue prompt follows', async ($, on) => {

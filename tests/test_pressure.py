@@ -263,7 +263,15 @@ def test_nudges_latch_once_per_band_per_compaction_cycle(monkeypatch):
     assert r.startswith("Compaction #1.") and "checkpoint at ~698K" in r
     assert "auto-compaction at ~718K (the 750K env setting minus the output reserve)" in r
 
+    # A fresh mirror still carrying the pre-compaction size (Claude Code
+    # reports it until the next request): no nudge before a turn has ended,
+    # and the band is not latched by the wait.
     time.sleep(0.02)
+    cp.record_statusline(_payload(sid, 700_000))
+    assert cp.nudge(state, sid) == ("", False)
+    assert not cp.pressure_state(state)["checkpoint_done"]
+    time.sleep(0.02)
+    cp.note_stop(state)
     cp.record_statusline(_payload(sid, 120_000))
     assert cp.nudge(state, sid)[0] == ""
     cp.record_statusline(_payload(sid, 660_000))
