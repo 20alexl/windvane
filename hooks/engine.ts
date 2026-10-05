@@ -8,13 +8,53 @@
 // the engine needs from the session (the store, the session id) is passed
 // in `env` by the caller.
 //
-// Pure helpers only: the engine follows `$` into functions of the same file
-// and never across an import, so each hook file makes its own `$` calls and
-// hands the values to these.
+// Pure helpers, and the Host type: the engine follows `$` into functions of
+// the same file and never across an import, so register.ts alone holds `$`
+// and hands the other modules a Host, a handful of closures over it.
+import type { HttpResponse, ProcessRunInit, ProcessRunResult, SettingsSource, Timer } from 'claude-code'
 import type { PluginOptions } from 'claude-code'
 
 export const PLUGIN = 'windvane'
 export const VERSION = '1.0.0'
+
+// What a module gets instead of `$`: the calls it needs, each spelled once in
+// register.ts (hostOf there), the one file that holds the engine interface.
+// The environment variables are read there by name, so a module asks for the
+// store or the interpreter, never for a variable.
+export type Host = {
+  // The plugin's folder, absolute.
+  pluginRoot: string
+  // The store: WINDVANE_DIR, else .windvane under the home folder.
+  store(): Promise<string>
+  // The interpreter: WINDVANE_PYTHON, else the python option, else `python`.
+  python(configured: string): Promise<string>
+  sessionId(): Promise<string>
+  cwd(): Promise<string>
+  root(): Promise<string>
+  // $.clock's time, ms since the epoch.
+  now(): Promise<number>
+  after(ms: number, fn: () => void): Timer
+  exists(path: string): Promise<boolean>
+  read(path: string): Promise<string>
+  write(path: string, text: string): Promise<void>
+  run(argv: string[], init: ProcessRunInit): Promise<ProcessRunResult>
+  // One POST of a JSON body to the daemon on loopback, at /hook or /tool.
+  post(port: number, path: 'hook' | 'tool', body: string): Promise<HttpResponse>
+  storeGet(key: string): Promise<unknown>
+  storeSet(key: string, value: unknown): Promise<void>
+  storeKeys(): Promise<string[]>
+  // The settings merged over every source, or one source's as loaded.
+  settings(source?: SettingsSource): Promise<Record<string, unknown>>
+  // The session's environment the engine's handlers read (the bridge).
+  sessionEnv(): Promise<Record<string, string>>
+  // Claude Code's config folder: CLAUDE_CONFIG_DIR, else .claude under home.
+  configDir(): Promise<string>
+  // WINDVANE_RESULT_BUDGET as set, for the door.
+  resultBudgetEnv(): Promise<string | undefined>
+  // A line in the session's log, and one in the debug log alone.
+  log(text: string): void
+  debug(text: string): void
+}
 
 // The plugin's userConfig rows the mod itself reads. `semantic`,
 // `alert_command`, `strict_pack` and `autonomy` are read by the engine from

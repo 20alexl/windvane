@@ -14,7 +14,7 @@
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { bandLine, parseWindvane } from './band'
+import { bandLine, parseWindvane } from '../../hooks/band'
 
 const SID = 'aaaaaaaa-0000-4000-8000-00000000000b'
 const STORE = 'C:/tmp/windvane-band-store'

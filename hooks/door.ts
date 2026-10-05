@@ -23,14 +23,15 @@
 // Only text is touched: a text block, and a tool_result's content (a string,
 // or its text blocks). Images and documents pass as they came. A row that
 // needs no change goes on as `next(e)`, untouched.
-import type { EngineInterface, On } from 'claude-code'
-
-import { budgetOf, type Settings } from './engine'
+//
+// register.ts hooks session.append and rewrites the row with these; this
+// module never holds `$`.
+import { budgetOf, type Host } from './engine'
 
 export const DEFAULT_BUDGET = 60_000
 const HEAD_SHARE = 0.75
 
-type Block = { type: string; [field: string]: unknown }
+export type Block = { type: string; [field: string]: unknown }
 
 // A PEM private key, header to footer (or to the end of the text when the
 // footer was cut off).
@@ -110,18 +111,6 @@ export function rewrite(content: readonly Block[], budget: number): Block[] | un
 
 // WINDVANE_RESULT_BUDGET when it is a positive whole number of characters,
 // else the option's budget, else the default.
-async function readBudget($: EngineInterface, configured: number | undefined): Promise<number> {
-  return budgetOf(await $.env.get('WINDVANE_RESULT_BUDGET')) ?? configured ?? DEFAULT_BUDGET
-}
-
-export function registerDoor(on: On, settings: Pick<Settings, 'resultBudget'>): void {
-  let budget: number | undefined // read once per load
-
-  on('session.append', async ($, e, next) => {
-    if (e.door !== 'tool-result') return next(e)
-    if (budget === undefined) budget = await readBudget($, settings.resultBudget)
-    const content = rewrite(e.message.content, budget)
-    if (content === undefined) return next(e)
-    return next({ ...e, message: { ...e.message, content } })
-  })
+export async function readBudget(host: Host, configured: number | undefined): Promise<number> {
+  return budgetOf(await host.resultBudgetEnv()) ?? configured ?? DEFAULT_BUDGET
 }

@@ -15,12 +15,11 @@
 // /windvane-cost prints today's totals for this project, this project's
 // totals over every recorded day, and today's over every project.
 //
-// Two engine rules shape the split. A plugin registers one matcherless hook
-// per event, and register.ts holds session.start and turn.complete; and `$`
-// is passed only into functions of the same file. So the store writes at
-// those two events live in register.ts (startLedger, recordTurn there), built
-// on the plain functions here; this file hooks only its command.
-import type { CommandSpec, EngineInterface, On, TurnUsage } from 'claude-code'
+// register.ts holds every hook (session.start, turn.complete and the
+// command's run) and the store writes, built on the plain functions here and
+// the report; this module never holds `$`.
+import type { CommandSpec, TurnUsage } from 'claude-code'
+import type { Host } from './engine'
 import { normalizePath } from './ring'
 
 const PREFIX = 'ledger:'
@@ -127,15 +126,16 @@ function line(label: string, t: LedgerEntry): string {
   )
 }
 
-async function report($: EngineInterface, project: string): Promise<string> {
-  const today = localDay(await $.clock.now())
+// /windvane-cost's answer for the ledger's project.
+export async function report(host: Host, project: string): Promise<string> {
+  const today = localDay(await host.now())
   let projectToday = empty()
   let projectAll = empty()
   let allToday = empty()
-  for (const key of await $.store.keys()) {
+  for (const key of await host.storeKeys()) {
     const k = parseKey(key)
     if (!k || (k.project !== project && k.day !== today)) continue
-    const entry = asEntry(await $.store.get(key))
+    const entry = asEntry(await host.storeGet(key))
     if (k.project === project) projectAll = add(projectAll, entry)
     if (k.day === today) allToday = add(allToday, entry)
     if (k.project === project && k.day === today) projectToday = add(projectToday, entry)
@@ -146,13 +146,4 @@ async function report($: EngineInterface, project: string): Promise<string> {
     line('this project, all days', projectAll),
     line('today, all projects', allToday),
   ].join('\n')
-}
-
-// `projectOf` answers the ledger's project: the folder the session was opened
-// in, kept by register.ts from session.start. Empty before that, when the
-// session's cwd stands in.
-export function registerLedger(on: On, projectOf: () => string): void {
-  on('command.run', { command: 'windvane-cost' }, async $ => ({
-    text: await report($, projectOf() || normalizePath(await $.session.cwd())),
-  }))
 }

@@ -4,10 +4,10 @@
 // The engine does the work, `python -m windvane.migrate --import`, and
 // prints one JSON line, `{"copied": N, "skipped": N, "dst": "<store>"}` or
 // `{"error": "..."}`; the command shows the counts or the error.
-import type { EngineInterface, On } from 'claude-code'
-
-import { clip, engineEnv, lastJsonLine, pythonHint, pythonOf, type Settings } from './engine'
-import { storePath } from './ring'
+//
+// register.ts registers the command and hooks its run; this module never
+// holds `$`.
+import { clip, engineEnv, lastJsonLine, pythonHint, type Host } from './engine'
 
 const IMPORT_TIMEOUT_MS = 300_000
 
@@ -24,13 +24,14 @@ export function importLine(reply: Record<string, unknown>): string {
   return `copied ${n(reply.copied)}, skipped ${n(reply.skipped)}${dst}`
 }
 
-async function importStore($: EngineInterface, configured: string): Promise<string> {
-  const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), configured)
-  const store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
+// The command's answer.
+export async function importStore(host: Host, configured: string): Promise<string> {
+  const python = await host.python(configured)
+  const store = await host.store()
   let run
   try {
-    run = await $.process.run([python, '-m', 'windvane.migrate', '--import'], {
-      env: engineEnv($.plugin.root, store),
+    run = await host.run([python, '-m', 'windvane.migrate', '--import'], {
+      env: engineEnv(host.pluginRoot, store),
       timeoutMs: IMPORT_TIMEOUT_MS,
     })
   } catch (err) {
@@ -42,8 +43,4 @@ async function importStore($: EngineInterface, configured: string): Promise<stri
     return `Not imported: ${why}`
   }
   return `Imported: ${importLine(reply)}`
-}
-
-export function registerImport(on: On, settings: Settings): void {
-  on('command.run', { command: 'windvane-import' }, async $ => ({ text: await importStore($, settings.python) }))
 }

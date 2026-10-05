@@ -8,7 +8,7 @@
 // test's on('classic.<Event>') is reached only when the bridge called next.
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import { foldClassic, foldPreToolUse, matcherMatches, plan, readOutput, toClassic } from './bridge'
+import { foldClassic, foldPreToolUse, matcherMatches, plan, readOutput, toClassic } from '../../hooks/bridge'
 
 const STORE = 'C:/tmp/windvane-bridge-store'
 const PORT = 47123

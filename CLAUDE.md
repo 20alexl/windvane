@@ -7,7 +7,7 @@ This file is for people working on windvane itself. Users read README.md and doc
 ## Layout
 
 - `.claude-plugin/plugin.json` is the manifest and holds the config rows. `marketplace.json` makes the repository its own marketplace.
-- `hooks/` is the mod, in TypeScript. `register.ts` loads the pieces: the band, the pane, `/remember`, the strict, export and import commands, the door, the ledger, the agent briefs, the compaction brief, the bridge, the tools and the first-run offer of the semantic tier (`setup.ts`). `hooks.json` declares the classic command hooks used headless and as the bridge's fallback. `*.test.ts` files sit beside their modules.
+- `hooks/` is the mod, in TypeScript. `register.ts` registers every hook and is the only file that holds `$`; the pieces keep their logic in their own modules and take a `Host` of closures (`engine.ts`): the band, the pane, `/remember`, the strict, export and import commands, the door, the ledger, the agent briefs, the compaction brief, the bridge, the tools and the first-run offer of the semantic tier (`setup.ts`). `hooks.json` declares the classic command hooks used headless and as the bridge's fallback. The mod's tests are `tests/mod/*.test.ts`.
 - `windvane/` is the Python engine. No dependencies. `events/` there holds the hook handlers, `mining/` the session miner, `semantic/` the optional encoder. `daemon.py` and `daemon_client.py` are the resident process and its thin client. `config.py` holds every setting in `KNOBS`.
 - `skills/reference/SKILL.md` is the quick reference the model reads (`/windvane:reference`; the plain `/windvane` is the pane, so the skill cannot share that name).
 - `docs/` is the user documentation. `docs/assets/` holds the logo marks, the social card (uploaded in the repository's settings, nothing links it) and the two SVG diagrams the README and how-it-works embed; the diagrams use only neutral greys and the accent so they read on GitHub's light and dark themes. `demo/` holds the demo tapes and gif.
@@ -38,7 +38,7 @@ Python needs 3.10 or later.
 ## Rules for the code
 
 - The engine stays standard-library only. The semantic tier is an optional extra and is imported only inside the functions that need it.
-- The mod follows `$` only within one file, and the engine takes one unmatched hook per event per plugin. That is why `register.ts` holds the session-start and turn-complete work for the other modules, and why each module declares its own state references. Keep that shape.
+- Every `on(...)` lives in `register.ts`, with the hook's body written there, and `$` is passed only to functions declared at the top of that file (the plugin directory's reader refuses `$` or `on` handed to another file). The other modules take a `Host` (`engine.ts`) built by `hostOf` in `register.ts`, where every `$.noun.method` call and every environment variable name is spelled; the `$.state` references are declared in `register.ts` and the drawings get plain values. The engine takes one unmatched hook per event per plugin. Keep that shape.
 - `register.ts` mirrors the engine's pressure constants (output reserve, checkpoint margin, heads-up fraction, default compaction point). Change both together.
 - Never write a file with a call that turns line endings into CRLF. The repository is LF, and `.gitattributes` normalises on read, so a CRLF file looks clean in `git status` while its bytes differ. Write bytes with the terminator the file already has.
 - A hook handler must never raise into Claude Code. Failures degrade to an empty answer.

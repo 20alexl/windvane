@@ -8,13 +8,10 @@
 // The interpreter is WINDVANE_PYTHON, else the plugin's python option, else
 // `python` on PATH; the store is the one the rest of the mod reads
 // (WINDVANE_DIR, else ~/.windvane).
-import { atom, read } from 'claude-code'
-import type { EngineInterface, On } from 'claude-code'
-
-import { clip, engineEnv, lastJsonLine, pythonHint, pythonOf, type Settings } from './engine'
-import { storePath } from './ring'
-
-const lastFile = atom({ plugin: 'windvane', key: 'lastFile' } as const, null)
+//
+// register.ts registers the command, hooks its run with the selection and
+// the file the model last touched; this module never holds `$`.
+import { clip, engineEnv, lastJsonLine, pythonHint, type Host } from './engine'
 
 const REMEMBER_TIMEOUT_MS = 30_000
 
@@ -26,18 +23,19 @@ export const REMEMBER_COMMAND = {
 
 type Reply = { stored?: boolean; id?: string; project?: string; message?: string; error?: string }
 
-async function remember($: EngineInterface, configured: string, text: string): Promise<string> {
-  const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), configured)
-  const store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
-  const argv = [python, '-m', 'windvane.remember', '--project', await $.session.cwd(), '--kind', 'decision']
-  const file = await read($, lastFile)
+// The command's answer for the selected text; `file` is the one the model
+// last touched, when any.
+export async function remember(host: Host, configured: string, text: string, file: string | null | undefined): Promise<string> {
+  const python = await host.python(configured)
+  const store = await host.store()
+  const argv = [python, '-m', 'windvane.remember', '--project', await host.cwd(), '--kind', 'decision']
   if (file) argv.push('--file', file)
 
   let run
   try {
-    run = await $.process.run(argv, {
+    run = await host.run(argv, {
       stdin: text,
-      env: engineEnv($.plugin.root, store),
+      env: engineEnv(host.pluginRoot, store),
       timeoutMs: REMEMBER_TIMEOUT_MS,
     })
   } catch (err) {
@@ -50,13 +48,4 @@ async function remember($: EngineInterface, configured: string, text: string): P
   }
   if (!reply.stored) return `Already in windvane${reply.project ? ` for ${reply.project}` : ''}: ${reply.message ?? ''}`.trim()
   return `Remembered as a decision${reply.project ? ` for ${reply.project}` : ''}${reply.id ? ` [${reply.id}]` : ''}: ${clip(text, 120)}`
-}
-
-export function registerRemember(on: On, settings: Settings): void {
-  on('command.run', { command: 'remember' }, async $ => {
-    const selected = await $.ui.selection()
-    const text = selected?.text.trim() ?? ''
-    if (!text) return { text: 'Nothing is selected. Select text in the transcript, then run /remember.' }
-    return { text: await remember($, settings.python, text) }
-  })
 }

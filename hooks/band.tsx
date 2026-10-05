@@ -9,20 +9,20 @@
 // here, deterministically, from the text the model read; nothing is
 // inferred. The checkpoint age and the context fill come from the status
 // line's tick (register.ts). Hide is kept in $.store.
-import { atom, read, update } from 'claude-code'
-import type { EngineInterface, On } from 'claude-code'
+//
+// register.ts hooks session.append and ui.render, keeps the reading in
+// $.state and hands it here to draw; this module never holds `$`.
+import type { Elements, RenderElement } from 'claude-code'
 
-import type { WindvaneRead } from '../types'
+import type { Pressure, WindvaneRead } from '../types'
 import { ageText } from './ring'
-
-// $.state values (../types/index.d.ts). The engine reads a reference only
-// from a const of the file that uses it, so each module declares its own.
-const lastRead = atom({ plugin: 'windvane', key: 'read' } as const, null)
-const pressure = atom({ plugin: 'windvane', key: 'pressure' } as const, null)
-const bandHidden = atom({ plugin: 'windvane', key: 'bandHidden' } as const, false)
 
 // $.store key: the Hide press, kept across sessions.
 export const BAND_HIDDEN_KEY = 'bandHidden'
+
+// The elements a drawing takes: the surface's table, as $.ui.resolve(e)
+// hands it out.
+export type Draw = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
 
 const SESSION_BANNER = /windvane session started \(([a-z]+)\)/i
 const BANNER_RULES = /^Rules \((\d+),/m
@@ -31,7 +31,7 @@ const RULE_LINE = /^\s*\[[^\]\s]+\] /
 const MISTAKES_HEAD = 'AUTO-CHECK: Past mistakes with this file:'
 
 // The row's text: its text blocks, joined.
-function textOf(content: readonly { type: string; [field: string]: unknown }[]): string {
+export function textOf(content: readonly { type: string; [field: string]: unknown }[]): string {
   return content
     .filter(b => b.type === 'text' && typeof b.text === 'string')
     .map(b => b.text as string)
@@ -93,36 +93,15 @@ export function bandLine(r: WindvaneRead, p: { percent?: number; checkpointCreat
   return parts.join(' · ')
 }
 
-async function hideBand($: EngineInterface): Promise<void> {
-  await update($, bandHidden, () => true)
-  await $.store.set(BAND_HIDDEN_KEY, true)
-}
-
-// register.ts's session.start reads the Hide press back from $.store.
-export function registerBand(on: On): void {
-  // Every row windvane's hooks hand the model. A subagent's rows are its own.
-  on('session.append', { door: 'hook-context' }, async ($, e, next) => {
-    if (e.agentId === undefined) {
-      const reading = parseWindvane(textOf(e.message.content), Date.now())
-      if (reading) await update($, lastRead, () => reading)
-    }
-    return next(e)
-  })
-
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || e.props.view.agentId !== undefined) return next(e)
-    const reading = await read($, lastRead)
-    if (reading === null || (await read($, bandHidden))) return next(e)
-    const figures = await read($, pressure)
-
-    const { Box, Button, Text } = $.ui.resolve(e)
-    return (
-      <Box key="windvane-band" flexDirection="row">
-        <Text dimColor wrap="truncate-end">
-          {bandLine(reading, figures, Date.now())}{' '}
-        </Text>
-        <Button key="windvane-hide" label="Hide" onPress={() => hideBand($)} />
-      </Box>
-    )
-  })
+// The band: the line and the Hide button, which register.ts answers.
+export function drawBand(ui: Draw, reading: WindvaneRead, figures: Pressure | null, nowMs: number, onHide: () => void): RenderElement {
+  const { Box, Button, Text } = ui
+  return (
+    <Box key="windvane-band" flexDirection="row">
+      <Text dimColor wrap="truncate-end">
+        {bandLine(reading, figures, nowMs)}{' '}
+      </Text>
+      <Button key="windvane-hide" label="Hide" onPress={onHide} />
+    </Box>
+  )
 }

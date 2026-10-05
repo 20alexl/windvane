@@ -6,10 +6,10 @@
 // session's project once. The engine does the work, `python -m
 // windvane.rules seed --project <cwd> --strict`, and prints one JSON line;
 // the command shows its summary.
-import type { EngineInterface, On } from 'claude-code'
-
-import { clip, engineEnv, lastJsonLine, pythonHint, pythonOf, type Settings } from './engine'
-import { storePath } from './ring'
+//
+// register.ts registers the command and hooks its run; this module never
+// holds `$`.
+import { clip, engineEnv, lastJsonLine, pythonHint, type Host } from './engine'
 
 const STRICT_TIMEOUT_MS = 30_000
 
@@ -28,15 +28,16 @@ export function summaryOf(reply: Record<string, unknown>): string {
   return parts.length > 0 ? parts.join(' · ') : 'done'
 }
 
-async function seedStrict($: EngineInterface, configured: string): Promise<string> {
-  const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), configured)
-  const store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
-  const project = await $.session.cwd()
+// The command's answer.
+export async function seedStrict(host: Host, configured: string): Promise<string> {
+  const python = await host.python(configured)
+  const store = await host.store()
+  const project = await host.cwd()
   let run
   try {
-    run = await $.process.run([python, '-m', 'windvane.rules', 'seed', '--project', project, '--strict'], {
+    run = await host.run([python, '-m', 'windvane.rules', 'seed', '--project', project, '--strict'], {
       cwd: project,
-      env: engineEnv($.plugin.root, store),
+      env: engineEnv(host.pluginRoot, store),
       timeoutMs: STRICT_TIMEOUT_MS,
     })
   } catch (err) {
@@ -48,8 +49,4 @@ async function seedStrict($: EngineInterface, configured: string): Promise<strin
     return `Strict pack not seeded: ${why}`
   }
   return `Strict pack: ${summaryOf(reply)}`
-}
-
-export function registerStrict(on: On, settings: Settings): void {
-  on('command.run', { command: 'windvane-strict' }, async $ => ({ text: await seedStrict($, settings.python) }))
 }

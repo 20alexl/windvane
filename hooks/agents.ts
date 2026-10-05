@@ -13,10 +13,11 @@
 // so a burst of Agent calls costs one engine run. An empty brief, an absent
 // engine or a fork (it inherits the whole conversation, rules included)
 // passes the call through untouched.
-import type { EngineInterface, On } from 'claude-code'
+//
+// register.ts hooks the Agent call and asks briefFor for the rewritten
+// prompt; this module never holds `$`.
 import { BRIEF_TIMEOUT_MS, briefArgv, joinBlocks, parseBrief, type Brief } from './brief'
-import { PLUGIN, engineEnv, pythonOf, type Settings } from './engine'
-import { storePath } from './ring'
+import { PLUGIN, engineEnv, type Host } from './engine'
 
 export const BRIEF_TTL_MS = 60_000
 const MAX_FILES = 8
@@ -42,48 +43,48 @@ export function filesNamed(text: string): string[] {
 
 type Cached<T> = { at: number; value: T }
 
-async function runBrief($: EngineInterface, python: string, extra: string[]): Promise<Brief | undefined> {
-  const project = await $.session.cwd()
-  const sid = await $.session.id()
-  const argv = briefArgv(pythonOf(await $.env.get('WINDVANE_PYTHON'), python), project, sid, extra)
-  const store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
-  const env = engineEnv($.plugin.root, store, sid)
+async function runBrief(host: Host, python: string, extra: string[]): Promise<Brief | undefined> {
+  const project = await host.cwd()
+  const sid = await host.sessionId()
+  const argv = briefArgv(await host.python(python), project, sid, extra)
+  const env = engineEnv(host.pluginRoot, await host.store(), sid)
   try {
-    const got = parseBrief(await $.process.run(argv, { cwd: project, env, timeoutMs: BRIEF_TIMEOUT_MS }))
+    const got = parseBrief(await host.run(argv, { cwd: project, env, timeoutMs: BRIEF_TIMEOUT_MS }))
     if (typeof got !== 'string') return got
-    $.ui.log(`${PLUGIN}: agents: ${got}`)
+    host.log(`${PLUGIN}: agents: ${got}`)
   } catch (err) {
-    $.ui.log(`${PLUGIN}: agents: brief failed: ${String(err)}`)
+    host.log(`${PLUGIN}: agents: brief failed: ${String(err)}`)
   }
   return undefined
 }
 
-export function registerAgents(on: On, settings: Settings): void {
-  // Per-load caches; a reload starts them over.
-  const rulesCache = new Map<string, Cached<string[]>>()
-  const fileCache = new Map<string, Cached<string[]>>()
+// Per-load caches; a reload starts them over.
+const rulesCache = new Map<string, Cached<string[]>>()
+const fileCache = new Map<string, Cached<string[]>>()
 
-  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
-    if (e.subagent_type === 'fork' || e.prompt.includes(OPEN_TAG)) return next(e)
+// The Agent call's prompt with the brief at its head, or undefined when the
+// call passes through untouched (a fork, a prompt already briefed, an empty
+// brief, no engine).
+export async function briefFor(host: Host, python: string, call: { subagent_type?: string; prompt: string }): Promise<string | undefined> {
+  if (call.subagent_type === 'fork' || call.prompt.includes(OPEN_TAG)) return undefined
 
-    const project = await $.session.cwd()
-    const files = filesNamed(e.prompt)
-    const now = Date.now()
-    const fresh = <T>(c: Cached<T> | undefined): c is Cached<T> => c !== undefined && now - c.at < BRIEF_TTL_MS
-    const fileKey = (f: string) => `${project}\u0000${f}`
+  const project = await host.cwd()
+  const files = filesNamed(call.prompt)
+  const now = Date.now()
+  const fresh = <T>(c: Cached<T> | undefined): c is Cached<T> => c !== undefined && now - c.at < BRIEF_TTL_MS
+  const fileKey = (f: string) => `${project}\u0000${f}`
 
-    const missing = files.filter(f => !fresh(fileCache.get(fileKey(f))))
-    if (!fresh(rulesCache.get(project)) || missing.length > 0) {
-      const got = await runBrief($, settings.python, missing.length > 0 ? ['--files', ...missing] : [])
-      if (!got) return next(e)
-      rulesCache.set(project, { at: now, value: got.rules })
-      for (const f of missing) fileCache.set(fileKey(f), { at: now, value: got.files[f] ?? [] })
-    }
+  const missing = files.filter(f => !fresh(fileCache.get(fileKey(f))))
+  if (!fresh(rulesCache.get(project)) || missing.length > 0) {
+    const got = await runBrief(host, python, missing.length > 0 ? ['--files', ...missing] : [])
+    if (!got) return undefined
+    rulesCache.set(project, { at: now, value: got.rules })
+    for (const f of missing) fileCache.set(fileKey(f), { at: now, value: got.files[f] ?? [] })
+  }
 
-    const rules = rulesCache.get(project)?.value ?? []
-    const perFile = files.map(f => fileCache.get(fileKey(f))?.value ?? [])
-    const body = joinBlocks([rules, ...perFile])
-    if (!body) return next(e)
-    return next({ ...e, prompt: `${OPEN_TAG}\n${body}\n${CLOSE_TAG}\n\n${e.prompt}` })
-  })
+  const rules = rulesCache.get(project)?.value ?? []
+  const perFile = files.map(f => fileCache.get(fileKey(f))?.value ?? [])
+  const body = joinBlocks([rules, ...perFile])
+  if (!body) return undefined
+  return `${OPEN_TAG}\n${body}\n${CLOSE_TAG}\n\n${call.prompt}`
 }

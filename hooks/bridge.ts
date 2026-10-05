@@ -27,11 +27,12 @@
 // event gets an empty answer, as a settings hook that timed out gives, and
 // the next 30 s go to the settings hooks while the daemon recovers.
 //
-// The pure helpers are exported for the tests; the `$` calls stay in the
-// functions of this file (the engine follows `$` only within one file).
-import type { ClassicResult, EngineInterface, On, PreToolUseResult, Timer } from 'claude-code'
-import { PLUGIN } from './engine'
-import { normalizePath, storePath } from './ring'
+// The pure helpers are exported for the tests. register.ts hooks classic.*
+// and asks bridgeDecision whether to answer or to pass; this module never
+// holds `$`, it takes the Host register.ts builds.
+import type { ClassicResult, PreToolUseResult, Timer } from 'claude-code'
+import { PLUGIN, type Host } from './engine'
+import { normalizePath } from './ring'
 
 // The hook types the daemon runs in-process.
 // session_end_json is left to its settings hook (it runs while Claude Code
@@ -357,47 +358,34 @@ export function bridgeCounts(): BridgeCounts {
   return { ...counts }
 }
 
-// ------------------------------------------------------------ $ helpers
+// --------------------------------------------------------- host helpers
 
-async function readText($: EngineInterface, path: string): Promise<string | undefined> {
-  if (!(await $.fs.exists(path))) return undefined
-  return String(await $.fs.read(path))
+async function readText(host: Host, path: string): Promise<string | undefined> {
+  if (!(await host.exists(path))) return undefined
+  return host.read(path)
 }
 
-async function readJson($: EngineInterface, path: string): Promise<unknown> {
-  const text = await readText($, path)
+async function readJson(host: Host, path: string): Promise<unknown> {
+  const text = await readText(host, path)
   return text === undefined ? undefined : (JSON.parse(text) as unknown)
 }
 
 // The command hooks one installed plugin declares: hooks/hooks.json and the
 // `hooks` of its manifest (a path, several, or the object inline).
-async function pluginHooks($: EngineInterface, root: string): Promise<Json[]> {
+async function pluginHooks(host: Host, root: string): Promise<Json[]> {
   const found: Json[] = []
   const take = (v: unknown) => {
     if (isRecord(v) && isRecord(v.hooks)) found.push(v.hooks)
   }
-  take(await readJson($, `${root}/hooks/hooks.json`))
-  const manifest = await readJson($, `${root}/.claude-plugin/plugin.json`)
+  take(await readJson(host, `${root}/hooks/hooks.json`))
+  const manifest = await readJson(host, `${root}/.claude-plugin/plugin.json`)
   if (isRecord(manifest)) {
     const h = manifest.hooks
     const paths = typeof h === 'string' ? [h] : Array.isArray(h) ? h.filter(x => typeof x === 'string') : []
-    for (const p of paths) take(await readJson($, `${root}/${String(p).replace(/^\.\//, '')}`))
+    for (const p of paths) take(await readJson(host, `${root}/${String(p).replace(/^\.\//, '')}`))
     if (isRecord(h)) found.push(isRecord(h.hooks) ? h.hooks : h)
   }
   return found
-}
-
-async function sessionEnv($: EngineInterface): Promise<SessionEnv> {
-  return {
-    CLAUDE_PROJECT_DIR: await $.session.root(),
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: (await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')) ?? '',
-    CLAUDE_CONFIG_DIR: (await $.env.get('CLAUDE_CONFIG_DIR')) ?? '',
-    WINDVANE_AUTONOMY: (await $.env.get('WINDVANE_AUTONOMY')) ?? '',
-    WINDVANE_ALERT_COMMAND: (await $.env.get('WINDVANE_ALERT_COMMAND')) ?? '',
-    WINDVANE_STRIKE_CAP: (await $.env.get('WINDVANE_STRIKE_CAP')) ?? '',
-    WINDVANE_GOAL_TURN_CAP: (await $.env.get('WINDVANE_GOAL_TURN_CAP')) ?? '',
-    WINDVANE_LIVE_MINE: (await $.env.get('WINDVANE_LIVE_MINE')) ?? '',
-  }
 }
 
 // Every command hook the session would run beneath the modules: the four
@@ -406,23 +394,22 @@ async function sessionEnv($: EngineInterface): Promise<SessionEnv> {
 // from a session folder (--plugin-dir) is not listed anywhere a mod can
 // read, so its hooks are missing from the census; this plugin's own are read
 // from its folder however it was loaded.
-async function loadCensus($: EngineInterface): Promise<Census> {
+async function loadCensus(host: Host): Promise<Census> {
   const sources: HookSource[] = []
   for (const source of ['user', 'project', 'local', 'flag'] as const) {
-    const s = await $.settings.read({ source })
+    const s = await host.settings(source)
     if (isRecord(s.hooks)) sources.push({ origin: `${source} settings`, hooks: s.hooks })
   }
-  const merged = await $.settings.read()
+  const merged = await host.settings()
   const disabled = merged.disableAllHooks === true || merged.allowManagedHooksOnly === true
-  const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
-  const configDir = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
+  const configDir = await host.configDir()
   const enabled = isRecord(merged.enabledPlugins)
     ? Object.entries(merged.enabledPlugins).filter(([, flag]) => flag === true).map(([id]) => id)
     : []
-  const self = normalizePath($.plugin.root)
+  const self = normalizePath(host.pluginRoot)
   let selfListed = false
   if (enabled.length > 0) {
-    const installed = await readJson($, `${configDir}/plugins/installed_plugins.json`)
+    const installed = await readJson(host, `${configDir}/plugins/installed_plugins.json`)
     const table = isRecord(installed) && isRecord(installed.plugins) ? installed.plugins : {}
     for (const id of enabled) {
       const entries = table[id]
@@ -430,20 +417,19 @@ async function loadCensus($: EngineInterface): Promise<Census> {
       const root = isRecord(first) && typeof first.installPath === 'string' ? first.installPath.replace(/\\/g, '/') : ''
       if (!root) continue // enabled, not installed: nothing loads
       if (normalizePath(root) === self) selfListed = true
-      for (const hooks of await pluginHooks($, root)) sources.push({ origin: `plugin ${id}`, hooks })
+      for (const hooks of await pluginHooks(host, root)) sources.push({ origin: `plugin ${id}`, hooks })
     }
   }
   if (!selfListed && self) {
-    for (const hooks of await pluginHooks($, self)) sources.push({ origin: `plugin ${PLUGIN}`, hooks })
+    for (const hooks of await pluginHooks(host, self)) sources.push({ origin: `plugin ${PLUGIN}`, hooks })
   }
-  const store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
-  return { at: Date.now(), sources, disabled, env: await sessionEnv($), store }
+  return { at: Date.now(), sources, disabled, env: await host.sessionEnv(), store: await host.store() }
 }
 
-async function currentCensus($: EngineInterface): Promise<Census> {
+async function currentCensus(host: Host): Promise<Census> {
   if (census && Date.now() - census.at < CENSUS_TTL_MS) return census
   if (!censusLoading) {
-    censusLoading = loadCensus($).finally(() => {
+    censusLoading = loadCensus(host).finally(() => {
       censusLoading = undefined
     })
   }
@@ -451,9 +437,9 @@ async function currentCensus($: EngineInterface): Promise<Census> {
   return census
 }
 
-async function daemonPort($: EngineInterface, store: string): Promise<number | undefined> {
+async function daemonPort(host: Host, store: string): Promise<number | undefined> {
   if (port !== undefined) return port
-  const text = await readText($, `${store}/daemon_port`)
+  const text = await readText(host, `${store}/daemon_port`)
   const n = text === undefined ? NaN : parseInt(text.trim(), 10)
   port = Number.isInteger(n) && n > 0 ? n : undefined
   return port
@@ -461,18 +447,14 @@ async function daemonPort($: EngineInterface, store: string): Promise<number | u
 
 type Posted = { output: string } | { reason: string; ran: false } | { timedOut: true }
 
-async function post($: EngineInterface, at: number, type: string, stdin: Json, env: SessionEnv): Promise<Posted> {
+async function post(host: Host, at: number, type: string, stdin: Json, env: SessionEnv): Promise<Posted> {
   let timer: Timer | undefined
   const timeout = new Promise<'timeout'>(resolve => {
-    timer = $.clock.after(SLOW.has(type) ? SLOW_TIMEOUT_MS : TIMEOUT_MS, () => resolve('timeout'))
+    timer = host.after(SLOW.has(type) ? SLOW_TIMEOUT_MS : TIMEOUT_MS, () => resolve('timeout'))
   })
   try {
     const res = await Promise.race([
-      $.http.fetch(`http://127.0.0.1:${at}/hook`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Windvane-Hook': '1' },
-        body: JSON.stringify({ hook_event: type, stdin: JSON.stringify(stdin), env }),
-      }),
+      host.post(at, 'hook', JSON.stringify({ hook_event: type, stdin: JSON.stringify(stdin), env })),
       timeout,
     ])
     if (res === 'timeout') return { timedOut: true }
@@ -486,112 +468,115 @@ async function post($: EngineInterface, at: number, type: string, stdin: Json, e
   }
 }
 
-// ------------------------------------------------------------ the hook
+// ------------------------------------------------------------ the decision
 
-export function registerBridge(on: On): void {
-  on('classic.*', async ($, e, next) => {
-    // The event is named by its input: every classic hook's stdin carries
-    // hook_event_name, except PreToolUse, whose e is the tool call's envelope.
-    const input = e as unknown as Json
-    const named = typeof input.hook_event_name === 'string' ? input.hook_event_name : undefined
-    const pre = named === undefined && typeof input.tool === 'string'
-    if (named === undefined && !pre) return next(e)
-    const event = pre ? 'PreToolUse' : String(named)
+export type BridgeDecision = { pass: true } | { answer: ClassicResult | PreToolUseResult }
 
-    // The settings hooks run this one: the reason goes to the debug log.
-    const noteFallBack = (reason: string) => {
-      counts.fellBack += 1
-      $.ui.log(`${PLUGIN}: bridge: ${event} -> settings hooks (${reason})`, { to: 'debug' })
-    }
+const PASS: BridgeDecision = { pass: true }
 
-    // The main loop's transcript and mode, for the PreToolUse envelope.
-    if (!pre && input.agent_id === undefined) {
-      if (typeof input.transcript_path === 'string' && input.transcript_path) lastTranscript = input.transcript_path
-      if (typeof input.permission_mode === 'string' && input.permission_mode) lastMode = input.permission_mode
-    }
-    if (event === 'SessionEnd') {
-      const c = counts
-      $.ui.log(`${PLUGIN}: bridge: ${c.bridged} bridged, ${c.fellBack} to the settings hooks, ${c.partial} partial, ${c.timedOut} timed out`, { to: 'debug' })
-    }
+// One classic event: the answer the bridge gives for it, or pass, in which
+// case register.ts calls next(e) and the command hooks run as before.
+export async function bridgeDecision(host: Host, input: Json): Promise<BridgeDecision> {
+  // The event is named by its input: every classic hook's stdin carries
+  // hook_event_name, except PreToolUse, whose e is the tool call's envelope.
+  const named = typeof input.hook_event_name === 'string' ? input.hook_event_name : undefined
+  const pre = named === undefined && typeof input.tool === 'string'
+  if (named === undefined && !pre) return PASS
+  const event = pre ? 'PreToolUse' : String(named)
 
-    let found: Census
-    try {
-      found = await currentCensus($)
-    } catch (err) {
-      noteFallBack(`hook census failed: ${String(err).slice(0, 120)}`)
-      return next(e)
-    }
-    const { types, foreign } = plan(event, subjectOf(event, input), found.sources)
-    if (types.length === 0) return next(e) // windvane has no hook here
-    if (found.disabled) return next(e) // hooks are off: nothing of windvane's would run
-    if (foreign.length > 0) {
-      noteFallBack(`other hooks fire here: ${[...new Set(foreign)].join(', ')}`)
-      return next(e)
-    }
-    const unserved = types.filter(t => !SERVED.has(t))
-    if (unserved.length > 0) {
-      noteFallBack(`not daemon-served: ${unserved.join(', ')}`)
-      return next(e)
-    }
-    if (Date.now() < downUntil) {
-      noteFallBack('cooling down after a timeout')
-      return next(e)
-    }
+  // The settings hooks run this one: the reason goes to the debug log.
+  const noteFallBack = (reason: string) => {
+    counts.fellBack += 1
+    host.debug(`${PLUGIN}: bridge: ${event} -> settings hooks (${reason})`)
+  }
 
-    let at: number | undefined
-    try {
-      at = await daemonPort($, found.store)
-    } catch (err) {
-      noteFallBack(`port file unreadable: ${String(err).slice(0, 80)}`)
-      return next(e)
-    }
-    if (at === undefined) {
-      noteFallBack('no daemon port file')
-      return next(e)
-    }
+  // The main loop's transcript and mode, for the PreToolUse envelope.
+  if (!pre && input.agent_id === undefined) {
+    if (typeof input.transcript_path === 'string' && input.transcript_path) lastTranscript = input.transcript_path
+    if (typeof input.permission_mode === 'string' && input.permission_mode) lastMode = input.permission_mode
+  }
+  if (event === 'SessionEnd') {
+    const c = counts
+    host.debug(`${PLUGIN}: bridge: ${c.bridged} bridged, ${c.fellBack} to the settings hooks, ${c.partial} partial, ${c.timedOut} timed out`)
+  }
 
-    let stdin: Json
-    if (pre) {
-      const loop = loopOf(input.tool_use_id) ?? (typeof input.agentId === 'string' ? input.agentId : undefined)
-      stdin = preToolUseStdin(input, {
-        session_id: await $.session.id(),
-        cwd: await $.session.cwd(),
-        transcript_path: lastTranscript,
-        permission_mode: lastMode,
-        agent_id: loop,
-      })
-    } else {
-      stdin = { ...input, hook_event_name: input.hook_event_name ?? event }
-    }
+  let found: Census
+  try {
+    found = await currentCensus(host)
+  } catch (err) {
+    noteFallBack(`hook census failed: ${String(err).slice(0, 120)}`)
+    return PASS
+  }
+  const { types, foreign } = plan(event, subjectOf(event, input), found.sources)
+  if (types.length === 0) return PASS // windvane has no hook here
+  if (found.disabled) return PASS // hooks are off: nothing of windvane's would run
+  if (foreign.length > 0) {
+    noteFallBack(`other hooks fire here: ${[...new Set(foreign)].join(', ')}`)
+    return PASS
+  }
+  const unserved = types.filter(t => !SERVED.has(t))
+  if (unserved.length > 0) {
+    noteFallBack(`not daemon-served: ${unserved.join(', ')}`)
+    return PASS
+  }
+  if (Date.now() < downUntil) {
+    noteFallBack('cooling down after a timeout')
+    return PASS
+  }
 
-    const outputs: HookOutput[] = []
-    let timedOut = false
-    for (const type of types) {
-      const got = await post($, at, type, stdin, found.env)
-      if ('timedOut' in got) {
-        // It may have run: never run it again through the settings hooks.
-        timedOut = true
-        counts.timedOut += 1
-        downUntil = Date.now() + COOL_DOWN_MS
-        $.ui.log(`${PLUGIN}: bridge: ${event} ${type} timed out; settings hooks for ${COOL_DOWN_MS / 1000}s`, { to: 'debug' })
-        break
+  let at: number | undefined
+  try {
+    at = await daemonPort(host, found.store)
+  } catch (err) {
+    noteFallBack(`port file unreadable: ${String(err).slice(0, 80)}`)
+    return PASS
+  }
+  if (at === undefined) {
+    noteFallBack('no daemon port file')
+    return PASS
+  }
+
+  let stdin: Json
+  if (pre) {
+    const loop = loopOf(input.tool_use_id) ?? (typeof input.agentId === 'string' ? input.agentId : undefined)
+    stdin = preToolUseStdin(input, {
+      session_id: await host.sessionId(),
+      cwd: await host.cwd(),
+      transcript_path: lastTranscript,
+      permission_mode: lastMode,
+      agent_id: loop,
+    })
+  } else {
+    stdin = { ...input, hook_event_name: input.hook_event_name ?? event }
+  }
+
+  const outputs: HookOutput[] = []
+  let timedOut = false
+  for (const type of types) {
+    const got = await post(host, at, type, stdin, found.env)
+    if ('timedOut' in got) {
+      // It may have run: never run it again through the settings hooks.
+      timedOut = true
+      counts.timedOut += 1
+      downUntil = Date.now() + COOL_DOWN_MS
+      host.debug(`${PLUGIN}: bridge: ${event} ${type} timed out; settings hooks for ${COOL_DOWN_MS / 1000}s`)
+      break
+    }
+    if ('reason' in got) {
+      if (outputs.length === 0) {
+        noteFallBack(`${type}: ${got.reason}`)
+        return PASS
       }
-      if ('reason' in got) {
-        if (outputs.length === 0) {
-          noteFallBack(`${type}: ${got.reason}`)
-          return next(e)
-        }
-        // An earlier type already ran here: running the settings hooks now
-        // would run it twice. Keep what ran; this type is lost this once.
-        counts.partial += 1
-        $.ui.log(`${PLUGIN}: bridge: ${event} ${type} lost: ${got.reason}`, { to: 'debug' })
-        continue
-      }
-      outputs.push(readOutput(got.output))
+      // An earlier type already ran here: running the settings hooks now
+      // would run it twice. Keep what ran; this type is lost this once.
+      counts.partial += 1
+      host.debug(`${PLUGIN}: bridge: ${event} ${type} lost: ${got.reason}`)
+      continue
     }
+    outputs.push(readOutput(got.output))
+  }
 
-    if (!timedOut || outputs.length > 0) counts.bridged += 1
-    if (pre) return foldPreToolUse(outputs.map(toPreToolUse))
-    return foldClassic(outputs.map(o => toClassic(event, o)))
-  })
+  if (!timedOut || outputs.length > 0) counts.bridged += 1
+  if (pre) return { answer: foldPreToolUse(outputs.map(toPreToolUse)) }
+  return { answer: foldClassic(outputs.map(o => toClassic(event, o))) }
 }

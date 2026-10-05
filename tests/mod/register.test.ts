@@ -8,7 +8,7 @@
 import type { On, SessionUsage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { earlyCompactionOf } from './engine'
+import { earlyCompactionOf } from '../../hooks/engine'
 
 const SID = 'aaaaaaaa-0000-4000-8000-00000000000a'
 const STORE = 'C:/tmp/windvane-test-store'
@@ -266,6 +266,25 @@ test('a prompt the person typed while the compaction ran means no continue promp
   await clock.advance(1_000)
   expect(counters.compactions).toBe(1)
   expect(counters.prompts).toEqual(['and also rename the module'])
+})
+
+test('a delivery into the running turn is not the person continuing: the continue prompt follows', async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0 }
+  const clock = mock.clock(on)
+  inBand(on, counters)
+
+  await $.session.start(START)
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  // Another session's message lands in the turn after it began; the turn
+  // ends later and reports its length, so the delivery falls inside it.
+  await clock.advance(2_500)
+  await $.prompt.submit({ text: 'a message from another session', wait: false, origin: { kind: 'peer' } } as never)
+  await clock.advance(2_500)
+  await $.turn.complete({ ...turnEnd(), durationMs: 5_000 })
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  expect(counters.prompts?.length).toBe(2)
+  expect(counters.prompts?.[1]).toContain('Continue from the checkpoint')
 })
 
 test('continue_after_compact off: the compaction happens, no prompt follows', { options: { continue_after_compact: false } }, async ($, on) => {

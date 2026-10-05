@@ -28,10 +28,12 @@
 // turn runs, and the model's turn goes on after a tool result. register.ts
 // watches the call and compacts at the turn boundary, from a timer, the way
 // it compacts inside the checkpoint band.
-import type { EngineInterface, On, Timer, ToolSpec } from 'claude-code'
+//
+// register.ts hooks each tool's call and answers with what serve says; this
+// module never holds `$`.
+import type { Timer, ToolSpec } from 'claude-code'
 
-import { PLUGIN, clip, engineEnv, lastJsonLine, pythonHint, pythonOf, type Settings } from './engine'
-import { storePath } from './ring'
+import { PLUGIN, clip, engineEnv, lastJsonLine, pythonHint, type Host, type Settings } from './engine'
 
 export const TOOL_TIMEOUT_MS = 60_000
 
@@ -197,7 +199,7 @@ export const TOOL_NAMES = {
   deps: 'mcp__windvane__deps',
 } as const
 
-type ToolShort = keyof typeof TOOL_NAMES
+export type ToolShort = keyof typeof TOOL_NAMES
 
 type Request = { tool: string; arguments: Record<string, unknown>; env: Record<string, string> }
 type Reply = { text: string; isError: boolean; ms?: number }
@@ -223,10 +225,10 @@ export function readReply(raw: unknown): Reply | undefined {
 
 // The daemon's answer; 'down' when no handler ran (the caller then runs the
 // subprocess), 'timeout' when the request may have run.
-async function askDaemon($: EngineInterface, store: string, request: Request): Promise<Asked> {
+async function askDaemon(host: Host, store: string, request: Request): Promise<Asked> {
   let portText: string
   try {
-    portText = String(await $.fs.read(`${store}/daemon_port`))
+    portText = await host.read(`${store}/daemon_port`)
   } catch {
     return 'down'
   }
@@ -235,17 +237,10 @@ async function askDaemon($: EngineInterface, store: string, request: Request): P
 
   let timer: Timer | undefined
   const timeout = new Promise<'timeout'>(resolve => {
-    timer = $.clock.after(TOOL_TIMEOUT_MS, () => resolve('timeout'))
+    timer = host.after(TOOL_TIMEOUT_MS, () => resolve('timeout'))
   })
   try {
-    const res = await Promise.race([
-      $.http.fetch(`http://127.0.0.1:${port}/tool`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Windvane-Hook': '1' },
-        body: JSON.stringify(request),
-      }),
-      timeout,
-    ])
+    const res = await Promise.race([host.post(port, 'tool', JSON.stringify(request)), timeout])
     if (res === 'timeout') return 'timeout'
     if (res.status !== 200) return 'down'
     return readReply(JSON.parse(res.text)) ?? 'down'
@@ -257,12 +252,12 @@ async function askDaemon($: EngineInterface, store: string, request: Request): P
 }
 
 // The subprocess: the request on stdin, one JSON line back.
-async function askProcess($: EngineInterface, python: string, store: string, request: Request, sessionId: string): Promise<Reply> {
+async function askProcess(host: Host, python: string, store: string, request: Request, sessionId: string): Promise<Reply> {
   let run
   try {
-    run = await $.process.run([python, '-m', 'windvane.tools'], {
+    run = await host.run([python, '-m', 'windvane.tools'], {
       stdin: JSON.stringify(request),
-      env: { ...engineEnv($.plugin.root, store, sessionId), ...request.env },
+      env: { ...engineEnv(host.pluginRoot, store, sessionId), ...request.env },
       timeoutMs: TOOL_TIMEOUT_MS,
     })
   } catch (err) {
@@ -273,64 +268,36 @@ async function askProcess($: EngineInterface, python: string, store: string, req
   return { ...reply, isError: reply.isError || run.exitCode !== 0 }
 }
 
-async function serve($: EngineInterface, name: ToolShort, e: Record<string, unknown>, settings: Settings): Promise<{ result: string } | { deny: string }> {
-  const store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
+// One call served: a failure is a deny, else the reply is the result. `e` is
+// the call's event, the arguments at its top level beside the envelope.
+export async function serve(host: Host, name: ToolShort, e: unknown, settings: Settings): Promise<{ result: string } | { deny: string }> {
+  const store = await host.store()
   // The arguments as the model gave them: with no project_path the engine
   // resolves the project from the session's own edits (the cwd is often
   // another folder, and a save filed under it lands in the wrong ring).
-  const args = argumentsOf(e)
+  const args = argumentsOf(e as Record<string, unknown>)
   // The handlers key the recorder's draft and the session state by the
   // session id; a process the mod starts has no session environment.
-  const sessionId = await $.session.id()
+  const sessionId = await host.sessionId()
   const request: Request = {
     tool: name,
     arguments: args,
-    env: { CLAUDE_CODE_SESSION_ID: sessionId, WINDVANE_DIR: store, CLAUDE_PROJECT_DIR: await $.session.cwd() },
+    env: { CLAUDE_CODE_SESSION_ID: sessionId, WINDVANE_DIR: store, CLAUDE_PROJECT_DIR: await host.cwd() },
   }
 
   let reply: Reply
-  const asked = await askDaemon($, store, request)
+  const asked = await askDaemon(host, store, request)
   if (asked === 'timeout') {
     reply = {
       text: `${name}: the daemon did not answer within ${TOOL_TIMEOUT_MS / 1000} s and the call may still have run, so it was not repeated. Check its effect before calling again.`,
       isError: true,
     }
   } else if (asked === 'down') {
-    reply = await askProcess($, pythonOf(await $.env.get('WINDVANE_PYTHON'), settings.python), store, request, sessionId)
+    reply = await askProcess(host, await host.python(settings.python), store, request, sessionId)
   } else {
     reply = asked
   }
 
   if (reply.isError) return { deny: reply.text }
   return { result: name === 'compact_now' ? `${reply.text}\n${COMPACT_NOTE}` : reply.text }
-}
-
-// One matched hook per tool; each matcher names its tool literally.
-// Each hook answers for itself: a failure is a deny, else the reply is the result.
-export function registerTools(on: On, settings: Settings): void {
-  const args = (e: unknown) => e as Record<string, unknown>
-  on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e) => {
-    const got = await serve($, 'checkpoint', args(e), settings)
-    return 'deny' in got ? { deny: got.deny } : { result: got.result }
-  })
-  on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e) => {
-    const got = await serve($, 'compact_now', args(e), settings)
-    return 'deny' in got ? { deny: got.deny } : { result: got.result }
-  })
-  on('tool.call', { tool: 'mcp__windvane__memory' }, async ($, e) => {
-    const got = await serve($, 'memory', args(e), settings)
-    return 'deny' in got ? { deny: got.deny } : { result: got.result }
-  })
-  on('tool.call', { tool: 'mcp__windvane__log' }, async ($, e) => {
-    const got = await serve($, 'log', args(e), settings)
-    return 'deny' in got ? { deny: got.deny } : { result: got.result }
-  })
-  on('tool.call', { tool: 'mcp__windvane__mine' }, async ($, e) => {
-    const got = await serve($, 'mine', args(e), settings)
-    return 'deny' in got ? { deny: got.deny } : { result: got.result }
-  })
-  on('tool.call', { tool: 'mcp__windvane__deps' }, async ($, e) => {
-    const got = await serve($, 'deps', args(e), settings)
-    return 'deny' in got ? { deny: got.deny } : { result: got.result }
-  })
 }

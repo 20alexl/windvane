@@ -18,35 +18,37 @@
 //   rules and the checkpoint for that one, since a plugin's own
 //   session.compact hooks do not run for a compaction it starts.
 //
-// Each other piece lives in its own module, registered from here: the band
-// above the prompt (band.tsx), the /windvane pane (pane.tsx), /remember
-// (remember.ts), /windvane-strict (strict.ts), /windvane-export (export.ts),
-// /windvane-import (import.ts), tool results trimmed and secrets redacted at
-// the door (door.ts), the per-project token and cost ledger with
-// /windvane-cost (ledger.ts), the rules and file mistakes at the head of
-// every subagent's prompt (agents.ts), the compacted conversation carrying
-// the rules and the checkpoint (compact.ts), windvane's command hooks
-// answered by the daemon over loopback HTTP where nothing else hooks the
-// event (bridge.ts), and the tools the model calls (tools.ts). The store
-// reads they share live in ring.ts, the engine's interpreter and the options
-// in engine.ts. The engine takes one unmatched hook per event per plugin and
-// follows $ only within one file, so their session.start and turn.complete
-// work is done here (startUi, startLedger, recordTurn), and each module gets
-// the options it needs as plain values.
-import { atom, update } from 'claude-code'
-import type { EngineInterface, Register, ToolCallInput, ToolCallResult, TurnCompleteInput } from 'claude-code'
+// Every hook of the plugin is registered in this file, and this is the only
+// file that holds `$`. Each other piece keeps its logic in its own module
+// and takes a Host (engine.ts), a handful of closures over `$` built by
+// hostOf below: the band above the prompt (band.tsx), the /windvane pane
+// (pane.tsx), /remember (remember.ts), /windvane-strict (strict.ts),
+// /windvane-export (export.ts), /windvane-import (import.ts), tool results
+// trimmed and secrets redacted at the door (door.ts), the per-project token
+// and cost ledger with /windvane-cost (ledger.ts), the rules and file
+// mistakes at the head of every subagent's prompt (agents.ts), the
+// compacted conversation carrying the rules and the checkpoint (compact.ts),
+// windvane's command hooks answered by the daemon over loopback HTTP where
+// nothing else hooks the event (bridge.ts), and the tools the model calls
+// (tools.ts). The store reads they share live in ring.ts, the options in
+// engine.ts. The $.state values the band and the pane draw from are
+// declared here (../types/index.d.ts), read and written here, and handed to
+// the drawings as plain values.
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register, SessionMessage, ToolCallInput, ToolCallResult, TurnCompleteInput } from 'claude-code'
 
-import { registerAgents } from './agents'
-import { BAND_HIDDEN_KEY, registerBand } from './band'
-import { registerBridge } from './bridge'
-import { registerCompact } from './compact'
-import { registerDoor } from './door'
-import { PLUGIN, VERSION, engineEnv, pythonOf, settingsOf, type EarlyCompaction, type Settings } from './engine'
-import { EXPORT_COMMAND, registerExport } from './export'
-import { IMPORT_COMMAND, registerImport } from './import'
-import { LEDGER_COMMAND, add, asEntry, costBaseline, ledgerKey, localDay, registerLedger, turnEntry } from './ledger'
-import { PANE_COMMAND, registerPane } from './pane'
-import { REMEMBER_COMMAND, registerRemember } from './remember'
+import { briefFor } from './agents'
+import { BAND_HIDDEN_KEY, drawBand, parseWindvane, textOf } from './band'
+import { bridgeDecision, forgetCall, noteCallLoop } from './bridge'
+import type { Json } from './bridge'
+import { compactBrief } from './compact'
+import { readBudget, rewrite } from './door'
+import { PLUGIN, VERSION, engineEnv, pythonOf, settingsOf, type EarlyCompaction, type Host, type Settings } from './engine'
+import { EXPORT_COMMAND, exportProject } from './export'
+import { IMPORT_COMMAND, importStore } from './import'
+import { LEDGER_COMMAND, add, asEntry, costBaseline, ledgerKey, localDay, report, turnEntry } from './ledger'
+import { PANE_COMMAND, PANE_ROWS, TOUCH_TOOLS, drawPane, loadView } from './pane'
+import { REMEMBER_COMMAND, remember } from './remember'
 import {
   CHECK_TIMEOUT_MS,
   INSTALL_TIMEOUT_MS,
@@ -60,13 +62,16 @@ import {
   rowOnFrom,
 } from './setup'
 import { ageText, normalizePath, readLatest, readManifest, ringsFor, storePath } from './ring'
-import { STRICT_COMMAND, registerStrict } from './strict'
-import { TOOL_SPECS, registerTools } from './tools'
+import { STRICT_COMMAND, seedStrict } from './strict'
+import { TOOL_SPECS, serve } from './tools'
 import type { Io } from './ring'
 
 // $.state values the band and the pane draw from (../types/index.d.ts).
+const lastRead = atom({ plugin: 'windvane', key: 'read' } as const, null)
 const pressure = atom({ plugin: 'windvane', key: 'pressure' } as const, null)
 const bandHidden = atom({ plugin: 'windvane', key: 'bandHidden' } as const, false)
+const lastFile = atom({ plugin: 'windvane', key: 'lastFile' } as const, null)
+const paneView = atom({ plugin: 'windvane', key: 'pane' } as const, null)
 
 const MIRROR_EVERY_MS = 10_000
 const COMPACT_DELAY_MS = 250
@@ -193,6 +198,58 @@ function tokensOf(context: Context): number | undefined {
   return undefined
 }
 
+// The engine interface as the other modules take it (Host, engine.ts):
+// closures over `$`, each call on `$` spelled here. The environment is read
+// here by name; a module asks for the store or the interpreter.
+function hostOf($: EngineInterface): Host {
+  return {
+    pluginRoot: $.plugin.root,
+    store: async () => storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME')),
+    python: async configured => pythonOf(await $.env.get('WINDVANE_PYTHON'), configured),
+    sessionId: () => $.session.id(),
+    cwd: () => $.session.cwd(),
+    root: () => $.session.root(),
+    now: () => $.clock.now(),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    exists: path => $.fs.exists(path),
+    read: async path => String(await $.fs.read(path)),
+    write: async (path, text) => {
+      await $.fs.write(path, text)
+    },
+    run: (argv, init) => $.process.run(argv, init),
+    post: (port, path, body) =>
+      $.http.fetch(`http://127.0.0.1:${port}/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Windvane-Hook': '1' },
+        body,
+      }),
+    storeGet: key => $.store.get(key),
+    storeSet: (key, value) => $.store.set(key, value),
+    storeKeys: () => $.store.keys(),
+    settings: async source => (source === undefined ? await $.settings.read() : await $.settings.read({ source })) as Record<string, unknown>,
+    // The env a command hook process inherits that windvane's handlers read
+    // per session (the daemon's per-request session env); CLAUDE_PROJECT_DIR
+    // is the session root.
+    sessionEnv: async () => ({
+      CLAUDE_PROJECT_DIR: await $.session.root(),
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: (await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')) ?? '',
+      CLAUDE_CONFIG_DIR: (await $.env.get('CLAUDE_CONFIG_DIR')) ?? '',
+      WINDVANE_AUTONOMY: (await $.env.get('WINDVANE_AUTONOMY')) ?? '',
+      WINDVANE_ALERT_COMMAND: (await $.env.get('WINDVANE_ALERT_COMMAND')) ?? '',
+      WINDVANE_STRIKE_CAP: (await $.env.get('WINDVANE_STRIKE_CAP')) ?? '',
+      WINDVANE_GOAL_TURN_CAP: (await $.env.get('WINDVANE_GOAL_TURN_CAP')) ?? '',
+      WINDVANE_LIVE_MINE: (await $.env.get('WINDVANE_LIVE_MINE')) ?? '',
+    }),
+    configDir: async () => {
+      const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
+      return ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
+    },
+    resultBudgetEnv: () => $.env.get('WINDVANE_RESULT_BUDGET'),
+    log: text => $.ui.log(text),
+    debug: text => $.ui.log(text, { to: 'debug' }),
+  }
+}
+
 function ioOf($: EngineInterface): Io {
   return { read: p => $.fs.read(p) as Promise<string>, exists: p => $.fs.exists(p) }
 }
@@ -290,6 +347,25 @@ async function startUi($: EngineInterface): Promise<void> {
   }
 }
 
+// The band's Hide and the pane's Show band: the flag in $.state, and in
+// $.store across sessions.
+async function hideBand($: EngineInterface): Promise<void> {
+  await update($, bandHidden, () => true)
+  await $.store.set(BAND_HIDDEN_KEY, true)
+}
+
+async function showBand($: EngineInterface): Promise<void> {
+  await update($, bandHidden, () => false)
+  await $.store.set(BAND_HIDDEN_KEY, false)
+}
+
+// The pane's body read from the store afresh (pane.tsx), for the file the
+// model last touched.
+async function refreshPane($: EngineInterface): Promise<void> {
+  const view = await loadView(hostOf($), (await read($, lastFile)) ?? undefined)
+  await update($, paneView, () => view)
+}
+
 // The ledger's project: the folder the session was opened in. A shell cd
 // moves $.session.cwd() for the rest of the session; the ledger stays put.
 let ledgerProject = ''
@@ -326,21 +402,22 @@ export const register: Register = (on, options) => {
   let lastSaveAt: number | undefined // a deliberate checkpoint save that succeeded
   let compactAsked = false // compact_now succeeded this turn
   let compactRequested = false // a compaction is scheduled
-  // When the turn that asked for the compaction began, and when the last
-  // prompt that was not windvane's own was submitted. A prompt the person
-  // types while a compaction runs is queued and runs before anything a
-  // plugin submits; the continue prompt would then arrive a turn late and
-  // stale, so it is skipped when such a prompt has landed since that turn
-  // began (its own prompt was submitted before it).
+  // When the turn that asked for the compaction began, and when the person
+  // last submitted a prompt of their own. A prompt the person types while a
+  // compaction runs is queued and runs before anything a plugin submits; the
+  // continue prompt would then arrive a turn late and stale, so it is
+  // skipped when such a prompt has landed since that turn began (its own
+  // prompt was submitted before it).
   let turnBeganAt: number | undefined
   let personPromptAt: number | undefined
   const continueStale = () => turnBeganAt !== undefined && personPromptAt !== undefined && personPromptAt > turnBeganAt + 100
   const early = settings.earlyCompaction
+  let doorBudget: number | undefined // the door's budget, read once per load
 
   // A deliberate save that succeeded: checkpoint(save), or
   // compact_now, which banks the draft and asks for the compaction at the
-  // turn boundary. tools.ts serves both and answers a failure with a deny;
-  // these hooks are registered ahead of it so they sit above it and see its
+  // turn boundary. The serving hooks below answer a failure with a deny;
+  // these hooks are registered ahead of them so they sit above and see the
   // answer. The engine carries the arguments at the top level of the event.
   const noteSave = (e: ToolCallInput, ran: ToolCallResult, compactNow: boolean, at: number): void => {
     const op = (e as unknown as { operation?: string }).operation
@@ -362,32 +439,176 @@ export const register: Register = (on, options) => {
   // Inside the band with a save made since the band was entered.
   const savedInBand = () => bandState.enteredAt !== undefined && lastSaveAt !== undefined && lastSaveAt >= bandState.enteredAt
 
-  // Every prompt but windvane's own is noted for the continue prompt's sake;
-  // a continue of windvane's that is already stale is dropped (a second net
-  // under the check made before it is submitted).
+  // The person's own prompts are noted for the continue prompt's sake: the
+  // ones typed at the terminal (composer) or sent from the Remote Control
+  // bridge. A delivery into the running turn (a peer session's message, a
+  // task notification, a subagent's prompt) is not the person continuing
+  // the session and leaves the note alone. A continue of windvane's that is
+  // already stale is dropped (a second net under the check made before it
+  // is submitted).
   on('prompt.submit', async ($, e, next) => {
     const origin = e.origin as { kind?: string; name?: string } | undefined
     const ours = origin?.kind === 'plugin' && origin.name === PLUGIN
     if (!ours) {
-      personPromptAt = await $.clock.now()
+      if (origin?.kind === 'composer' || origin?.kind === 'bridge') personPromptAt = await $.clock.now()
       return next(e)
     }
     if (e.text === CONTINUE_TEXT && continueStale()) return { drop: `${PLUGIN}: the session already continued, so the resume prompt was dropped` }
     return next(e)
   })
 
-  registerBand(on)
-  registerPane(on)
-  registerRemember(on, settings)
-  registerStrict(on, settings)
-  registerExport(on, settings)
-  registerImport(on, settings)
-  registerDoor(on, settings)
-  registerLedger(on, () => ledgerProject)
-  registerAgents(on, settings)
-  registerCompact(on, settings)
-  registerBridge(on)
-  registerTools(on, settings)
+  // The band (band.tsx). Every row windvane's hooks hand the model passes
+  // session.append with door hook-context; a subagent's rows are its own.
+  on('session.append', { door: 'hook-context' }, async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const reading = parseWindvane(textOf(e.message.content), Date.now())
+      if (reading) await update($, lastRead, () => reading)
+    }
+    return next(e)
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || e.props.view.agentId !== undefined) return next(e)
+    const reading = await read($, lastRead)
+    if (reading === null || (await read($, bandHidden))) return next(e)
+    const figures = await read($, pressure)
+    return drawBand($.ui.resolve(e), reading, figures, Date.now(), () => hideBand($))
+  })
+
+  // The pane (pane.tsx). /windvane reads the store and opens it: tall enough
+  // inline for the summary, the checkpoint and the first rules; the keys go
+  // to the pane so the arrows scroll it, and Escape closes it.
+  on('command.run', { command: 'windvane' }, async $ => {
+    await refreshPane($)
+    await $.ui.open({ id: 'windvane', title: 'windvane', rows: PANE_ROWS, focus: true, closeOnEscape: true })
+    return { text: 'windvane pane opened.' }
+  })
+
+  // The file the model last touched; a subagent's touches are its own.
+  // Also the loop each call runs in, for the bridge: classic.PreToolUse,
+  // which fires beneath this hook, names none (bridge.ts).
+  on('tool.call', async ($, e, next) => {
+    noteCallLoop(e.tool_use_id, e.agentId)
+    let ran
+    try {
+      ran = await next(e)
+    } finally {
+      forgetCall(e.tool_use_id)
+    }
+    const path = (e as unknown as { file_path?: unknown; notebook_path?: unknown }).file_path
+      ?? (e as unknown as { notebook_path?: unknown }).notebook_path
+    if (e.agentId === undefined && TOUCH_TOOLS.has(String(e.tool)) && typeof path === 'string' && path && ran.deny === undefined) {
+      const file = normalizePath(path)
+      await update($, lastFile, () => file)
+    }
+    return ran
+  })
+
+  on('ui.render', { component: 'Pane', requestId: 'windvane' }, async ($, e) => {
+    const view = await read($, paneView)
+    const figures = await read($, pressure)
+    const hidden = await read($, bandHidden)
+    const data = { view, figures, hidden, bodyColumns: e.props.bodyColumns, nowMs: Date.now() }
+    return drawPane($.ui.resolve(e), data, { refresh: () => refreshPane($), showBand: () => showBand($) })
+  })
+
+  // /remember (remember.ts): the selected transcript text, stored as a
+  // decision for the session's project.
+  on('command.run', { command: 'remember' }, async $ => {
+    const selected = await $.ui.selection()
+    const text = selected?.text.trim() ?? ''
+    if (!text) return { text: 'Nothing is selected. Select text in the transcript, then run /remember.' }
+    return { text: await remember(hostOf($), settings.python, text, await read($, lastFile)) }
+  })
+
+  // /windvane-strict, /windvane-export, /windvane-import: the engine does
+  // the work (strict.ts, export.ts, import.ts).
+  on('command.run', { command: 'windvane-strict' }, async $ => ({ text: await seedStrict(hostOf($), settings.python) }))
+  on('command.run', { command: 'windvane-export' }, async $ => ({ text: await exportProject(hostOf($), settings.python) }))
+  on('command.run', { command: 'windvane-import' }, async $ => ({ text: await importStore(hostOf($), settings.python) }))
+
+  // The door (door.ts): a tool result's text redacted and trimmed before
+  // the row is stored and read. A row that needs no change goes on untouched.
+  on('session.append', async ($, e, next) => {
+    if (e.door !== 'tool-result') return next(e)
+    if (doorBudget === undefined) doorBudget = await readBudget(hostOf($), settings.resultBudget)
+    const content = rewrite(e.message.content, doorBudget)
+    if (content === undefined) return next(e)
+    return next({ ...e, message: { ...e.message, content } })
+  })
+
+  // /windvane-cost (ledger.ts): the ledger's project is the folder the
+  // session was opened in; before session.start the session's cwd stands in.
+  on('command.run', { command: 'windvane-cost' }, async $ => ({
+    text: await report(hostOf($), ledgerProject || normalizePath(await $.session.cwd())),
+  }))
+
+  // The subagents' brief (agents.ts): the Agent call's prompt with the
+  // project's rules and the named files' mistakes at its head.
+  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    const prompt = await briefFor(hostOf($), settings.python, e)
+    if (prompt === undefined) return next(e)
+    return next({ ...e, prompt })
+  })
+
+  // The compacted conversation (compact.ts): every trigger but precompute
+  // (the matcher also keeps this hook apart from the matcher-less one
+  // below). One user-role message carrying the rules and the checkpoint is
+  // placed after the summary (the first message core hands up), ahead of
+  // what it kept. A subagent's compaction and a skip pass through.
+  on('session.compact', { trigger: ['manual', 'auto', 'plugin'] }, async ($, e, next) => {
+    const out = await next(e)
+    if (out.messages === undefined || e.agentId !== undefined) return out
+    const text = await compactBrief(hostOf($), settings.python)
+    if (text === undefined) return out
+    const restore: SessionMessage = { role: 'user', text, toolUses: [] }
+    const messages = [...out.messages]
+    messages.splice(messages.length > 0 ? 1 : 0, 0, restore)
+    return { ...out, messages }
+  })
+
+  // The bridge (bridge.ts): windvane's command hooks answered by the daemon
+  // over loopback where every command hook that would fire is windvane's and
+  // served; otherwise the command hooks run exactly as before.
+  on('classic.*', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e as unknown as Json)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+
+  // The tools the model calls (tools.ts): one matched hook per tool, each
+  // matcher naming its tool literally. Each answers for itself: a failure is
+  // a deny, else the reply is the result.
+  on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e) => {
+    const got = await serve(hostOf($), 'checkpoint', e, settings)
+    if ('deny' in got) return { deny: got.deny }
+    return { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e) => {
+    const got = await serve(hostOf($), 'compact_now', e, settings)
+    if ('deny' in got) return { deny: got.deny }
+    return { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__memory' }, async ($, e) => {
+    const got = await serve(hostOf($), 'memory', e, settings)
+    if ('deny' in got) return { deny: got.deny }
+    return { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__log' }, async ($, e) => {
+    const got = await serve(hostOf($), 'log', e, settings)
+    if ('deny' in got) return { deny: got.deny }
+    return { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__mine' }, async ($, e) => {
+    const got = await serve(hostOf($), 'mine', e, settings)
+    if ('deny' in got) return { deny: got.deny }
+    return { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__deps' }, async ($, e) => {
+    const got = await serve(hostOf($), 'deps', e, settings)
+    if ('deny' in got) return { deny: got.deny }
+    return { result: got.result }
+  })
 
   on('session.start', async ($, e, next) => {
     // The other pieces start first, each on its own: a failure there leaves

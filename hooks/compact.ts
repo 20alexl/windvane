@@ -16,61 +16,47 @@
 // compaction pass through untouched, as does a skip.
 //
 // A compaction windvane itself starts ($.session.compact from register.ts)
-// runs beneath windvane's own hooks, so this one never sees it: there the
+// runs beneath windvane's own hooks, so that hook never sees it: there the
 // SessionStart(compact) banner carries the rules and the checkpoint, and
 // register.ts's continue prompt points the model at it.
-import type { EngineInterface, On, SessionMessage } from 'claude-code'
+//
+// register.ts hooks session.compact and places the message compactBrief
+// renders; this module never holds `$`.
 import { BRIEF_TIMEOUT_MS, briefArgv, joinBlocks, parseBrief, type Brief } from './brief'
-import { PLUGIN, engineEnv, pythonOf, type Settings } from './engine'
-import { storePath } from './ring'
+import { PLUGIN, engineEnv, type Host } from './engine'
 
 const OPEN_TAG = '<windvane-compact>'
 const CLOSE_TAG = '</windvane-compact>'
 
-async function storeOf($: EngineInterface): Promise<string> {
-  return storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
-}
-
-async function runBrief($: EngineInterface, python: string, extra: string[]): Promise<Brief | undefined> {
-  const project = await $.session.cwd()
-  const sid = await $.session.id()
-  const argv = briefArgv(pythonOf(await $.env.get('WINDVANE_PYTHON'), python), project, sid, extra)
-  const env = engineEnv($.plugin.root, await storeOf($), sid)
+async function runBrief(host: Host, python: string, extra: string[]): Promise<Brief | undefined> {
+  const project = await host.cwd()
+  const sid = await host.sessionId()
+  const argv = briefArgv(await host.python(python), project, sid, extra)
+  const env = engineEnv(host.pluginRoot, await host.store(), sid)
   try {
-    const got = parseBrief(await $.process.run(argv, { cwd: project, env, timeoutMs: BRIEF_TIMEOUT_MS }))
+    const got = parseBrief(await host.run(argv, { cwd: project, env, timeoutMs: BRIEF_TIMEOUT_MS }))
     if (typeof got !== 'string') return got
-    $.ui.log(`${PLUGIN}: compact: ${got}`)
+    host.log(`${PLUGIN}: compact: ${got}`)
   } catch (err) {
-    $.ui.log(`${PLUGIN}: compact: brief failed: ${String(err)}`)
+    host.log(`${PLUGIN}: compact: brief failed: ${String(err)}`)
   }
   return undefined
 }
 
-export function registerCompact(on: On, settings: Settings): void {
-  // Every trigger but precompute; the matcher also keeps this hook apart
-  // from the matcher-less one in register.ts.
-  on('session.compact', { trigger: ['manual', 'auto', 'plugin'] }, async ($, e, next) => {
-    const out = await next(e)
-    if (out.messages === undefined || e.agentId !== undefined) return out
-
-    const got = await runBrief($, settings.python, ['--checkpoint'])
-    if (!got) return out
-    const body = joinBlocks([got.rules, got.checkpoint])
-    if (!body) return out
-
-    const restore: SessionMessage = { role: 'user', text: `${OPEN_TAG}\n${body}\n${CLOSE_TAG}`, toolUses: [] }
-    const messages = [...out.messages]
-    // After the summary (the first message core hands up), ahead of what it kept.
-    messages.splice(messages.length > 0 ? 1 : 0, 0, restore)
-
-    // Tell windvane's SessionStart(compact) hook the rules and the checkpoint
-    // are already in the conversation: its banner leaves them out while
-    // sessions/<sid>.briefed is fresh.
-    try {
-      await $.fs.write(`${await storeOf($)}/sessions/${await $.session.id()}.briefed`, JSON.stringify({ plugin: PLUGIN, ts: Date.now() / 1000 }))
-    } catch (err) {
-      $.ui.log(`${PLUGIN}: compact: briefed marker not written: ${String(err)}`)
-    }
-    return { ...out, messages }
-  })
+// The text of the message that follows the summary: the rules block and the
+// checkpoint, or undefined when there is nothing to place. Once rendered, the
+// marker sessions/<sid>.briefed tells windvane's SessionStart(compact) hook
+// the rules and the checkpoint are already in the conversation: its banner
+// leaves them out while the marker is fresh.
+export async function compactBrief(host: Host, python: string): Promise<string | undefined> {
+  const got = await runBrief(host, python, ['--checkpoint'])
+  if (!got) return undefined
+  const body = joinBlocks([got.rules, got.checkpoint])
+  if (!body) return undefined
+  try {
+    await host.write(`${await host.store()}/sessions/${await host.sessionId()}.briefed`, JSON.stringify({ plugin: PLUGIN, ts: Date.now() / 1000 }))
+  } catch (err) {
+    host.log(`${PLUGIN}: compact: briefed marker not written: ${String(err)}`)
+  }
+  return `${OPEN_TAG}\n${body}\n${CLOSE_TAG}`
 }

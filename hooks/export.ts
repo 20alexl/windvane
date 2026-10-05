@@ -4,10 +4,10 @@
 // and prints one JSON line naming the files it wrote (`written`, or `paths`
 // / `files`); the command lists them. An engine that prints one path per
 // line instead is read the same way.
-import type { EngineInterface, On } from 'claude-code'
-
-import { clip, engineEnv, lastJsonLine, pythonHint, pythonOf, type Settings } from './engine'
-import { storePath } from './ring'
+//
+// register.ts registers the command and hooks its run; this module never
+// holds `$`.
+import { clip, engineEnv, lastJsonLine, pythonHint, type Host } from './engine'
 
 const EXPORT_TIMEOUT_MS = 120_000
 
@@ -32,15 +32,16 @@ export function pathsOf(stdout: string, reply: Record<string, unknown> | undefin
     .filter(Boolean)
 }
 
-async function exportProject($: EngineInterface, configured: string): Promise<string> {
-  const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), configured)
-  const store = storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME'))
-  const project = await $.session.cwd()
+// The command's answer.
+export async function exportProject(host: Host, configured: string): Promise<string> {
+  const python = await host.python(configured)
+  const store = await host.store()
+  const project = await host.cwd()
   let run
   try {
-    run = await $.process.run([python, '-m', 'windvane.export', '--project', project], {
+    run = await host.run([python, '-m', 'windvane.export', '--project', project], {
       cwd: project,
-      env: engineEnv($.plugin.root, store),
+      env: engineEnv(host.pluginRoot, store),
       timeoutMs: EXPORT_TIMEOUT_MS,
     })
   } catch (err) {
@@ -54,8 +55,4 @@ async function exportProject($: EngineInterface, configured: string): Promise<st
   const paths = pathsOf(run.stdout, reply)
   if (paths.length === 0) return 'Nothing exported: the project holds nothing to write.'
   return [`Exported ${paths.length} file${paths.length === 1 ? '' : 's'}:`, ...paths.map(p => `  ${p}`)].join('\n')
-}
-
-export function registerExport(on: On, settings: Settings): void {
-  on('command.run', { command: 'windvane-export' }, async $ => ({ text: await exportProject($, settings.python) }))
 }

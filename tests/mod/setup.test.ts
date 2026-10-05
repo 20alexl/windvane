@@ -16,7 +16,7 @@ import {
   offerFor,
   recordOf,
   rowOnFrom,
-} from './setup'
+} from '../../hooks/setup'
 
 test('the decisions: when the question is due, what it asks, how the checks read', async () => {
   const now = 1_000_000_000_000
