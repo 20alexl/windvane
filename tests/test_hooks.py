@@ -876,6 +876,41 @@ def test_stop_brings_a_save_made_before_the_turns_edits_up_to_the_draft(tmp_path
     assert (ck.read_latest(ck.candidate_dirs(str(proj))) or {})["metadata"]["refreshed"]["at"] == stamp
 
 
+def test_stop_refreshes_a_save_made_after_the_turns_edits_with_the_turns_own_reply(tmp_path: Path, monkeypatch):
+    """The second take: the model edits first and saves after, so no edit
+    follows the save, but the drafted summary is the previous reply's. The
+    turn end takes the turn's own closing reply."""
+    pytest.importorskip("windvane.draft")
+    from windvane import checkpoints as ck
+
+    proj = _proj(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
+    store = tmp_path / "store"
+    sid = "s-refresh-late"
+    t = tmp_path / "t-late.jsonl"
+    _edit_transcript(t, proj / "api.py")
+    stop = {"session_id": sid, "cwd": str(proj), "transcript_path": str(t),
+            "last_assistant_message": "Added cursor paging. Next: the tests.", "stop_hook_active": False}
+
+    _run("post_edit_json", {"session_id": sid, "tool_name": "Edit", "tool_input": {"file_path": str(proj / "api.py")}})
+    _run("post_batch_json", {"session_id": sid, "cwd": str(proj), "tool_calls": [
+        {"tool_name": "mcp__windvane__checkpoint", "tool_input": {"operation": "save"}, "tool_use_id": "c1", "tool_response": "saved"}]})
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    resp = ck.ContextGuard().save_checkpoint(
+        task_description="Cursor pagination for GET /items", current_step="", completed_steps=[], pending_steps=[],
+        files_involved=[str(proj / "api.py")], handoff_summary="Cursor paging is only planned.",
+        project_path=str(proj), drafted_fields=["handoff_summary", "files_involved"])
+    assert resp.status == "success"
+    assert _state(store, sid)["pressure"]["edits_at_manual_checkpoint"] == 1
+
+    _run("stop_json", stop)
+    after = ck.read_latest(ck.candidate_dirs(str(proj))) or {}
+    assert after["kind"] == "manual" and "handoff_summary" in after["metadata"]["refreshed"]["fields"]
+    assert after["summary"] != "Cursor paging is only planned."
+    assert after["task_description"] == "Cursor pagination for GET /items"
+    assert sum(1 for h in ck.read_history(ck.candidate_dirs(str(proj))) if h["kind"] == "manual") == 1
+
+
 def test_pre_compact_banks_the_draft_to_the_ring(tmp_path: Path, monkeypatch):
     pytest.importorskip("windvane.draft")
     proj = _proj(tmp_path)

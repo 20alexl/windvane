@@ -100,17 +100,17 @@ def _transcript_of(state: dict, data: dict) -> str:
     )
 
 
-def _refresh_deliberate(state: dict, data: dict, project_dir: str) -> bool:
-    """A deliberate checkpoint saved before the session's latest edits
-    describes the state before them; bring it up to the recorder's draft
-    (``windvane.draft.refresh_deliberate``). True when a record was
-    refreshed."""
+def _refresh_deliberate(state: dict, data: dict, project_dir: str, turn_saved: bool) -> bool:
+    """A deliberate checkpoint saved during the turn that is ending, or
+    before the session's latest edits, describes the turn so far; bring it
+    up to the recorder's draft (``windvane.draft.refresh_deliberate``). True
+    when a record was refreshed."""
     try:
         from windvane import draft as _draft
 
         transcript = _transcript_of(state, data)
         record, _ctx = _draft.draft_with_context(project_dir, c._session_id, transcript, state)
-        return _draft.refresh_deliberate(record, project_dir, c._session_id, transcript, state) is not None
+        return _draft.refresh_deliberate(record, project_dir, c._session_id, transcript, state, turn_saved=turn_saved) is not None
     except Exception:
         return False
 
@@ -133,9 +133,10 @@ def _maybe_bank_draft(state: dict, data: dict, project_dir: str, deliberate: boo
         edits = 0
     if deliberate:
         db["edits"] = edits
-        # The save came at the top of the turn and the edits after it: the
-        # record a compaction would restore says the edits are still to come.
-        _refresh_deliberate(state, data, project_dir)
+        # The save came in the middle of the turn: its summary is the
+        # previous reply's, and an edit after it is not in it. The record a
+        # compaction would restore is brought up to the turn's end.
+        _refresh_deliberate(state, data, project_dir, turn_saved=True)
         return False
     try:
         baseline = int(db.get("edits") or 0)

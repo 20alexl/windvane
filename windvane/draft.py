@@ -865,11 +865,13 @@ def bank(record: dict, session_id: str, trigger: str = "bank") -> dict:
 
 # ── the refresh of a deliberate record ──────────────────────────────────────
 #
-# A save early in a turn describes the state before the turn's edits: the
-# model banks the checkpoint on the CHECKPOINT NOW note, then does the edit,
-# and the record a compaction restores says the edit is still to come
-# (2026-10-05, the live demo). The hooks that run after the turn bring such
-# a record up to the draft, without touching what the model wrote itself.
+# A save in the middle of a turn describes the turn so far: the model banks
+# the checkpoint on the CHECKPOINT NOW note, then does the edit, and the
+# record a compaction restores says the edit is still to come; and a save
+# made after the edit still drafts its summary from the previous turn's
+# reply, because the turn's own closing reply is not written yet (2026-10-05,
+# the live demo, two takes). The hooks that run after the turn bring such a
+# record up to the draft, without touching what the model wrote itself.
 
 # ring field -> record field, for a deliberate entry's twin names
 _RING_TWINS = {
@@ -959,24 +961,25 @@ def merge_into_deliberate(saved: dict, record: dict) -> tuple:
     return out, refreshed
 
 
-def refresh_deliberate(record: dict, project_dir: str, session_id: str, transcript_path: str, state: dict) -> Optional[dict]:
+def refresh_deliberate(record: dict, project_dir: str, session_id: str, transcript_path: str, state: dict,
+                       turn_saved: bool = False) -> Optional[dict]:
     """Bring this session's newest deliberate checkpoint up to ``record``
-    (the draft just made) when the session edited a file after saving it.
-    The ring entry and the task file are rewritten in place, same task id,
-    still deliberate, so the restore and the compaction brief read the
-    state at the turn's end. The state's edit mark moves to the current
-    count, so a turn with no further edit refreshes nothing. The refreshed
-    entry, or None when there was nothing to refresh. Never raises."""
+    (the draft just made) when the turn that is ending saved it
+    (``turn_saved``: the turn's closing reply and its later edits are news
+    to the record) or when the session edited a file after saving it. The
+    ring entry and the task file are rewritten in place, same task id, still
+    deliberate, so the restore and the compaction brief read the state at
+    the turn's end. The state's edit mark moves to the current count, so a
+    later turn with no further edit refreshes nothing. The refreshed entry,
+    or None when there was nothing to refresh. Never raises."""
     try:
         st = state if isinstance(state, dict) else {}
         from windvane import pressure as _p
 
         ps = _p.pressure_state(st)
         at_save = ps.get("edits_at_manual_checkpoint")
-        if at_save is None:
-            return None
         edits = int(st.get("edits_total") or 0)
-        if edits <= int(at_save or 0):
+        if not turn_saved and (at_save is None or edits <= int(at_save or 0)):
             return None
         work_project = work_project_of(project_dir, st)
         dirs = _record_dirs(project_dir, work_project)

@@ -422,6 +422,11 @@ def test_the_refresh_rewrites_the_session_record_in_place_once_the_session_edite
     # The mark moved to the current count, so the same state refreshes nothing more.
     assert state["pressure"]["edits_at_manual_checkpoint"] == 5
     assert d.refresh_deliberate(record, str(proj), sid, "", state) is None
+    # The turn that saved the record ending: refreshed whatever the edit count.
+    record["handoff_summary"] = "The smoke test is in."
+    entry["metadata"] = {"drafted_fields": ["handoff_summary"]}
+    out = d.refresh_deliberate(record, str(proj), sid, "", state, turn_saved=True)
+    assert out is not None and out["summary"] == "The smoke test is in."
 
 
 def test_a_bank_for_a_project_the_store_has_not_met_registers_its_ring(tmp_path, monkeypatch):
