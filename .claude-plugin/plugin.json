@@ -1,6 +1,6 @@
 {
   "name": "windvane",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Keeps the state and steers the session: the recorder drafts the checkpoint, compaction happens at the right point with the state banked, the rules and the checkpoint ride inside the compacted conversation and every subagent's prompt, tool results are trimmed and secrets redacted at the door, project memory and rules are a tool call away, and a token ledger, a pane and a status segment show where the session stands.",
   "author": { "name": "windvane" },
   "types": "./types/index.d.ts",

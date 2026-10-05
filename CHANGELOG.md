@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5 (2026-10-05)
+
+One defect in the checkout record 1.0.4 added, seen on its first live compaction.
+
+- **A repository around the project is not its checkout.** When the project is a repository nested in a larger one (a hub of spoke repositories) and the session runs at the hub, the record's git figures came from the hub: the engine's process had the project's folder as its working directory, an empty path resolved there, and the comparison that recognises a worktree matched the project to the hub. The brief then said "HEAD on master" about a project whose HEAD was on main. An empty path now stays empty and the worktree test runs only when there is a worktree; a nested project's record reads its own checkout again.
+
 ## 1.0.4 (2026-10-05)
 
 Four defects from the first days in use, two of them around the moment of compaction.

@@ -1,6 +1,6 @@
 [project]
 name = "windvane"
-version = "1.0.4"
+version = "1.0.5"
 description = "Keeps the state and steers the session for Claude Code: checkpoints the recorder drafts, compaction at the right point, project memory and rules, all from hooks the model never has to call."
 readme = "README.md"
 requires-python = ">=3.10"
