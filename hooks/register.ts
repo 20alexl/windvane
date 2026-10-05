@@ -41,7 +41,7 @@ import { BAND_HIDDEN_KEY, registerBand } from './band'
 import { registerBridge } from './bridge'
 import { registerCompact } from './compact'
 import { registerDoor } from './door'
-import { PLUGIN, VERSION, engineEnv, pythonOf, settingsOf, type Settings } from './engine'
+import { PLUGIN, VERSION, engineEnv, pythonOf, settingsOf, type EarlyCompaction, type Settings } from './engine'
 import { EXPORT_COMMAND, registerExport } from './export'
 import { IMPORT_COMMAND, registerImport } from './import'
 import { LEDGER_COMMAND, add, asEntry, costBaseline, ledgerKey, localDay, registerLedger, turnEntry } from './ledger'
@@ -111,6 +111,10 @@ type Mirror = {
   // seven_day, a model-specific weekly window, ...); the flat keys above
   // stay for older readers.
   rate_limits: Record<string, { pct?: number; resets_at?: number }>
+  // The early_compaction row opened the checkpoint band below the engine's
+  // own margin: the engine's nudge says CHECKPOINT NOW from this, with the
+  // row's value as the reason.
+  early_band?: string
 }
 
 // usage.rateLimits as the mirror's rate_limits dict, one entry per kind.
@@ -131,6 +135,34 @@ function thresholds(window: number, point: number) {
 
 function defaultPoint(window: number): number {
   return window > SMALL_WINDOW ? Math.min(DEFAULT_COMPACT_1M, window) : window
+}
+
+// The checkpoint band's state: when it was entered ($.clock's ms; undefined
+// outside it), whether it is open below the engine's margin for the
+// early_compaction row alone, and what the last counted main turn cost.
+type BandState = { enteredAt?: number; early: boolean; lastTurnCostUsd?: number }
+
+// The band bookkeeping, against Claude Code's own compaction window: the
+// band opens at the engine's margin above the trigger, or earlier when the
+// early_compaction row's fill or turn cost is reached. A top-level function
+// because $ is followed only into one.
+async function updateBand($: EngineInterface, usage: { context: Context }, early: EarlyCompaction | undefined, band: BandState): Promise<void> {
+  const tokens = tokensOf(usage.context)
+  const point = (await $.session.usage({ breakdown: 'summary' })).context.breakdown?.rawMaxTokens
+    ?? defaultPoint(usage.context.window)
+  const th = thresholds(usage.context.window, point)
+  const earlyHit = early !== undefined && tokens !== undefined && (
+    (early.percent !== undefined && tokens * 100 >= usage.context.window * early.percent)
+    || (early.usd !== undefined && band.lastTurnCostUsd !== undefined && band.lastTurnCostUsd >= early.usd))
+  if (tokens !== undefined && (tokens >= th.checkpointAt || earlyHit)) {
+    if (band.enteredAt === undefined) {
+      band.enteredAt = await $.clock.now()
+      band.early = tokens < th.checkpointAt
+    }
+  } else {
+    band.enteredAt = undefined
+    band.early = false
+  }
 }
 
 function epochSeconds(iso?: string): number | undefined {
@@ -254,12 +286,15 @@ async function startLedger($: EngineInterface, cwd: string): Promise<void> {
 }
 
 // The ledger at turn.complete: a main-loop turn that counted something,
-// added to the project's entry for the local day.
-async function recordTurn($: EngineInterface, e: TurnCompleteInput): Promise<void> {
-  if (e.agentId !== undefined || e.usage === undefined) return
+// added to the project's entry for the local day. Answers what the turn
+// cost (the session's priced cost across it), or undefined for a turn that
+// counted nothing.
+async function recordTurn($: EngineInterface, e: TurnCompleteInput): Promise<number | undefined> {
+  if (e.agentId !== undefined || e.usage === undefined) return undefined
   const entry = turnEntry(e.usage, (await $.session.usage()).cost?.usd)
   const key = ledgerKey(ledgerProject || (await $.session.cwd()), localDay(await $.clock.now()))
   await $.store.set(key, add(asEntry(await $.store.get(key)), entry))
+  return entry.cost_usd
 }
 
 export const register: Register = (on, options) => {
@@ -272,10 +307,11 @@ export const register: Register = (on, options) => {
   let sessions = ''
   let rings: string[] = []
   // Times are $.clock's (ms since the epoch).
-  let bandEnteredAt: number | undefined // undefined: not in the checkpoint band
+  const bandState: BandState = { early: false } // the checkpoint band (updateBand)
   let lastSaveAt: number | undefined // a deliberate checkpoint save that succeeded
   let compactAsked = false // compact_now succeeded this turn
   let compactRequested = false // a compaction is scheduled
+  const early = settings.earlyCompaction
 
   // A deliberate save that succeeded: checkpoint(save), or
   // compact_now, which banks the draft and asks for the compaction at the
@@ -299,7 +335,7 @@ export const register: Register = (on, options) => {
   })
 
   // Inside the band with a save made since the band was entered.
-  const savedInBand = () => bandEnteredAt !== undefined && lastSaveAt !== undefined && lastSaveAt >= bandEnteredAt
+  const savedInBand = () => bandState.enteredAt !== undefined && lastSaveAt !== undefined && lastSaveAt >= bandState.enteredAt
 
   registerBand(on)
   registerPane(on)
@@ -356,6 +392,7 @@ export const register: Register = (on, options) => {
         sessionsReady = true
       }
       const usage = await $.session.usage()
+      await updateBand($, usage, early, bandState)
       const five = usage.rateLimits.find(r => r.kind === 'five_hour')
       const seven = usage.rateLimits.find(r => r.kind === 'seven_day')
       const rec: Mirror = {
@@ -375,24 +412,13 @@ export const register: Register = (on, options) => {
         seven_day_resets_at: epochSeconds(seven?.resetsAt),
         rate_limits: rateLimitsOf(usage.rateLimits),
       }
+      if (bandState.early && early !== undefined) rec.early_band = early.label
       await $.fs.write(mirrorPath, JSON.stringify(rec))
       await $.fs.write(markerPath, JSON.stringify({ plugin: PLUGIN, version: VERSION, ts: rec.ts }))
 
-      // Band bookkeeping for the compaction, against Claude Code's own
-      // compaction window.
-      const tokens = tokensOf(usage.context)
-      const point = (await $.session.usage({ breakdown: 'summary' })).context.breakdown?.rawMaxTokens
-        ?? defaultPoint(usage.context.window)
-      const th = thresholds(usage.context.window, point)
-      if (tokens !== undefined && tokens >= th.checkpointAt) {
-        if (bandEnteredAt === undefined) bandEnteredAt = await $.clock.now()
-      } else {
-        bandEnteredAt = undefined
-      }
-
       const latest = await readLatest(ioOf($), rings, store)
       const pct = percentOf(usage.context)
-      const band = bandEnteredAt !== undefined && !savedInBand() ? ' · checkpoint now' : ''
+      const band = bandState.enteredAt !== undefined && !savedInBand() ? ' · checkpoint now' : ''
       if (settings.statusSegment) $.ui.status(`${PLUGIN} ctx ${pct === undefined ? '?' : pct + '%'} · ${ageText(latest?.created)}${band}`)
       // The same figures for the band above the prompt.
       await update($, pressure, () => ({ percent: pct, checkpointCreated: latest?.created, inBand: band !== '' }))
@@ -417,7 +443,8 @@ export const register: Register = (on, options) => {
       compactAsked = false
       const usage = await $.session.usage()
       const tokens = tokensOf(usage.context)
-      $.ui.toast(`${PLUGIN}: checkpoint banked, compacting at ${Math.round((tokens ?? 0) / 1000)}K`)
+      const why = bandState.early && early !== undefined ? ` (early_compaction ${early.label})` : ''
+      $.ui.toast(`${PLUGIN}: checkpoint banked, compacting at ${Math.round((tokens ?? 0) / 1000)}K${why}`)
       $.clock.after(COMPACT_DELAY_MS, () => {
         void (async () => {
           let compacted = false
@@ -428,7 +455,8 @@ export const register: Register = (on, options) => {
             $.ui.log(`${PLUGIN}: compaction failed: ${String(err)}`)
           } finally {
             compactRequested = false
-            bandEnteredAt = undefined
+            bandState.enteredAt = undefined
+            bandState.early = false
           }
           if (!compacted || !settings.continueAfterCompact) return
           try {
@@ -440,9 +468,13 @@ export const register: Register = (on, options) => {
       })
     }
     const done = await next(e)
-    // The ledger counts the turn once it is done.
+    // The ledger counts the turn once it is done. What the turn cost is the
+    // early_compaction row's dollar signal, so the band is judged again here
+    // and a save in the next turn counts.
     try {
-      await recordTurn($, e)
+      const cost = await recordTurn($, e)
+      if (cost !== undefined) bandState.lastTurnCostUsd = cost
+      if (early?.usd !== undefined && cost !== undefined) await updateBand($, await $.session.usage(), early, bandState)
     } catch (err) {
       $.ui.log(`${PLUGIN}: ledger: ${String(err)}`)
     }
@@ -451,7 +483,8 @@ export const register: Register = (on, options) => {
 
   // Any compaction, ours or the engine's, opens a new cycle.
   on('session.compact', ($, e, next) => {
-    bandEnteredAt = undefined
+    bandState.enteredAt = undefined
+    bandState.early = false
     compactAsked = false
     compactRequested = false
     return next(e)

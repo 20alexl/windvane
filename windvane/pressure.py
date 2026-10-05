@@ -492,10 +492,15 @@ def assess(mirror: Optional[dict], project_dir: str = "") -> dict:
     point, source = d["point"], d["source"]
     th = thresholds(window, point, project_dir)
     band = "clear"
-    if used >= th["checkpoint_at"]:
+    # The mod's early_compaction row opens the band below the margin; the
+    # mirror says so with the row's value, which the nudge names.
+    early = str(mirror.get("early_band") or "").strip()
+    if used >= th["checkpoint_at"] or early:
         band = "checkpoint"
     elif used >= th["headsup_at"]:
         band = "headsup"
+    if early:
+        out["early"] = early
     out.update(
         band=band,
         used=used,
@@ -734,9 +739,17 @@ _DRAFTED = (
 
 def checkpoint_text(a: dict) -> str:
     left = max(0, int(a["trigger_at"]) - int(a["used"]))
+    early = a.get("early")
+    why = (
+        f"the early_compaction setting ({early}) opens the checkpoint band here, "
+        "and the turn boundary after the save compacts; "
+        if early
+        else ""
+    )
     return (
         "<windvane-context>CHECKPOINT NOW: "
-        f"{_k(left)} tokens to the auto-compaction trigger (~{_k(a['trigger_at'])}; "
+        + why
+        + f"{_k(left)} tokens to the auto-compaction trigger (~{_k(a['trigger_at'])}; "
         f"the {_k(a['point'])} setting minus the output reserve). "
         + _DRAFTED
         + " Then continue; a compaction banks the draft as it stands.</windvane-context>"

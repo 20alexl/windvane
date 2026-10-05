@@ -29,13 +29,38 @@ export type Settings = {
   // false: a compaction windvane started ends the session's work until the
   // person types; true: windvane's own prompt resumes it.
   continueAfterCompact: boolean
+  // The early_compaction row: the checkpoint band also opens at this fill
+  // (a percentage of the window) or once one turn has cost this much (a
+  // dollar figure, the session's own priced cost across the turn).
+  // undefined: the band opens only at the engine's margin above the trigger.
+  earlyCompaction: EarlyCompaction | undefined
 }
+
+export type EarlyCompaction = { label: string; percent?: number; usd?: number }
 
 // A positive whole number of characters, from a string or a number; anything
 // else is undefined.
 export function budgetOf(raw: unknown): number | undefined {
   const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw.trim()) : NaN
   return Number.isInteger(n) && n > 0 ? n : undefined
+}
+
+// The early_compaction row: '40%' (a fill, 1..99 percent of the window) or
+// '$0.40' (one turn's cost in dollars, above zero). Anything else is off.
+export function earlyCompactionOf(raw: unknown): EarlyCompaction | undefined {
+  if (typeof raw !== 'string') return undefined
+  const s = raw.trim()
+  const pct = /^(\d+(?:\.\d+)?)\s*%$/.exec(s)
+  if (pct) {
+    const n = Number(pct[1])
+    return n > 0 && n < 100 ? { label: `${n}%`, percent: n } : undefined
+  }
+  const usd = /^\$\s*(\d+(?:\.\d+)?)$/.exec(s)
+  if (usd) {
+    const n = Number(usd[1])
+    return n > 0 ? { label: `$${n}`, usd: n } : undefined
+  }
+  return undefined
 }
 
 // register(on, options): the values as the modules use them.
@@ -46,6 +71,7 @@ export function settingsOf(options: PluginOptions | undefined): Settings {
     statusSegment: o.status_segment !== false,
     resultBudget: budgetOf(o.result_budget),
     continueAfterCompact: o.continue_after_compact !== false,
+    earlyCompaction: earlyCompactionOf(o.early_compaction),
   }
 }
 

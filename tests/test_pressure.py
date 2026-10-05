@@ -216,6 +216,21 @@ def test_assessment_bands(monkeypatch):
     assert cp.assess(None)["band"] == "nodata"
 
 
+def test_a_mirror_the_mod_marked_early_opens_the_checkpoint_band(monkeypatch):
+    """The mod's early_compaction row opens its band below the margin and
+    says so in the mirror; the engine's nudge fires there and names the
+    row. Without the mark the same fill is clear."""
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
+    plain = {"total_input_tokens": 400_000, "context_window_size": 1_000_000}
+    assert cp.assess(plain)["band"] == "clear"
+    a = cp.assess({**plain, "early_band": "40%"})
+    assert a["band"] == "checkpoint" and a["early"] == "40%"
+    text = cp.checkpoint_text(a)
+    assert text.startswith("<windvane-context>CHECKPOINT NOW: the early_compaction setting (40%)")
+    assert "turn boundary after the save compacts" in text and "318K tokens to the auto-compaction trigger" in text
+    assert "early_compaction" not in cp.checkpoint_text(cp.assess({**plain, "total_input_tokens": 725_000}))
+
+
 def test_nudges_latch_once_per_band_per_compaction_cycle(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
     sid = "s-nudge"

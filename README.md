@@ -77,7 +77,7 @@ The recorder drafts the whole checkpoint. It takes the task, warnings and contex
 
 A checkpoint keeps the last 20 deliberate saves per project in a ring. Restore reads this session's newest deliberate checkpoint, skipping one saved on a branch of the conversation that was rewound, and falls back to the project's newest. The answer says how far the repository moved since the save.
 
-Compaction happens at windvane's point, not at whatever state happened to be saved. The mod mirrors the engine's pressure bands. When the fill is inside the checkpoint band and a deliberate save has landed since the band was entered, the next turn boundary compacts. `compact_now` does the same on request. After a compaction windvane started, the session does not wait for a person: windvane sends one prompt that resumes the work from the checkpoint, with the rules and the checkpoint arriving in the session-start brief (the `continue_after_compact` option turns this off). If neither happens, Claude Code compacts at its own trigger and the before-compaction hook banks the draft as the floor.
+Compaction happens at windvane's point, not at whatever state happened to be saved. The mod mirrors the engine's pressure bands. When the fill is inside the checkpoint band and a deliberate save has landed since the band was entered, the next turn boundary compacts. `compact_now` does the same on request. The `early_compaction` row opens the band sooner, at a fill such as `40%` of the window or once one turn has cost as much as `$0.40`, for a session that would rather compact a few more times than pay for a large context on every turn; the save is still required, so nothing is lost. After a compaction windvane started, the session does not wait for a person: windvane sends one prompt that resumes the work from the checkpoint, with the rules and the checkpoint arriving in the session-start brief (the `continue_after_compact` option turns this off). If neither happens, Claude Code compacts at its own trigger and the before-compaction hook banks the draft as the floor.
 
 When the compaction finishes, one message after the summary carries the rules and the checkpoint. The session-start banner then leaves them out, so they appear once.
 
@@ -99,7 +99,7 @@ A detector is hand-written: tool names, a command regex, path globs, an input re
 
 ## Configuration
 
-Seven rows are set in the plugin config: `python`, `status_segment`, `result_budget`, `semantic`, `alert_command`, `strict_pack` and `autonomy`. Every engine setting in the table below is also a key in `.windvane/config.json` in the project or in `~/.windvane/config.json`, and an environment variable named `WINDVANE_` plus the key in capitals. The first layer that names a key wins, in this order: environment, project file, plugin config, user file.
+Nine rows are set in the plugin config: `python`, `status_segment`, `result_budget`, `semantic`, `alert_command`, `strict_pack`, `autonomy`, `continue_after_compact` and `early_compaction`. Every engine setting in the table below is also a key in `.windvane/config.json` in the project or in `~/.windvane/config.json`, and an environment variable named `WINDVANE_` plus the key in capitals. The first layer that names a key wins, in this order: environment, project file, plugin config, user file.
 
 | Key | Default | What it does |
 |---|---|---|

@@ -30,8 +30,10 @@ To print every setting as resolved for a project: `python -m windvane.config <pr
 | `alert_command` | string | empty | A shell command that receives one line when an unattended run halts, hits a usage limit or needs input. Empty means no alerts. |
 | `strict_pack` | boolean | false | Seed the strict pack (style and workflow rules) beside the default pack in every new project. |
 | `autonomy` | boolean | false | Stall nudges and the halt brake for unattended runs. Off for an attended session. |
+| `continue_after_compact` | boolean | true | After a compaction windvane started, one prompt of windvane's resumes the work from the checkpoint. Off, the session waits for the person. |
+| `early_compaction` | string | empty | Open the checkpoint band early: at a fill such as `40%` of the window, or once one turn has cost as much as `$0.40` (the session's own priced cost across the turn). The band asks for a save, and the turn boundary after the save compacts. Empty keeps the band at its margin above the trigger. Any other spelling is ignored. |
 
-`python`, `status_segment`, `result_budget` and `semantic` are plugin rows only, with `WINDVANE_PYTHON`, `WINDVANE_RESULT_BUDGET` and `WINDVANE_SEMANTIC` as their environment switches. They are not config-file keys. `alert_command`, `strict_pack` and `autonomy` are also engine settings and follow the layers above.
+`python`, `status_segment`, `result_budget`, `semantic`, `continue_after_compact` and `early_compaction` are plugin rows only, with `WINDVANE_PYTHON`, `WINDVANE_RESULT_BUDGET` and `WINDVANE_SEMANTIC` as the environment switches of the first three. They are not config-file keys. `alert_command`, `strict_pack` and `autonomy` are also engine settings and follow the layers above.
 
 ## Every setting
 

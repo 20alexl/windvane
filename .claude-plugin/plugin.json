@@ -52,6 +52,12 @@
       "title": "Continue after compaction",
       "description": "After a compaction windvane started (compact_now, or the checkpoint band), windvane sends one prompt that resumes the work from the checkpoint. Off, the session waits for the person.",
       "default": true
+    },
+    "early_compaction": {
+      "type": "string",
+      "title": "Early compaction",
+      "description": "Open the checkpoint band early: at a fill such as 40% of the window, or once one turn has cost as much as $0.40. The band asks for a save and the next turn boundary after the save compacts. Empty keeps the band at its margin above the trigger.",
+      "default": ""
     }
   }
 }

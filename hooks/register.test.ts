@@ -8,6 +8,8 @@
 import type { On, SessionUsage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
+import { earlyCompactionOf } from './engine'
+
 const SID = 'aaaaaaaa-0000-4000-8000-00000000000a'
 const STORE = 'C:/tmp/windvane-test-store'
 const SUMMARY = { role: 'user' as const, text: 'Summary of the conversation so far.', toolUses: [] }
@@ -150,7 +152,19 @@ test('writes the mirror from usage and compacts in the band only after a save', 
 
 // A session in the band, the store's sessions folder present, the engine
 // answering every tool call and every brief.
-type Counters = { compactions: number; statuses: string[]; briefs: number; prompts?: string[]; veto?: boolean; noSessions?: boolean }
+type Counters = {
+  compactions: number
+  statuses: string[]
+  briefs: number
+  prompts?: string[]
+  veto?: boolean
+  noSessions?: boolean
+  // The session's priced cost, when the test moves it between turns.
+  cost?: number
+  // Every file the mod wrote, by forward-slash path, when the test reads them.
+  written?: Record<string, string>
+  toasts?: string[]
+}
 
 function inBand(
   on: On,
@@ -163,7 +177,7 @@ function inBand(
   on('session.model', () => ({ value: 'claude-test' }))
   on('session.root', () => ({ value: 'E:/demo' }))
   on('session.cwd', () => ({ value: 'E:/demo/proj' }))
-  on('session.usage', () => ({ value: usageAt(tokens) }))
+  on('session.usage', () => ({ value: { ...usageAt(tokens), ...(counters.cost === undefined ? {} : { cost: { usd: counters.cost } }) } }))
   on('session.compact', () => {
     if (counters.veto) return { skip: 'blocked by a hook' }
     counters.compactions += 1
@@ -176,12 +190,18 @@ function inBand(
   })
   on('fs.exists', ($, e) => ({ value: counters.noSessions !== true && e.path.replace(/\\/g, '/').endsWith('/sessions') }))
   on('fs.read', () => ({ value: '' }))
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.write', ($, e) => {
+    if (counters.written) counters.written[e.path.replace(/\\/g, '/')] = e.text
+    return { value: undefined }
+  })
   on('ui.status', ($, e) => {
     counters.statuses.push(JSON.stringify(e))
     return { value: undefined }
   })
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', ($, e) => {
+    counters.toasts?.push(JSON.stringify(e))
+    return { value: undefined }
+  })
   on('ui.log', () => ({ value: undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('process.run', ($, e) => {
@@ -299,4 +319,86 @@ test('status_segment on (the default): the segment names the fill', async ($, on
 
   await $.session.start(START)
   expect(counters.statuses.join('\n')).toContain('windvane ctx 70%')
+})
+
+// The early_compaction row: a fill or a turn cost opens the band below the
+// engine's margin; the save is still what compacts.
+test('the early_compaction row reads a fill or a turn cost, nothing else', async () => {
+  expect(earlyCompactionOf('40%')).toEqual({ label: '40%', percent: 40 })
+  expect(earlyCompactionOf(' 62.5 % ')).toEqual({ label: '62.5%', percent: 62.5 })
+  expect(earlyCompactionOf('$0.40')).toEqual({ label: '$0.4', usd: 0.4 })
+  expect(earlyCompactionOf('$ 2')).toEqual({ label: '$2', usd: 2 })
+  for (const off of ['', '0.4', '40', '0%', '100%', '$0', 'forty', 40, true, undefined]) {
+    expect(earlyCompactionOf(off)).toBe(undefined)
+  }
+})
+
+test('early_compaction at a fill: the band opens there, the engine is told, the save compacts', { options: { early_compaction: '40%' } }, async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, toasts: [] }
+  const clock = mock.clock(on)
+  // 45% of the window: far below the engine's band (698K), above the row.
+  inBand(on, counters, 450_000)
+
+  await $.session.start(START)
+  // The band is open for the row's reason: the segment asks for the save and
+  // the mirror carries the row's value for the engine's nudge.
+  expect(counters.statuses.join('\n')).toContain('checkpoint now')
+  const mirror = JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}')
+  expect(mirror.early_band).toBe('40%')
+
+  // No save yet: a turn boundary does not compact.
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(0)
+
+  // The save lands; the next turn boundary compacts and the toast says why.
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  expect(counters.toasts?.join('\n')).toContain('early_compaction 40%')
+})
+
+test('early_compaction at a turn cost: the band opens after a turn that cost that much', { options: { early_compaction: '$0.50' } }, async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, cost: 0 }
+  const clock = mock.clock(on)
+  // The ledger records each counted turn in the store; the turn's cost is
+  // what the row reads.
+  const store: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: store[e.key] }))
+  on('store.set', ($, e) => {
+    store[e.key] = e.value
+    return { value: undefined }
+  })
+  // 20% of the window: no fill reason at all.
+  inBand(on, counters, 200_000)
+  const counted = () => ({ ...turnEnd(), usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-test' } })
+
+  await $.session.start(START)
+  expect(JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}').early_band).toBe(undefined)
+
+  // A cheap turn: the band stays shut, and a save after it compacts nothing.
+  counters.cost = 0.3
+  await $.turn.complete(counted())
+  await clock.advance(10_000)
+  expect(counters.statuses.join('\n')).not.toContain('checkpoint now')
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.turn.complete(counted())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(0)
+
+  // A turn that cost 0.60: the band opens at its end, before any tick.
+  counters.cost = 0.9
+  await $.turn.complete(counted())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(0)
+  // The next turn saves; its boundary compacts.
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.turn.complete(counted())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  // The saving turn itself cost nothing more, so the dollar reason is gone
+  // again: the row re-arms per turn, and the mirror says so.
+  await clock.advance(10_000)
+  expect(JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}').early_band).toBe(undefined)
 })
