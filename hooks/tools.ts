@@ -308,10 +308,10 @@ async function serve($: EngineInterface, name: ToolShort, e: Record<string, unkn
 // One matched hook per tool; each matcher names its tool literally.
 export function registerTools(on: On, settings: Settings): void {
   const args = (e: unknown) => e as Record<string, unknown>
-  on('tool.call', { tool: TOOL_NAMES.checkpoint }, async ($, e) => serve($, 'checkpoint', args(e), settings))
-  on('tool.call', { tool: TOOL_NAMES.compact_now }, async ($, e) => serve($, 'compact_now', args(e), settings))
-  on('tool.call', { tool: TOOL_NAMES.memory }, async ($, e) => serve($, 'memory', args(e), settings))
-  on('tool.call', { tool: TOOL_NAMES.log }, async ($, e) => serve($, 'log', args(e), settings))
-  on('tool.call', { tool: TOOL_NAMES.mine }, async ($, e) => serve($, 'mine', args(e), settings))
-  on('tool.call', { tool: TOOL_NAMES.deps }, async ($, e) => serve($, 'deps', args(e), settings))
+  on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e) => serve($, 'checkpoint', args(e), settings))
+  on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e) => serve($, 'compact_now', args(e), settings))
+  on('tool.call', { tool: 'mcp__windvane__memory' }, async ($, e) => serve($, 'memory', args(e), settings))
+  on('tool.call', { tool: 'mcp__windvane__log' }, async ($, e) => serve($, 'log', args(e), settings))
+  on('tool.call', { tool: 'mcp__windvane__mine' }, async ($, e) => serve($, 'mine', args(e), settings))
+  on('tool.call', { tool: 'mcp__windvane__deps' }, async ($, e) => serve($, 'deps', args(e), settings))
 }

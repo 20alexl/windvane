@@ -417,7 +417,7 @@ async function loadCensus($: EngineInterface): Promise<Census> {
   const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
   const configDir = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\\/g, '/')
   const enabled = isRecord(merged.enabledPlugins)
-    ? Object.entries(merged.enabledPlugins).filter(([, on]) => on === true).map(([id]) => id)
+    ? Object.entries(merged.enabledPlugins).filter(([, flag]) => flag === true).map(([id]) => id)
     : []
   const self = normalizePath($.plugin.root)
   let selfListed = false

@@ -51,7 +51,6 @@ import {
   CHECK_TIMEOUT_MS,
   INSTALL_TIMEOUT_MS,
   SEMANTIC_OFFER_KEY,
-  SEMANTIC_ROW,
   checkArgv,
   extraInstalledFrom,
   installArgv,
@@ -62,7 +61,7 @@ import {
 } from './setup'
 import { ageText, normalizePath, readLatest, readManifest, ringsFor, storePath } from './ring'
 import { STRICT_COMMAND, registerStrict } from './strict'
-import { TOOL_NAMES, TOOL_SPECS, registerTools } from './tools'
+import { TOOL_SPECS, registerTools } from './tools'
 import type { Io } from './ring'
 
 // $.state values the band and the pane draw from (../types/index.d.ts).
@@ -210,14 +209,14 @@ async function offerSemantic($: EngineInterface, e: { isInteractive: boolean }, 
   if (((await $.env.get('WINDVANE_SEMANTIC')) ?? '').trim() !== '') return
   const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), settings.python)
   const env = engineEnv($.plugin.root, storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME')))
-  const on = rowOnFrom(await $.config.list())
+  const rowOn = rowOnFrom(await $.config.list())
   let installed = false
   try {
     installed = extraInstalledFrom(await $.process.run(checkArgv(python), { env, timeoutMs: CHECK_TIMEOUT_MS }))
   } catch {
     installed = false
   }
-  const offer = offerFor(on, installed)
+  const offer = offerFor(rowOn, installed)
   if (!offer) {
     await $.store.set(SEMANTIC_OFFER_KEY, recordOf('done'))
     return
@@ -253,8 +252,9 @@ async function offerSemantic($: EngineInterface, e: { isInteractive: boolean }, 
       return
     }
   }
-  if (!on) {
-    const set = await $.config.set({ key: SEMANTIC_ROW, value: true })
+  if (!rowOn) {
+    // The row's key as fixed text: the directory reads the call as written.
+    const set = await $.config.set({ key: 'windvane.semantic', value: true })
     if (set.deny) {
       $.ui.toast(`${PLUGIN}: the semantic row stayed off: ${set.deny}`)
       await $.store.set(SEMANTIC_OFFER_KEY, recordOf('later'))
@@ -349,11 +349,11 @@ export const register: Register = (on, options) => {
     if (ok && compactNow && (e as unknown as { agentId?: string }).agentId === undefined) compactAsked = true
     return ran
   }
-  on('tool.call', { tool: TOOL_NAMES.checkpoint }, async ($, e, next) => {
+  on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e, next) => {
     const ran = await next(e)
     return noteSave(e, ran, false, await $.clock.now())
   })
-  on('tool.call', { tool: TOOL_NAMES.compact_now }, async ($, e, next) => {
+  on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e, next) => {
     const ran = await next(e)
     return noteSave(e, ran, true, await $.clock.now())
   })

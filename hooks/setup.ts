@@ -56,9 +56,9 @@ export function installArgv(python: string): string[] {
 }
 
 // The question for the state found, or undefined when both are in place.
-export function offerFor(on: boolean, installed: boolean): { act: string; question: string } | undefined {
-  if (on && installed) return undefined
-  if (on) {
+export function offerFor(rowOn: boolean, installed: boolean): { act: string; question: string } | undefined {
+  if (rowOn && installed) return undefined
+  if (rowOn) {
     return {
       act: 'Install',
       question:
