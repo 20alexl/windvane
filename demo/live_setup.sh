@@ -83,6 +83,11 @@ except (OSError, ValueError):
 drop = {"oauthAccount", "projects", "userID", "machineID", "pluginUsage", "claudeAiMcpEverConnected",
         "mcpNeedsAuthNoticed", "officialMarketplaceAutoInstallAttempted"}
 out = {k: v for k, v in base.items() if k not in drop}
+# A startup announcement (a survey invitation, a launch notice) is shown a
+# few times, counted here; the take has no room for one.
+imp = out.get("announcementImpressions")
+if isinstance(imp, dict):
+    out["announcementImpressions"] = {k: (99 if isinstance(v, int) else v) for k, v in imp.items()}
 out.update(hasCompletedOnboarding=True, theme="dark", autoUpdates=False,
            officialMarketplaceAutoInstalled=True,
            # the "try the new fullscreen renderer" prompt shows below 3

@@ -99,10 +99,13 @@ Wait+Screen@120s /(?i)windvane plugin sent a message|Continue from the checkpoin
 Sleep 4s
 Screenshot demo/screenshots-live/5b-continue.png
 
-# 6: the pane: the checkpoint, the rules, the mistakes.
+# 6: the pane: the checkpoint, the rules, the mistakes. The continue turn
+# is still running when this is typed, so Claude Code queues the command
+# and runs it when that turn ends; the wait is for the pane's own Refresh
+# button, which nothing else on the screen says, with time for the turn.
 Type "/windvane"
 Enter
-Wait+Screen@30s /(?i)rules/
+Wait+Screen@240s /\[ Refresh \]/
 Sleep 2500ms
 Screenshot demo/screenshots-live/6-pane.png
 Escape
