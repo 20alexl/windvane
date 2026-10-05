@@ -52,37 +52,39 @@ Show
 Sleep 1500ms
 Screenshot demo/screenshots-live/1-open.png
 
-# 2: one prompt that reads the API document and edits the api file. The
-# read is what carries the fill into the checkpoint band (the document is
-# sized for it in build_fixture.py). The typed text must be on screen before
-# Enter (a dropped prompt fails here in seconds, not after the long wait);
-# it wraps inside the prompt box, so the check allows a line break between
-# the two words. The prompt names the file, so the wait after it is for the
-# edit tool's own row, not the file name.
-Type "Read docs/API.md, then edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
-Wait+Screen@10s /cursor\s+pagination/
+# 2: a first prompt that reads the API document. The read is what carries
+# the fill into the checkpoint band (the document is sized for it in
+# build_fixture.py), and the turn ends there with nothing banked. The typed
+# text must be on screen before Enter (a dropped prompt fails here in
+# seconds, not after the long wait); it may wrap inside the prompt box, so
+# the check allows a line break between the words.
+Type "Read docs/API.md and tell me in two lines how paging works today"
+Wait+Screen@10s /paging\s+works/
 Enter
-Wait+Screen@240s /(?i)(update|edit|write)\(items_api|Bash\(/
-Screenshot demo/screenshots-live/2-edit.png
+Wait+Screen@240s /(?i)Read\s*\(|Read 1 file/
+Screenshot demo/screenshots-live/2-read.png
 
-# 3: the turn is over and the fill is in the band: the status segment says
-# checkpoint now.
+# 3: the fill is in the band: the status segment says checkpoint now. The
+# engine never blocks a turn's end, and a note that rides a tool call
+# inside a turn races the ten-second mirror tick, so the demo lets the turn
+# end and puts the note on the next prompt, where it always arrives.
 Wait+Screen@240s /(?i)checkpoint now/
 Sleep 1s
 Screenshot demo/screenshots-live/3-band.png
 
-# 4: the read opened the band while the turn was still running, so the
-# engine's CHECKPOINT NOW note rides the next tool call of the same turn
-# (the engine never blocks a turn's end; the note comes with a prompt or a
-# tool call). The model banks the checkpoint itself, a bare save through
-# the plugin's tool, after its edits. Nothing is typed: a queued prompt
-# would run before the compaction and before windvane's own continue.
+# 4: the edit prompt. It carries the engine's CHECKPOINT NOW note, so the
+# model banks the checkpoint itself, a bare save through the plugin's tool,
+# and does the edit. Nothing is typed after this: a queued prompt would run
+# before the compaction and before windvane's own continue.
+Type "Edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
+Wait+Screen@10s /cursor\s+pagination/
+Enter
 Wait+Screen@240s /(?i)checkpoint \(MCP\)|Checkpoint saved|operation: "save"/
 Sleep 1s
 Screenshot demo/screenshots-live/4-saved.png
 
-# 5: the turn ends; the mod compacts at the boundary with the save banked,
-# and the brief sits right after the summary.
+# 5: the turn ends after the edit; the mod compacts at the boundary with
+# the save banked, and the brief sits right after the summary.
 Wait+Screen@300s /(?i)compacted|windvane-compact/
 Sleep 2s
 Screenshot demo/screenshots-live/5-compacted.png
