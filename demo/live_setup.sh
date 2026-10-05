@@ -69,6 +69,9 @@ out.update(hasCompletedOnboarding=True, theme="dark", autoUpdates=False,
            officialMarketplaceAutoInstalled=True,
            # the "try the new fullscreen renderer" prompt shows below 3
            fullscreenUpsellSeenCount=3,
+           # the first edit of a .py file otherwise opens the "install the
+           # pyright LSP plugin" dialog, which swallows whatever is typed
+           lspRecommendationDisabled=True,
            projects={proj: {"hasTrustDialogAccepted": True, "hasCompletedProjectOnboarding": True,
                             "allowedTools": [], "projectOnboardingSeenCount": 1}})
 with open(dest, "w", encoding="utf-8", newline="\n") as f:

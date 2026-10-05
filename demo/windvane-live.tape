@@ -71,15 +71,12 @@ Wait+Screen@240s /(?i)checkpoint now/
 Sleep 1s
 Screenshot demo/screenshots-live/3-band.png
 
-# 4: the next prompt carries the engine's CHECKPOINT NOW note (the engine
-# never blocks a turn's end, so the note rides the next prompt or tool
-# call), and the model banks the checkpoint itself, a bare save through the
-# plugin's tool, before the small edit asked for. Nothing more is typed
-# after this: a queued prompt would start the next turn and block the
-# compaction.
-Type "Add one line to README.md that mentions the cursor parameter"
-Wait+Screen@10s /cursor\s+parameter/
-Enter
+# 4: the read opened the band while the turn was still running, so the
+# engine's CHECKPOINT NOW note rides the next tool call of the same turn
+# (the engine never blocks a turn's end; the note comes with a prompt or a
+# tool call). The model banks the checkpoint itself, a bare save through
+# the plugin's tool, after its edits. Nothing is typed: a queued prompt
+# would run before the compaction and before windvane's own continue.
 Wait+Screen@240s /(?i)checkpoint \(MCP\)|Checkpoint saved|operation: "save"/
 Sleep 1s
 Screenshot demo/screenshots-live/4-saved.png
