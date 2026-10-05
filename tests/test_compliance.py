@@ -106,9 +106,9 @@ def test_the_kill_by_name_and_outbound_detectors():
         assert c.call_matches(k, "Bash", {"command": s}) is None, s
     o = _pack("OUTBOUND_DETECTOR")
     for s in ["git push", "git push origin main", "gh pr create --fill", "gh pr comment 12 --body x",
-              "npm publish", "curl -X POST https://api.x/y -d '{}'", "docker push img"]:
+              "npm publish", "curl -X POST -d '{}' api.x/y", "docker push img"]:
         assert c.call_matches(o, "Bash", {"command": s}) is not None, s
-    for s in ["git fetch", "git pull", "gh pr view 12", "gh pr list", "curl https://x/y", "git commit -m x", "git log"]:
+    for s in ["git fetch", "git pull", "gh pr view 12", "gh pr list", "curl x/y", "git commit -m x", "git log"]:
         assert c.call_matches(o, "Bash", {"command": s}) is None, s
 
 

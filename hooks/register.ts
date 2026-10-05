@@ -559,9 +559,11 @@ export const register: Register = (on, options) => {
     if ('answer' in got) return { ...got.answer }
     return next(e)
   })
+  // SessionStart's answer is the banner alone, named here so the directory
+  // reads that the session's first message is left as it is.
   on('classic.SessionStart', async ($, e, next) => {
     const got = await bridgeDecision(hostOf($), e)
-    if ('answer' in got) return { ...got.answer }
+    if ('answer' in got) return { additionalContext: got.answer.additionalContext ?? [] }
     return next(e)
   })
   on('classic.Notification', async ($, e, next) => {

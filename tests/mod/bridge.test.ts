@@ -33,6 +33,7 @@ const WINDVANE_HOOKS = {
     { matcher: 'ExitPlanMode|TaskUpdate', hooks: [remind('post_milestone_json')] },
   ],
   Stop: [{ matcher: '', hooks: [remind('stop_json')] }],
+  SessionStart: [{ matcher: '', hooks: [remind('session_start_json')] }],
   SessionEnd: [{ matcher: '', hooks: [remind('session_end_json')] }],
   Notification: [
     { matcher: '', hooks: [remind('notification_json')] },
@@ -138,6 +139,16 @@ test('plain stdout is context on UserPromptSubmit only; block and stop shapes ma
   const stopped = await $.classic.Stop({ stop_hook_active: false, last_assistant_message: 'done' })
   expect(stopped.preventContinuation).toBe(true)
   expect(stopped.stopReason).toBe('halted')
+})
+
+test('SessionStart answers with the banner alone, and with an empty context when the daemon says nothing', async ($, on) => {
+  let output: string | object = ctx('SessionStart', '<windvane-brief>the banner</windvane-brief>')
+  const t = engine(on, { answer: () => ok(output) })
+  const first = await $.classic.SessionStart({ source: 'startup' } as never)
+  expect(first).toEqual({ additionalContext: ['<windvane-brief>the banner</windvane-brief>'] })
+  expect(t.fetched.map(f => f.hook)).toEqual(['session_start_json'])
+  output = ''
+  expect(await $.classic.SessionStart({ source: 'resume' } as never)).toEqual({ additionalContext: [] })
 })
 
 test('a PostToolUse answer carries its context and a rewritten tool output', async ($, on) => {

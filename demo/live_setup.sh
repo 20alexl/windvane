@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The world the live recording (demo/windvane-live.tape) starts from.
-# Run from the repository root in WSL or Linux:
+# Run from the repository root in WSL or Linux, then source the environment
+# it wrote:
 #
-#   eval "$(bash demo/live_setup.sh)"
+#   bash demo/live_setup.sh && source /tmp/wv-demo/env.sh
 #
 # Everything lives under /tmp/wv-demo and is rebuilt from nothing on every
 # run, so each take starts the same:
@@ -26,7 +27,7 @@
 # The real stores (~/.windvane, ~/.claude) are only read: the credentials
 # file and the onboarding answers are copied from them.
 #
-# Progress goes to stderr; stdout is the export lines to eval.
+# Progress goes to stderr; the export lines go to /tmp/wv-demo/env.sh.
 
 set -euo pipefail
 
@@ -130,9 +131,11 @@ tar -C "$REPO" --exclude=.git --exclude=__pycache__ --exclude=.claude-plugin/typ
 echo "seeded $ROOT (window $WINDOW), plugin snapshot at $ROOT/plugin" >&2
 
 if [ -n "$LOGIN_NOTE" ]; then
-  printf 'echo %q >&2\n' "$LOGIN_NOTE"
+  printf 'echo %q >&2\n' "$LOGIN_NOTE" > "$ROOT/env.sh"
+else
+  : > "$ROOT/env.sh"
 fi
-cat <<EOF
+cat >> "$ROOT/env.sh" <<EOF
 export PATH="\$HOME/.local/bin:\$PATH"
 export CLAUDE_CONFIG_DIR=$ROOT/config
 export WINDVANE_DIR=$ROOT/store

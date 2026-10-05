@@ -37,7 +37,7 @@ Set Theme { "name": "windvane-dark", "background": "#121417", "foreground": "#d8
 
 # The world, the plain prompt, the session; none of it recorded.
 Hide
-Type `eval "$(bash demo/live_setup.sh 2>/dev/null)" && cd /tmp/wv-demo/proj && clear`
+Type "bash demo/live_setup.sh 2>/dev/null && source /tmp/wv-demo/env.sh && cd /tmp/wv-demo/proj && clear"
 Enter
 Wait+Line@60s /\$\s*$/
 # The plugin is the snapshot live_setup.sh made, so nothing reloads mid-take.

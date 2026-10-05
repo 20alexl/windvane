@@ -88,7 +88,7 @@ def test_the_detectors_match_what_they_name():
     assert hit(rules.KILL_BY_NAME_DETECTOR, "taskkill /F /IM python.exe")
     assert not hit(rules.KILL_BY_NAME_DETECTOR, "taskkill /PID 4242")
     assert hit(rules.OUTBOUND_DETECTOR, "gh pr create --fill")
-    assert hit(rules.OUTBOUND_DETECTOR, "curl -X POST https://example.invalid/hook")
+    assert hit(rules.OUTBOUND_DETECTOR, "curl -X POST example.invalid/hook")
     assert not hit(rules.OUTBOUND_DETECTOR, "git status")
     for det in (rules.DESTRUCTIVE_DETECTOR, rules.KILL_BY_NAME_DETECTOR, rules.OUTBOUND_DETECTOR):
         assert det["unattended"] == "deny" and det["tools"] == ["Bash", "PowerShell"]

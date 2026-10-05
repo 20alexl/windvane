@@ -405,9 +405,9 @@ def api_doc() -> str:
             "### Examples",
             "",
             "```bash",
-            f'curl -H "Authorization: Bearer $TOKEN" "https://api.example.test/v1/{plural}?per_page=50&sort=-updated_at"',
-            f'curl -H "Authorization: Bearer $TOKEN" -X POST -d \'{{"name": "new {singular}"}}\' https://api.example.test/v1/{plural}',
-            f'curl -H "Authorization: Bearer $TOKEN" -X PATCH -d \'{{"status": "active"}}\' https://api.example.test/v1/{plural}/2',
+            f'curl -H "Accept: application/json" "https://api.example.test/v1/{plural}?per_page=50&sort=-updated_at"',
+            f'curl -H "Accept: application/json" -X POST -d \'{{"name": "new {singular}"}}\' https://api.example.test/v1/{plural}',
+            f'curl -H "Accept: application/json" -X PATCH -d \'{{"status": "active"}}\' https://api.example.test/v1/{plural}/2',
             "```",
             "",
         ]
