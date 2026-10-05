@@ -116,6 +116,8 @@ test('writes the mirror from usage and compacts in the band only after a save', 
   expect(mirror.rate_limits.seven_day_model).toEqual({ pct: 92, resets_at: Date.parse('2026-10-08T12:00:00.000Z') / 1000 })
   expect(mirror.rate_limits.five_hour.pct).toBe(9)
   expect(typeof mirror.five_hour_resets_at).toBe('number')
+  // The window the mod measured against, for reading a store afterwards.
+  expect(mirror.compaction_point).toBe(750_000)
   expect(written[`${STORE}/sessions/${SID}.mod`]).toContain('windvane')
 
   // Inside the band (750K point: trigger 718K, band from 698K) with no
@@ -248,6 +250,24 @@ test('compact_now banks, then compacts once when the turn ends', async ($, on) =
   expect(counters.prompts?.length).toBe(1)
 })
 
+test('a prompt the person typed while the compaction ran means no continue prompt', async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0 }
+  const clock = mock.clock(on)
+  inBand(on, counters)
+
+  await $.session.start(START)
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.turn.complete(turnEnd())
+  // Typed while the compaction is on its way (before the 250 ms the mod
+  // waits before compacting): the engine queues it, and it runs before
+  // anything a plugin submits, so a continue would be stale.
+  await clock.advance(200)
+  await $.prompt.submit({ text: 'and also rename the module', wait: false, origin: { kind: 'composer' } } as never)
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  expect(counters.prompts).toEqual(['and also rename the module'])
+})
+
 test('continue_after_compact off: the compaction happens, no prompt follows', { options: { continue_after_compact: false } }, async ($, on) => {
   const counters: Counters = { compactions: 0, statuses: [], briefs: 0 }
   const clock = mock.clock(on)
@@ -309,7 +329,8 @@ test('no sessions folder yet: ticks wait for the engine to create it, then the m
   // The engine's session-start hook made the folder: the next tick runs.
   counters.noSessions = false
   await clock.advance(10_000)
-  expect(counters.statuses.join('\n')).toContain('windvane ctx 10%')
+  // 100K of the 750K compaction window, the figure /context shows.
+  expect(counters.statuses.join('\n')).toContain('windvane ctx 13%')
 })
 
 test('status_segment on (the default): the segment names the fill', async ($, on) => {
@@ -318,7 +339,7 @@ test('status_segment on (the default): the segment names the fill', async ($, on
   inBand(on, counters)
 
   await $.session.start(START)
-  expect(counters.statuses.join('\n')).toContain('windvane ctx 70%')
+  expect(counters.statuses.join('\n')).toContain('windvane ctx 93%')
 })
 
 // The early_compaction row: a fill or a turn cost opens the band below the

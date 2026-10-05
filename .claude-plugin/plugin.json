@@ -14,7 +14,7 @@
     "status_segment": {
       "type": "boolean",
       "title": "Status segment",
-      "description": "Show the context fill and checkpoint age in the status line.",
+      "description": "Show the context fill (a share of the compaction window) and the checkpoint age in the status line.",
       "default": true
     },
     "result_budget": {
@@ -56,7 +56,7 @@
     "early_compaction": {
       "type": "string",
       "title": "Early compaction",
-      "description": "Open the checkpoint band early: at a fill such as 40% of the window, or once one turn has cost as much as $0.40. The band asks for a save and the next turn boundary after the save compacts. Empty keeps the band at its margin above the trigger.",
+      "description": "Open the checkpoint band early: at a fill such as 40% of the compaction window, or once one turn has cost as much as $0.40. The band asks for a save and the next turn boundary after the save compacts. Empty keeps the band at its margin above the trigger.",
       "default": ""
     }
   }

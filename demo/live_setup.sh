@@ -32,7 +32,12 @@ set -euo pipefail
 
 ROOT=/tmp/wv-demo
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WINDOW="${WV_WINDOW:-60000}"
+# Claude Code accepts autoCompactWindow from 100,000 to 1,000,000 tokens and
+# drops a smaller value when it next writes the settings file. At 100K the
+# checkpoint band is 48K to 68K on a 1M-window model; the fixture's API
+# document (demo/build_fixture.py) is sized so the first turn's read lands
+# the fill inside it.
+WINDOW="${WV_WINDOW:-100000}"
 
 case "$ROOT" in /tmp/*) ;; *) echo "refusing: $ROOT is not under /tmp" >&2; exit 1 ;; esac
 
@@ -70,9 +75,10 @@ with open(dest, "w", encoding="utf-8", newline="\n") as f:
     json.dump(out, f, indent=2)
 PY
 
-# The compaction window, in the settings too: the engine honours the
-# environment variable only from 100K up, the settings value at any size.
-printf '{\n  "autoCompactWindow": %s\n}\n' "$WINDOW" > "$ROOT/config/settings.json"
+# The compaction window, in the settings too, beside the bypass-permissions
+# acceptance: answering that dialog makes Claude Code rewrite this file, so
+# the answer is given here and the window survives.
+printf '{\n  "autoCompactWindow": %s,\n  "skipDangerousModePermissionPrompt": true\n}\n' "$WINDOW" > "$ROOT/config/settings.json"
 
 (cd "$REPO" && python3 demo/build_fixture.py --seed-live "$ROOT" "$ROOT/config") >&2
 
@@ -91,6 +97,9 @@ export WINDVANE_DIR=$ROOT/store
 export WINDVANE_PYTHON=python3
 export WINDVANE_NO_DAEMON=1
 export WINDVANE_SEMANTIC=0
+# The door would cut the API document's read to 60,000 characters; the take
+# needs the whole read in the context to reach the band.
+export WINDVANE_RESULT_BUDGET=120000
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW=$WINDOW
 export DISABLE_AUTOUPDATER=1
 export PS1='\$ '

@@ -130,6 +130,142 @@ def decode_cursor(cursor: str) -> int:
     return int(base64.urlsafe_b64decode(cursor.encode()).decode())
 '''
 
+# The API document the live take reads before its edit. It is sized so one
+# read of it carries the session's fill into the checkpoint band of a 100K
+# compaction window (demo/live_setup.sh): about 80,000 characters, some
+# 20,000 tokens, on top of a session's own 30-odd thousand. The door's budget
+# is raised for the take so the read reaches the context whole.
+API_DOC_CHARS = 80_000
+
+_RESOURCES = (
+    ("items", "item", "A thing the shop sells: a name, a price in cents, the stock on hand."),
+    ("tags", "tag", "A label an item carries; many items share one tag."),
+    ("collections", "collection", "A curated set of items shown together on the storefront."),
+    ("prices", "price", "A dated price for one item in one currency."),
+    ("stock", "stock level", "The quantity of one item in one warehouse."),
+    ("suppliers", "supplier", "A company that restocks items."),
+    ("orders", "order", "A customer's purchase of one or more items."),
+    ("shipments", "shipment", "A parcel that carries part of an order."),
+    ("invoices", "invoice", "The billing record for an order."),
+    ("customers", "customer", "An account that places orders."),
+    ("reviews", "review", "A customer's rating and text for an item."),
+    ("webhooks", "webhook", "A URL the API calls when a record changes."),
+    ("exports", "export", "A requested file of records, built in the background."),
+    ("audit", "audit entry", "One recorded change to any other record."),
+)
+
+_FIELDS = (
+    ("id", "integer", "Assigned by the server. Never reused."),
+    ("name", "string", "Up to 120 characters. Leading and trailing spaces are removed."),
+    ("slug", "string", "Lowercase letters, digits and hyphens; unique within the resource."),
+    ("status", "string", "One of `draft`, `active`, `archived`."),
+    ("created_at", "string", "RFC 3339 timestamp in UTC, set by the server."),
+    ("updated_at", "string", "RFC 3339 timestamp in UTC, moved by every write."),
+    ("owner_id", "integer", "The customer or staff account that created the record."),
+    ("notes", "string", "Free text, up to 4,000 characters, not searched."),
+)
+
+
+def api_doc() -> str:
+    """The items-api reference as the fixture project documents it."""
+    out = [
+        "# items-api reference",
+        "",
+        "Every endpoint is under `/v1`. Requests and responses are JSON. Times are UTC.",
+        "",
+        "## Paging",
+        "",
+        "List endpoints take `page=` (from 1) and `per_page=` (1 to 100, default 20) and",
+        "answer with `items`, `page` and `pages`. Clients must keep `page=` working: the",
+        "storefront and the back office both send it. Cursor paging is planned for GET",
+        "/items so that a list does not skip or repeat rows while items are being added.",
+        "",
+        "## Authentication",
+        "",
+        "Send `Authorization: Bearer <token>`. A token is scoped to one account and one",
+        "of the roles `read`, `write` or `admin`. A missing or expired token answers 401,",
+        "a token without the needed role 403.",
+        "",
+        "## Errors",
+        "",
+        "An error answer has `error.code`, `error.message` and, for a bad request,",
+        "`error.fields`, a map from field name to the reason it was refused.",
+        "",
+        "| Status | Code | When |",
+        "|---|---|---|",
+        "| 400 | `bad_request` | A field is missing or of the wrong type |",
+        "| 404 | `not_found` | No record with that id, or none the token may see |",
+        "| 409 | `conflict` | The write would duplicate a unique field |",
+        "| 422 | `invalid` | The fields parse but the record would not be valid |",
+        "| 429 | `rate_limited` | Over the limit; `Retry-After` says how long to wait |",
+        "",
+    ]
+    for plural, singular, blurb in _RESOURCES:
+        out += [
+            f"## {plural}",
+            "",
+            blurb,
+            "",
+            f"### GET /{plural}",
+            "",
+            f"Lists {plural}, newest first.",
+            "",
+            "| Parameter | Type | Meaning |",
+            "|---|---|---|",
+            "| `page` | integer | The page, from 1 |",
+            "| `per_page` | integer | Rows per page, 1 to 100 |",
+            "| `status` | string | Only records in this status |",
+            "| `updated_since` | string | Only records changed after this time |",
+            "| `sort` | string | `created_at`, `updated_at` or `name`, with `-` for descending |",
+            "",
+            "```json",
+            f'{{"items": [{{"id": 1, "name": "first {singular}", "status": "active"}}], "page": 1, "pages": 1}}',
+            "```",
+            "",
+            f"### GET /{plural}/{{id}}",
+            "",
+            f"One {singular} with every field below. 404 when the id is unknown.",
+            "",
+            f"### POST /{plural}",
+            "",
+            f"Creates a {singular}. `name` is required; `slug` is derived from it when absent.",
+            "Answers 201 with the record.",
+            "",
+            "```json",
+            f'{{"name": "new {singular}", "status": "draft", "notes": ""}}',
+            "```",
+            "",
+            f"### PATCH /{plural}/{{id}}",
+            "",
+            "Changes the fields sent and leaves the rest. A field set to `null` is cleared",
+            "when it is optional and refused with 422 when it is not.",
+            "",
+            f"### DELETE /{plural}/{{id}}",
+            "",
+            "Archives the record (`status` becomes `archived`) and answers 204. An archived",
+            "record stays readable by id and leaves every list unless `status=archived` is asked.",
+            "",
+            "### Fields",
+            "",
+        ]
+        for field, kind, rule in _FIELDS:
+            out += [f"#### {plural}.{field}", "", f"Type: {kind}. {rule}", "", f"Example: `{field}` of a {singular} as a client would send or read it.", ""]
+    out += ["## Changelog", ""]
+    version = 0
+    while sum(len(line) + 1 for line in out) < API_DOC_CHARS:
+        version += 1
+        plural = _RESOURCES[version % len(_RESOURCES)][0]
+        field = _FIELDS[version % len(_FIELDS)][0]
+        out += [
+            f"### 0.{version}.0",
+            "",
+            f"- `{plural}.{field}` is validated on write; a value the rule above refuses answers 422.",
+            f"- GET /{plural} accepts `updated_since`, so a client can poll for changes without reading every page.",
+            f"- The `{plural}` export includes `{field}`.",
+            "",
+        ]
+    return "\n".join(out) + "\n"
+
 
 # --------------------------------------------------------------------------
 # The temporary world: set up before windvane is imported.
@@ -169,6 +305,7 @@ class World:
         files = {
             "pyproject.toml": PYPROJECT,
             "README.md": README,
+            "docs/API.md": api_doc(),
             "items_api/__init__.py": "",
             "items_api/api.py": API_PY,
             "items_api/db.py": DB_PY,

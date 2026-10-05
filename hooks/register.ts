@@ -79,7 +79,7 @@ const COMPACT_DELAY_MS = 250
 // a compaction a plugin starts runs beneath that plugin's own hooks, so
 // compact.ts cannot place them in the conversation for this one.
 const CONTINUE_TEXT =
-  'The conversation was compacted with the checkpoint banked. The rules and the checkpoint are in the session-start brief beside this message. Continue from the checkpoint: its current step first, then the pending steps. End your reply with what is done and what is next.'
+  'The conversation was compacted with the checkpoint banked. The rules and the checkpoint are in the session-start brief beside this message. Continue from the checkpoint: its current step first, then the pending steps. End your reply with what is done and what is next. If the person has already sent a prompt since the compaction, say so in one line and stop.'
 
 // The engine's pressure constants (its config knobs' defaults), mirrored.
 // Keep in step with the engine.
@@ -115,6 +115,10 @@ type Mirror = {
   // own margin: the engine's nudge says CHECKPOINT NOW from this, with the
   // row's value as the reason.
   early_band?: string
+  // The compaction window the mod measured against (the session's
+  // rawMaxTokens, or the default point), so a store can be read when the band
+  // did not open where it was expected. The engine resolves its own.
+  compaction_point?: number
 }
 
 // usage.rateLimits as the mirror's rate_limits dict, one entry per kind.
@@ -139,20 +143,23 @@ function defaultPoint(window: number): number {
 
 // The checkpoint band's state: when it was entered ($.clock's ms; undefined
 // outside it), whether it is open below the engine's margin for the
-// early_compaction row alone, and what the last counted main turn cost.
-type BandState = { enteredAt?: number; early: boolean; lastTurnCostUsd?: number }
+// early_compaction row alone, what the last counted main turn cost, and the
+// compaction point the last judgement measured against.
+type BandState = { enteredAt?: number; early: boolean; lastTurnCostUsd?: number; point?: number }
 
 // The band bookkeeping, against Claude Code's own compaction window: the
 // band opens at the engine's margin above the trigger, or earlier when the
-// early_compaction row's fill or turn cost is reached. A top-level function
-// because $ is followed only into one.
+// early_compaction row's fill (a share of that window, as /context counts
+// it) or turn cost is reached. A top-level function because $ is followed
+// only into one.
 async function updateBand($: EngineInterface, usage: { context: Context }, early: EarlyCompaction | undefined, band: BandState): Promise<void> {
   const tokens = tokensOf(usage.context)
   const point = (await $.session.usage({ breakdown: 'summary' })).context.breakdown?.rawMaxTokens
     ?? defaultPoint(usage.context.window)
+  band.point = point
   const th = thresholds(usage.context.window, point)
   const earlyHit = early !== undefined && tokens !== undefined && (
-    (early.percent !== undefined && tokens * 100 >= usage.context.window * early.percent)
+    (early.percent !== undefined && tokens * 100 >= point * early.percent)
     || (early.usd !== undefined && band.lastTurnCostUsd !== undefined && band.lastTurnCostUsd >= early.usd))
   if (tokens !== undefined && (tokens >= th.checkpointAt || earlyHit)) {
     if (band.enteredAt === undefined) {
@@ -171,9 +178,13 @@ function epochSeconds(iso?: string): number | undefined {
   return Number.isFinite(ms) ? ms / 1000 : undefined
 }
 
-function percentOf(context: Context): number | undefined {
+// The fill as a share of the compaction window (the figure /context shows),
+// when the point is known; of the model's window otherwise.
+function percentOf(context: Context, point?: number): number | undefined {
+  const tokens = tokensOf(context)
+  if (tokens !== undefined && point !== undefined && point > 0) return Math.round((100 * tokens) / point)
   if (context.percent !== undefined) return Math.round(context.percent)
-  if (context.tokens !== undefined && context.window > 0) return Math.round((100 * context.tokens) / context.window)
+  if (tokens !== undefined && context.window > 0) return Math.round((100 * tokens) / context.window)
   return undefined
 }
 
@@ -315,6 +326,15 @@ export const register: Register = (on, options) => {
   let lastSaveAt: number | undefined // a deliberate checkpoint save that succeeded
   let compactAsked = false // compact_now succeeded this turn
   let compactRequested = false // a compaction is scheduled
+  // When the turn that asked for the compaction began, and when the last
+  // prompt that was not windvane's own was submitted. A prompt the person
+  // types while a compaction runs is queued and runs before anything a
+  // plugin submits; the continue prompt would then arrive a turn late and
+  // stale, so it is skipped when such a prompt has landed since that turn
+  // began (its own prompt was submitted before it).
+  let turnBeganAt: number | undefined
+  let personPromptAt: number | undefined
+  const continueStale = () => turnBeganAt !== undefined && personPromptAt !== undefined && personPromptAt > turnBeganAt + 100
   const early = settings.earlyCompaction
 
   // A deliberate save that succeeded: checkpoint(save), or
@@ -340,6 +360,20 @@ export const register: Register = (on, options) => {
 
   // Inside the band with a save made since the band was entered.
   const savedInBand = () => bandState.enteredAt !== undefined && lastSaveAt !== undefined && lastSaveAt >= bandState.enteredAt
+
+  // Every prompt but windvane's own is noted for the continue prompt's sake;
+  // a continue of windvane's that is already stale is dropped (a second net
+  // under the check made before it is submitted).
+  on('prompt.submit', async ($, e, next) => {
+    const origin = e.origin as { kind?: string; name?: string } | undefined
+    const ours = origin?.kind === 'plugin' && origin.name === PLUGIN
+    if (!ours) {
+      personPromptAt = await $.clock.now()
+      return next(e)
+    }
+    if (e.text === CONTINUE_TEXT && continueStale()) return { drop: `${PLUGIN}: the session already continued, so the resume prompt was dropped` }
+    return next(e)
+  })
 
   registerBand(on)
   registerPane(on)
@@ -417,11 +451,12 @@ export const register: Register = (on, options) => {
         rate_limits: rateLimitsOf(usage.rateLimits),
       }
       if (bandState.early && early !== undefined) rec.early_band = early.label
+      if (bandState.point !== undefined) rec.compaction_point = bandState.point
       await $.fs.write(mirrorPath, JSON.stringify(rec))
       await $.fs.write(markerPath, JSON.stringify({ plugin: PLUGIN, version: VERSION, ts: rec.ts }))
 
       const latest = await readLatest(ioOf($), rings, store)
-      const pct = percentOf(usage.context)
+      const pct = percentOf(usage.context, bandState.point)
       const band = bandState.enteredAt !== undefined && !savedInBand() ? ' · checkpoint now' : ''
       if (settings.statusSegment) $.ui.status(`${PLUGIN} ctx ${pct === undefined ? '?' : pct + '%'} · ${ageText(latest?.created)}${band}`)
       // The same figures for the band above the prompt.
@@ -445,6 +480,7 @@ export const register: Register = (on, options) => {
     if ((compactAsked || savedInBand()) && !compactRequested) {
       compactRequested = true
       compactAsked = false
+      turnBeganAt = (await $.clock.now()) - Math.max(0, e.durationMs ?? 0)
       const usage = await $.session.usage()
       const tokens = tokensOf(usage.context)
       const why = bandState.early && early !== undefined ? ` (early_compaction ${early.label})` : ''
@@ -463,6 +499,10 @@ export const register: Register = (on, options) => {
             bandState.early = false
           }
           if (!compacted || !settings.continueAfterCompact) return
+          if (continueStale()) {
+            $.ui.log(`${PLUGIN}: the person continued the session during the compaction; no resume prompt`)
+            return
+          }
           try {
             await $.prompt.submit({ text: CONTINUE_TEXT })
           } catch (err) {

@@ -30,7 +30,7 @@ Or set them when installing, with `--config KEY=VALUE` once per row:
 claude plugin install windvane@windvane --config python=/usr/bin/python3 --config strict_pack=true
 ```
 
-The rows are `python`, `status_segment`, `result_budget`, `semantic`, `alert_command`, `strict_pack` and `autonomy`. Each is described in [configuration](configuration.md). All of them have working defaults, so nothing needs setting for a first run.
+The rows are `python`, `status_segment`, `result_budget`, `semantic`, `alert_command`, `strict_pack`, `autonomy`, `continue_after_compact` and `early_compaction`. Each is described in [configuration](configuration.md). All of them have working defaults, so nothing needs setting for a first run.
 
 The first interactive session asks one question: whether to install the semantic extra (sentence-transformers and numpy, several hundred megabytes) and turn the `semantic` row on. With it, memory and session search use a small embedding model and find paraphrases a keyword match misses. "Not now" asks again a week later, "Never ask" closes the question, and a headless run is never asked. A session with `WINDVANE_SEMANTIC` set in its environment, to `1` or to `0`, is not asked either: the variable is the decision. The same two steps by hand are the pip line in [troubleshooting](troubleshooting.md#the-semantic-extra) and the row in `/plugin configure windvane@windvane`.
 

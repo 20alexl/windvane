@@ -117,11 +117,13 @@ test('the band counts what windvane injected and hides on request', async ($, on
     await ui.unmount()
   }
 
-  // The session banner: its rule count, with the status line's figures.
+  // The session banner: its rule count, with the status line's figures. The
+  // fill is against the compaction window: no breakdown in the usage above,
+  // so the default point on a 1M window, 967K, and 590K of it is 61%.
   await append($, hookRow(BANNER))
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'windvane', surface, ...BAND })
-    expect((await ui.find(LINE))?.text).toContain('windvane · session compact · 3 rules · ckpt 12m · ctx 59%')
+    expect((await ui.find(LINE))?.text).toContain('windvane · session compact · 3 rules · ckpt 12m · ctx 61%')
     await ui.unmount()
   }
 

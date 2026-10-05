@@ -39,10 +39,8 @@ Wait+Line@60s /\$\s*$/
 # The plugin is the snapshot live_setup.sh made, so nothing reloads mid-take.
 Type "claude --plugin-dir /tmp/wv-demo/plugin --dangerously-skip-permissions --model sonnet"
 Enter
-# The bypass-permissions acceptance screen: pick "Yes, I accept".
-Wait+Screen@60s /Bypass Permissions/
-Down
-Enter
+# The bypass-permissions acceptance is answered in the demo settings, so no
+# dialog opens here.
 # Before the first turn the segment reads "windvane ctx ?": no figure yet.
 # Then the prompt box, and a pause for the startup notices to settle.
 Wait+Screen@60s /windvane ctx/
@@ -54,25 +52,34 @@ Show
 Sleep 1500ms
 Screenshot demo/screenshots-live/1-open.png
 
-# 2: one short prompt that edits the api file. The typed text must be on
-# screen before Enter (a dropped prompt fails here in seconds, not after
-# the long wait). The prompt wraps inside the prompt box, so the check
-# allows a line break between the two words. The prompt names the file,
-# so the wait after it is for the edit tool's own row, not the file name.
-Type "Edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
+# 2: one prompt that reads the API document and edits the api file. The
+# read is what carries the fill into the checkpoint band (the document is
+# sized for it in build_fixture.py). The typed text must be on screen before
+# Enter (a dropped prompt fails here in seconds, not after the long wait);
+# it wraps inside the prompt box, so the check allows a line break between
+# the two words. The prompt names the file, so the wait after it is for the
+# edit tool's own row, not the file name.
+Type "Read docs/API.md, then edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
 Wait+Screen@10s /cursor\s+pagination/
 Enter
 Wait+Screen@240s /(?i)(update|edit|write)\(items_api|Bash\(/
 Screenshot demo/screenshots-live/2-edit.png
 
-# 3: the fill is in the band: the status segment says checkpoint now.
+# 3: the turn is over and the fill is in the band: the status segment says
+# checkpoint now.
 Wait+Screen@240s /(?i)checkpoint now/
 Sleep 1s
 Screenshot demo/screenshots-live/3-band.png
 
-# 4: the model banks the checkpoint itself, a bare save through the
-# plugin's tool, because the nudge is in its context. Nothing is typed:
-# a queued prompt would start the next turn and block the compaction.
+# 4: the next prompt carries the engine's CHECKPOINT NOW note (the engine
+# never blocks a turn's end, so the note rides the next prompt or tool
+# call), and the model banks the checkpoint itself, a bare save through the
+# plugin's tool, before the small edit asked for. Nothing more is typed
+# after this: a queued prompt would start the next turn and block the
+# compaction.
+Type "Add one line to README.md that mentions the cursor parameter"
+Wait+Screen@10s /cursor\s+parameter/
+Enter
 Wait+Screen@240s /(?i)checkpoint \(MCP\)|Checkpoint saved|operation: "save"/
 Sleep 1s
 Screenshot demo/screenshots-live/4-saved.png

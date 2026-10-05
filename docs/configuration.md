@@ -24,14 +24,14 @@ To print every setting as resolved for a project: `python -m windvane.config <pr
 | Row | Type | Default | Effect |
 |---|---|---|---|
 | `python` | string | empty | The interpreter that runs the engine (3.10 or later). Empty means `python` on PATH. `WINDVANE_PYTHON` wins over this row. |
-| `status_segment` | boolean | true | Show the context fill and the checkpoint age in the status line. The band and the pane stay when it is off. |
+| `status_segment` | boolean | true | Show the context fill and the checkpoint age in the status line. The fill is a percentage of the compaction window, the figure `/context` shows. The band and the pane stay when it is off. |
 | `result_budget` | string | `60000` | Characters a tool result keeps before its middle is cut. Head and tail stay. `WINDVANE_RESULT_BUDGET` wins over this row. |
 | `semantic` | boolean | false | Use the sentence-transformers encoder for decision capture and memory and session search when the semantic extra is installed. Off, the regex tier scores. The first interactive session offers to install the extra and turn this on. |
 | `alert_command` | string | empty | A shell command that receives one line when an unattended run halts, hits a usage limit or needs input. Empty means no alerts. |
 | `strict_pack` | boolean | false | Seed the strict pack (style and workflow rules) beside the default pack in every new project. |
 | `autonomy` | boolean | false | Stall nudges and the halt brake for unattended runs. Off for an attended session. |
 | `continue_after_compact` | boolean | true | After a compaction windvane started, one prompt of windvane's resumes the work from the checkpoint. Off, the session waits for the person. |
-| `early_compaction` | string | empty | Open the checkpoint band early: at a fill such as `40%` of the window, or once one turn has cost as much as `$0.40` (the session's own priced cost across the turn). The band asks for a save, and the turn boundary after the save compacts. Empty keeps the band at its margin above the trigger. Any other spelling is ignored. |
+| `early_compaction` | string | empty | Open the checkpoint band early: at a fill such as `40%` of the compaction window (the `autoCompactWindow` setting, or the model's window without one), or once one turn has cost as much as `$0.40` (the session's own priced cost across the turn). The band asks for a save, and the turn boundary after the save compacts. Empty keeps the band at its margin above the trigger. Any other spelling is ignored. |
 
 `python`, `status_segment`, `result_budget`, `semantic`, `continue_after_compact` and `early_compaction` are plugin rows only, with `WINDVANE_PYTHON`, `WINDVANE_RESULT_BUDGET` and `WINDVANE_SEMANTIC` as the environment switches of the first three. They are not config-file keys. `alert_command`, `strict_pack` and `autonomy` are also engine settings and follow the layers above.
 
