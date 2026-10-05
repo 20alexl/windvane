@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The bridge leaves `PreToolUse` to the command hooks.** The mod hooks each classic event by name instead of `classic.*`, and has no hook on the pre-tool event: a permission check's hook may only deny, ask or pass the event on, and a bridged check whose handlers gave context and no decision would have had to pass it on and run them twice. The pre-edit, pre-read and shell checks and the halt now run through their command hooks in every session, one client process per call, as before the bridge. Every other classic event is bridged as before.
+
 ## 1.0.0 (2026-10-05)
 
 The first release. windvane supersedes claude-engram: the same engine, rewritten as a Claude Code plugin with a hooks module and no dependencies, in place of settings hooks and an MCP server.

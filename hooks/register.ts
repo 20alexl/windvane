@@ -39,8 +39,7 @@ import type { EngineInterface, Register, SessionMessage, TurnCompleteInput } fro
 
 import { briefFor } from './agents'
 import { BAND_HIDDEN_KEY, drawBand, parseWindvane, textOf } from './band'
-import { bridgeDecision, noteCallLoop } from './bridge'
-import type { Json } from './bridge'
+import { bridgeDecision } from './bridge'
 import { compactBrief } from './compact'
 import { readBudget, rewrite } from './door'
 import { PLUGIN, VERSION, engineEnv, pythonOf, settingsOf, type EarlyCompaction, type Host, type Settings } from './engine'
@@ -474,10 +473,8 @@ export const register: Register = (on, options) => {
 
   // The file the model last touched, noted as the call is made (a denied
   // edit still says which file the model is on); a subagent's touches are
-  // its own. Also the loop each call runs in, for the bridge:
-  // classic.PreToolUse, which fires beneath this hook, names none (bridge.ts).
+  // its own.
   on('tool.call', async ($, e, next) => {
-    noteCallLoop(e.tool_use_id, e.agentId)
     const path = (e as unknown as { file_path?: unknown; notebook_path?: unknown }).file_path
       ?? (e as unknown as { notebook_path?: unknown }).notebook_path
     if (e.agentId === undefined && TOUCH_TOOLS.has(String(e.tool)) && typeof path === 'string' && path) {
@@ -552,9 +549,63 @@ export const register: Register = (on, options) => {
 
   // The bridge (bridge.ts): windvane's command hooks answered by the daemon
   // over loopback where every command hook that would fire is windvane's and
-  // served; otherwise the command hooks run exactly as before.
-  on('classic.*', async ($, e, next) => {
-    const got = await bridgeDecision(hostOf($), e as unknown as Json)
+  // served; otherwise the command hooks run exactly as before. One hook per
+  // classic event, by name, the event handed whole. PreToolUse has none: it
+  // is a permission check, whose hook may only deny, ask or pass the event
+  // on, and a bridged check with context and no decision would have to pass
+  // it on and run its handlers twice; its command hooks run as before.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.SessionStart', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.Notification', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.PostToolUse', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.PostToolBatch', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.StopFailure', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.PreCompact', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.PostCompact', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.Stop', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
+    if ('answer' in got) return { ...got.answer }
+    return next(e)
+  })
+  on('classic.SessionEnd', async ($, e, next) => {
+    const got = await bridgeDecision(hostOf($), e)
     if ('answer' in got) return { ...got.answer }
     return next(e)
   })

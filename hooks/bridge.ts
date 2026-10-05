@@ -2,8 +2,9 @@
 //
 // Each of windvane's command hooks spawns a process: Claude Code runs
 // `python .../windvane/daemon_client.py <type>`, which makes one round trip
-// to the daemon or runs the handler in-process. Here one `classic.*` hook
-// answers instead: for each classic event it finds the windvane hook types
+// to the daemon or runs the handler in-process. Here a hook per classic
+// event (register.ts, one `on('classic.<Event>')` each) answers instead: for
+// its event it finds the windvane hook types
 // the command hooks would have run (their own matchers, read from the
 // settings and the plugins' hooks.json), POSTs the event's stdin JSON to the
 // daemon's HTTP endpoint (`POST /hook`) once per type, and turns each
@@ -27,26 +28,32 @@
 // event gets an empty answer, as a settings hook that timed out gives, and
 // the next 30 s go to the settings hooks while the daemon recovers.
 //
-// The pure helpers are exported for the tests. register.ts hooks classic.*
-// and asks bridgeDecision whether to answer or to pass; this module never
-// holds `$`, it takes the Host register.ts builds.
-import type { ClassicResult, PreToolUseResult, Timer } from 'claude-code'
+// PreToolUse is not bridged. It is a permission check, and a mod's hook on
+// one may only deny, ask, or pass the event on whole (the plugin directory
+// reads nothing else there). The pre-tool handlers mostly answer with
+// context and no decision, and passing that event on would run them a
+// second time through the command hooks. So the pre-edit, pre-read and
+// shell checks and the halt run through their command hooks in every
+// session, one client process per call, as the session-end hook does.
+//
+// The pure helpers are exported for the tests. register.ts hooks each
+// classic event by name and asks bridgeDecision whether to answer or to
+// pass; this module never holds `$`, it takes the Host register.ts builds.
+import type { ClassicResult, Timer } from 'claude-code'
 import { PLUGIN, type Host } from './engine'
 import { normalizePath } from './ring'
 
-// The hook types the daemon runs in-process.
-// session_end_json is left to its settings hook (it runs while Claude Code
-// is exiting, where a mod's request may never be sent).
+// The hook types the bridge may ask the daemon for. The pre-tool types
+// (pre_edit_json, pre_read_json, pre_bash_json, pre_tool_json) are not here:
+// PreToolUse is never bridged (see above). session_end_json is left to its
+// settings hook (it runs while Claude Code is exiting, where a mod's request
+// may never be sent).
 export const SERVED = new Set([
-  'pre_edit_json',
   'post_edit_json',
   'bash_json',
   'prompt_json',
-  'pre_read_json',
   'tool_failure_json',
   'post_batch_json',
-  'pre_bash_json',
-  'pre_tool_json',
   'post_milestone_json',
   'session_start_json',
   'stop_json',
@@ -109,8 +116,6 @@ export function matcherMatches(matcher: unknown, subject: string | undefined): b
 export function subjectOf(event: string, e: Json): string | undefined {
   const s = (k: string) => (typeof e[k] === 'string' ? (e[k] as string) : undefined)
   switch (event) {
-    case 'PreToolUse':
-      return s('tool') ?? s('tool_name')
     case 'PostToolUse':
     case 'PostToolUseFailure':
     case 'PermissionRequest':
@@ -172,24 +177,6 @@ export function plan(event: string, subject: string | undefined, sources: readon
 
 // ---------------------------------------------------------------- the call
 
-// The stdin a settings PreToolUse hook would have read, rebuilt from the
-// envelope (`tool`, `tool_use_id`, the tool's own arguments at the top).
-export function preToolUseStdin(e: Json, base: { session_id: string; cwd: string; transcript_path: string; permission_mode?: string; agent_id?: string }): Json {
-  const { tool, tool_use_id, consent: _consent, agentId: _agentId, ...args } = e
-  const out: Json = {
-    session_id: base.session_id,
-    transcript_path: base.transcript_path,
-    cwd: base.cwd,
-    hook_event_name: 'PreToolUse',
-    tool_name: tool,
-    tool_input: args,
-    tool_use_id: tool_use_id ?? '',
-  }
-  if (base.permission_mode) out.permission_mode = base.permission_mode
-  if (base.agent_id) out.agent_id = base.agent_id
-  return out
-}
-
 // A handler's stdout, read as Claude Code reads a command hook's: a JSON
 // object, else plain text.
 export type HookOutput = { json?: Json; text?: string }
@@ -237,23 +224,6 @@ export function toClassic(event: string, out: HookOutput): ClassicResult {
   return kept as ClassicResult
 }
 
-// One handler's output as a PreToolUse result.
-export function toPreToolUse(out: HookOutput): PreToolUseResult {
-  const j = out.json
-  if (!j) return {}
-  const h = isRecord(j.hookSpecificOutput) ? j.hookSpecificOutput : {}
-  const reason = String(h.permissionDecisionReason ?? j.reason ?? '')
-  const ctx = typeof h.additionalContext === 'string' && h.additionalContext ? [h.additionalContext] : undefined
-  const extra: { additionalContext?: string[]; updatedInput?: Record<string, unknown> } = {}
-  if (ctx) extra.additionalContext = ctx
-  if (isRecord(h.updatedInput)) extra.updatedInput = h.updatedInput
-  const decision = h.permissionDecision ?? (j.decision === 'block' ? 'deny' : j.decision === 'approve' ? 'allow' : undefined)
-  if (decision === 'deny') return { deny: reason || 'Denied by hook', ...extra }
-  if (decision === 'ask') return { ask: reason || 'Hook asks', ...extra }
-  if (decision === 'allow') return { allow: true, ...extra }
-  return extra
-}
-
 // Several handlers' results folded as the engine folds settings hooks:
 // contexts concatenate in order, the first block (and stop reason) stands,
 // any preventContinuation stops, the last tool-output rewrite wins.
@@ -274,29 +244,6 @@ export function foldClassic(results: readonly ClassicResult[]): ClassicResult {
   return out
 }
 
-// PreToolUse: a deny beats an ask beats an allow.
-export function foldPreToolUse(results: readonly PreToolUseResult[]): PreToolUseResult {
-  const ctx: string[] = []
-  let updatedInput: Record<string, unknown> | undefined
-  let deny: string | undefined
-  let ask: string | undefined
-  let allow = false
-  for (const r of results) {
-    if (r.additionalContext) ctx.push(...r.additionalContext)
-    if (r.updatedInput) updatedInput = r.updatedInput
-    if (r.deny !== undefined && deny === undefined) deny = r.deny
-    if (r.ask !== undefined && ask === undefined) ask = r.ask
-    if (r.allow) allow = true
-  }
-  const extra: { additionalContext?: string[]; updatedInput?: Record<string, unknown> } = {}
-  if (ctx.length > 0) extra.additionalContext = ctx
-  if (updatedInput) extra.updatedInput = updatedInput
-  if (deny !== undefined) return { deny, ...extra }
-  if (ask !== undefined) return { ask, ...extra }
-  if (allow) return { allow: true, ...extra }
-  return extra
-}
-
 // The daemon's HTTP answer: the handler's stdout, or why there is none (in
 // which case no handler ran and the settings hooks may run instead).
 export function readAnswer(status: number, body: string): { output: string } | { reason: string } {
@@ -313,28 +260,6 @@ export function readAnswer(status: number, body: string): { output: string } | {
   return { output: v.output }
 }
 
-// --------------------------------------------- the main loop's tool calls
-
-// classic.PreToolUse's envelope names no loop, but a subagent's call must
-// reach windvane as one (no injection, never halted). The plugin's matcher-less
-// tool.call hook (register.ts), which runs above every classic.PreToolUse,
-// notes the loop of each call by its tool_use_id. The map keeps the newest
-// 512 calls; an entry is needed only while its call runs.
-const callLoops = new Map<string, string>()
-
-export function noteCallLoop(toolUseId: unknown, agentId: string | undefined): void {
-  if (typeof toolUseId !== 'string' || !toolUseId || agentId === undefined) return
-  callLoops.set(toolUseId, agentId)
-  if (callLoops.size > 512) {
-    const first = callLoops.keys().next().value
-    if (first !== undefined) callLoops.delete(first)
-  }
-}
-
-export function loopOf(toolUseId: unknown): string | undefined {
-  return typeof toolUseId === 'string' ? callLoops.get(toolUseId) : undefined
-}
-
 // ------------------------------------------------------- per-load state
 
 type Census = { at: number; sources: HookSource[]; disabled: boolean; env: SessionEnv; store: string }
@@ -346,10 +271,6 @@ let census: Census | undefined
 let censusLoading: Promise<Census> | undefined
 let port: number | undefined
 let downUntil = 0
-// The main loop's last transcript path and permission mode, from the classic
-// events that carry them (every one but PreToolUse).
-let lastTranscript = ''
-let lastMode: string | undefined
 
 export function bridgeCounts(): BridgeCounts {
   return { ...counts }
@@ -467,19 +388,19 @@ async function post(host: Host, at: number, type: string, stdin: Json, env: Sess
 
 // ------------------------------------------------------------ the decision
 
-export type BridgeDecision = { pass: true } | { answer: ClassicResult | PreToolUseResult }
+export type BridgeDecision = { pass: true } | { answer: ClassicResult }
 
 const PASS: BridgeDecision = { pass: true }
 
-// One classic event: the answer the bridge gives for it, or pass, in which
-// case register.ts calls next(e) and the command hooks run as before.
-export async function bridgeDecision(host: Host, input: Json): Promise<BridgeDecision> {
+// One classic event, the hook's `e` handed whole: the answer the bridge
+// gives for it, or pass, in which case register.ts calls next(e) and the
+// command hooks run as before.
+export async function bridgeDecision(host: Host, input: unknown): Promise<BridgeDecision> {
   // The event is named by its input: every classic hook's stdin carries
-  // hook_event_name, except PreToolUse, whose e is the tool call's envelope.
-  const named = typeof input.hook_event_name === 'string' ? input.hook_event_name : undefined
-  const pre = named === undefined && typeof input.tool === 'string'
-  if (named === undefined && !pre) return PASS
-  const event = pre ? 'PreToolUse' : String(named)
+  // hook_event_name. (classic.PreToolUse's e is the tool call's envelope and
+  // carries none; no hook of windvane's is on it.)
+  if (!isRecord(input) || typeof input.hook_event_name !== 'string') return PASS
+  const event = input.hook_event_name
 
   // The settings hooks run this one: the reason goes to the debug log.
   const noteFallBack = (reason: string) => {
@@ -487,11 +408,6 @@ export async function bridgeDecision(host: Host, input: Json): Promise<BridgeDec
     host.debug(`${PLUGIN}: bridge: ${event} -> settings hooks (${reason})`)
   }
 
-  // The main loop's transcript and mode, for the PreToolUse envelope.
-  if (!pre && input.agent_id === undefined) {
-    if (typeof input.transcript_path === 'string' && input.transcript_path) lastTranscript = input.transcript_path
-    if (typeof input.permission_mode === 'string' && input.permission_mode) lastMode = input.permission_mode
-  }
   if (event === 'SessionEnd') {
     const c = counts
     host.debug(`${PLUGIN}: bridge: ${c.bridged} bridged, ${c.fellBack} to the settings hooks, ${c.partial} partial, ${c.timedOut} timed out`)
@@ -533,19 +449,7 @@ export async function bridgeDecision(host: Host, input: Json): Promise<BridgeDec
     return PASS
   }
 
-  let stdin: Json
-  if (pre) {
-    const loop = loopOf(input.tool_use_id) ?? (typeof input.agentId === 'string' ? input.agentId : undefined)
-    stdin = preToolUseStdin(input, {
-      session_id: await host.sessionId(),
-      cwd: await host.cwd(),
-      transcript_path: lastTranscript,
-      permission_mode: lastMode,
-      agent_id: loop,
-    })
-  } else {
-    stdin = { ...input, hook_event_name: input.hook_event_name ?? event }
-  }
+  const stdin: Json = { ...input }
 
   const outputs: HookOutput[] = []
   let timedOut = false
@@ -574,6 +478,5 @@ export async function bridgeDecision(host: Host, input: Json): Promise<BridgeDec
   }
 
   if (!timedOut || outputs.length > 0) counts.bridged += 1
-  if (pre) return { answer: foldPreToolUse(outputs.map(toPreToolUse)) }
   return { answer: foldClassic(outputs.map(o => toClassic(event, o))) }
 }

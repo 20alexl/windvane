@@ -94,6 +94,8 @@ In an interactive session the mod can answer the classic events itself, with no 
 
 In any other case it passes the event on and the command hooks run as before. A module that answered alone would stop every command hook beneath it, other plugins' included, so the bridge never does that when another hook is in play. It also passes the event on when hooks are disabled, when the daemon has no port file, or when a request fails before any handler ran. A request that timed out may have run, so it is not repeated through the command hooks. The next 30 seconds go to the command hooks while the daemon recovers. The session-end event is always left to its command hook, because a request may never be sent while Claude Code exits.
 
+The pre-tool event is not bridged either. `PreToolUse` is a permission check, and a mod's hook on one may only deny, ask, or pass the event on whole. The pre-tool handlers mostly answer with context and no decision, and passing that event on would run them a second time through the command hooks. So the pre-edit, pre-read and shell checks and the halt run through their command hooks in every session, one client process per call.
+
 ## The tools
 
 Each call goes first to the daemon, `POST /tool` with the call's arguments, the session id and the session's working directory, and to `python -m windvane.tools` with the same request on stdin when the daemon is down. The model reads the answer's text. An error comes back as a denied call with the reason. A request that timed out after 60 seconds is not retried, and the model is told to check its effect first.

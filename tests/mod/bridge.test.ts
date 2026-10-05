@@ -8,7 +8,7 @@
 // test's on('classic.<Event>') is reached only when the bridge called next.
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import { foldClassic, foldPreToolUse, matcherMatches, plan, readOutput, toClassic } from '../../hooks/bridge'
+import { foldClassic, matcherMatches, plan, readOutput, toClassic } from '../../hooks/bridge'
 
 const STORE = 'C:/tmp/windvane-bridge-store'
 const PORT = 47123
@@ -174,41 +174,19 @@ test('no port file: the settings hooks run and nothing is fetched', async ($, on
   expect(t.logs.join('\n')).toContain('no daemon port file')
 })
 
-test('PreToolUse on Bash runs pre_bash_json then pre_tool_json, and a deny from either wins', async ($, on) => {
-  let denyFrom = 'pre_tool_json'
+test('PreToolUse is never bridged: its command hooks decide and nothing is fetched', async ($, on) => {
+  // The daemon would deny; the bridge must not ask it.
   const t = engine(on, {
-    answer: hook =>
-      hook === denyFrom
-        ? ok({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `halted by ${hook}` } })
-        : ok(ctx('PreToolUse', '<windvane-rule>never rm -rf</windvane-rule>')),
+    answer: () => ok({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'from the daemon' } }),
   })
+  t.bottom('PreToolUse', { deny: 'from the command hooks' })
   on('tool.call', () => ({ result: { content: [{ type: 'text', text: 'ran' }] } }))
 
-  const first = await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'tu-1' })
-  expect(t.fetched.map(f => f.hook)).toEqual(['pre_bash_json', 'pre_tool_json'])
-  expect(JSON.stringify(first)).toContain('halted by pre_tool_json')
-  const f = t.fetched[0]!
-  expect(f.stdin.hook_event_name).toBe('PreToolUse')
-  expect(f.stdin.tool_name).toBe('Bash')
-  expect(f.stdin.tool_input).toEqual({ command: 'ls' })
-  expect(f.stdin.tool_use_id).toBe('tu-1')
-  expect(f.stdin.session_id).toBe('sid-bridge')
-  expect(f.stdin.cwd).toBe('E:/demo/proj')
-  expect(f.stdin.agent_id).toBeUndefined()
-
-  denyFrom = 'pre_bash_json'
-  const second = await $.tool.call({ tool: 'Bash', command: 'rm -rf build', tool_use_id: 'tu-2' })
-  expect(JSON.stringify(second)).toContain('halted by pre_bash_json')
-
-  // A subagent's call reaches windvane as one: the loop was noted at tool.call.
-  denyFrom = 'none'
-  // (agentId rides the engine's own calls; the call's type omits it.)
-  const subCall = { tool: 'Read' as const, file_path: 'a.py', tool_use_id: 'tu-3', agentId: 'agent-7' }
-  const sub = await $.tool.call(subCall)
-  expect(JSON.stringify(sub)).toContain('ran')
-  const last = t.fetched.filter(x => x.stdin.tool_use_id === 'tu-3')
-  expect(last.map(x => x.hook)).toEqual(['pre_read_json', 'pre_tool_json'])
-  expect(last[0]!.stdin.agent_id).toBe('agent-7')
+  const out = await $.tool.call({ tool: 'Bash', command: 'rm -rf build', tool_use_id: 'tu-1' })
+  expect(JSON.stringify(out)).toContain('from the command hooks')
+  expect(JSON.stringify(out)).not.toContain('from the daemon')
+  expect(t.reached).toEqual(['PreToolUse'])
+  expect(t.fetched.length).toBe(0)
 })
 
 test('another hook on the event hands it to the settings hooks', async ($, on) => {
@@ -275,6 +253,4 @@ test('the helpers: matchers, the plan, output shapes and the folds', () => {
     additionalContext: ['a', 'b'],
     block: 'no',
   })
-  expect(foldPreToolUse([{ additionalContext: ['rule'] }, { additionalContext: ['nudge'] }])).toEqual({ additionalContext: ['rule', 'nudge'] })
-  expect(foldPreToolUse([{ allow: true }, { ask: 'sure?' }, { deny: 'no' }])).toEqual({ deny: 'no' })
 })
