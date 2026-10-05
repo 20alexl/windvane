@@ -216,10 +216,10 @@ function hostOf($: EngineInterface): Host {
       await $.fs.write(path, text)
     },
     run: (argv, init) => $.process.run(argv, init),
-    post: (port, path, body) =>
+    post: (port, token, path, body) =>
       $.http.fetch(`http://127.0.0.1:${port}/${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Windvane-Hook': '1' },
+        headers: { 'Content-Type': 'application/json', 'X-Windvane-Hook': '1', 'X-Windvane-Token': token },
         body,
       }),
     storeGet: key => $.store.get(key),

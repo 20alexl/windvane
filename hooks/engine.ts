@@ -39,7 +39,7 @@ export type Host = {
   write(path: string, text: string): Promise<void>
   run(argv: string[], init: ProcessRunInit): Promise<ProcessRunResult>
   // One POST of a JSON body to the daemon on loopback, at /hook or /tool.
-  post(port: number, path: 'hook' | 'tool', body: string): Promise<HttpResponse>
+  post(port: number, token: string, path: 'hook' | 'tool', body: string): Promise<HttpResponse>
   storeGet(key: string): Promise<unknown>
   storeSet(key: string, value: unknown): Promise<void>
   storeKeys(): Promise<string[]>

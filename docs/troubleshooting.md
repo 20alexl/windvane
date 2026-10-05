@@ -17,6 +17,7 @@ The daemon is optional for correctness. Without it every hook still runs, in its
 | File | Meaning |
 |---|---|
 | `daemon_port` | The loopback port it listens on. Written last, after it is ready. |
+| `daemon_token` | The secret every request must carry. Minted at each start, readable by the owner alone. Without it the clients run in their own process, and the daemon refuses what arrives. |
 | `daemon_pid` | Its process id. |
 | `daemon.lock` | Held for its whole life. A held lock is what means a daemon is alive. |
 | `daemon_model` | The encoder signature it loaded, or `none`. |

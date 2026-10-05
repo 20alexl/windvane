@@ -22,7 +22,7 @@
 // answering, windvane's own command hooks never run, so no double-fire
 // marker is needed.
 //
-// Any failure before a handler ran (no port file, a refused connection, a
+// Any failure before a handler ran (no port or token file, a refused connection, a
 // non-200, an `error` body, a body that is not the daemon's) also takes
 // `next(e)`. A request that timed out may have run, so it does not: the
 // event gets an empty answer, as a settings hook that timed out gives, and
@@ -269,7 +269,7 @@ export type BridgeCounts = { bridged: number; fellBack: number; partial: number;
 const counts: BridgeCounts = { bridged: 0, fellBack: 0, partial: 0, timedOut: 0 }
 let census: Census | undefined
 let censusLoading: Promise<Census> | undefined
-let port: number | undefined
+let daemon: Daemon | undefined
 let downUntil = 0
 
 export function bridgeCounts(): BridgeCounts {
@@ -355,31 +355,38 @@ async function currentCensus(host: Host): Promise<Census> {
   return census
 }
 
-async function daemonPort(host: Host, store: string): Promise<number | undefined> {
-  if (port !== undefined) return port
-  const text = await readText(host, `${store}/daemon_port`)
-  const n = text === undefined ? NaN : parseInt(text.trim(), 10)
-  port = Number.isInteger(n) && n > 0 ? n : undefined
-  return port
+// Where the daemon listens and the secret it checks: the store's daemon_port
+// and daemon_token files, read once and re-read after a failed fetch (a
+// restarted daemon writes a new pair). Loopback is every account on the
+// machine; the token is what makes the daemon the owner's alone.
+type Daemon = { port: number; token: string }
+
+async function daemonAt(host: Host, store: string): Promise<Daemon | undefined> {
+  if (daemon !== undefined) return daemon
+  const portText = await readText(host, `${store}/daemon_port`)
+  const n = portText === undefined ? NaN : parseInt(portText.trim(), 10)
+  const token = (await readText(host, `${store}/daemon_token`))?.trim()
+  daemon = Number.isInteger(n) && n > 0 && token ? { port: n, token } : undefined
+  return daemon
 }
 
 type Posted = { output: string } | { reason: string; ran: false } | { timedOut: true }
 
-async function post(host: Host, at: number, type: string, stdin: Json, env: SessionEnv): Promise<Posted> {
+async function post(host: Host, at: Daemon, type: string, stdin: Json, env: SessionEnv): Promise<Posted> {
   let timer: Timer | undefined
   const timeout = new Promise<'timeout'>(resolve => {
     timer = host.after(SLOW.has(type) ? SLOW_TIMEOUT_MS : TIMEOUT_MS, () => resolve('timeout'))
   })
   try {
     const res = await Promise.race([
-      host.post(at, 'hook', JSON.stringify({ hook_event: type, stdin: JSON.stringify(stdin), env })),
+      host.post(at.port, at.token, 'hook', JSON.stringify({ hook_event: type, stdin: JSON.stringify(stdin), env })),
       timeout,
     ])
     if (res === 'timeout') return { timedOut: true }
     const got = readAnswer(res.status, res.text)
     return 'output' in got ? got : { reason: got.reason, ran: false }
   } catch (err) {
-    port = undefined // re-read: a restarted daemon writes a new port
+    daemon = undefined // re-read: a restarted daemon writes a new port and token
     return { reason: `fetch failed: ${String(err).slice(0, 120)}`, ran: false }
   } finally {
     timer?.cancel()
@@ -437,15 +444,15 @@ export async function bridgeDecision(host: Host, input: unknown): Promise<Bridge
     return PASS
   }
 
-  let at: number | undefined
+  let at: Daemon | undefined
   try {
-    at = await daemonPort(host, found.store)
+    at = await daemonAt(host, found.store)
   } catch (err) {
-    noteFallBack(`port file unreadable: ${String(err).slice(0, 80)}`)
+    noteFallBack(`daemon files unreadable: ${String(err).slice(0, 80)}`)
     return PASS
   }
   if (at === undefined) {
-    noteFallBack('no daemon port file')
+    noteFallBack('no daemon port and token files')
     return PASS
   }
 

@@ -12,6 +12,7 @@ import { foldClassic, matcherMatches, plan, readOutput, toClassic } from '../../
 
 const STORE = 'C:/tmp/windvane-bridge-store'
 const PORT = 47123
+const TOKEN = 'f'.repeat(64) // the store's daemon_token; the daemon refuses a POST without it
 const PY = 'E:/demo/venv/Scripts/python.exe'
 const CLIENT = 'E:/demo/plugins/windvane/windvane/daemon_client.py'
 
@@ -47,6 +48,7 @@ type Answer = { status: number; text: string } | 'throw'
 type Setup = {
   hooks?: Record<string, unknown>
   portFile?: boolean
+  tokenFile?: boolean
   answer?: (hook: string) => Answer
   plugins?: Record<string, unknown> // plugin id -> its hooks.json
   self?: Record<string, unknown> // this plugin's own hooks.json `hooks`
@@ -73,7 +75,10 @@ function engine(on: On, setup: Setup) {
     return { value: {} }
   })
   const files: Record<string, string> = {}
-  if (setup.portFile !== false) files[`${STORE}/daemon_port`] = `${PORT}\n`
+  if (setup.portFile !== false) {
+    files[`${STORE}/daemon_port`] = `${PORT}\n`
+    if (setup.tokenFile !== false) files[`${STORE}/daemon_token`] = `${TOKEN}\n`
+  }
   files['C:/Users/nobody/.claude/plugins/installed_plugins.json'] = JSON.stringify({
     version: 2,
     plugins: Object.fromEntries(Object.keys(plugins).map(id => [id, [{ installPath: `C:\\plugins\\${id}` }]])),
@@ -119,6 +124,7 @@ test('a prompt is answered by the daemon: one POST, the context back, no setting
   expect(f.url).toBe(`http://127.0.0.1:${PORT}/hook`)
   expect(f.hook).toBe('prompt_json')
   expect(f.headers['X-Windvane-Hook']).toBe('1')
+  expect(f.headers['X-Windvane-Token']).toBe(TOKEN)
   expect(f.stdin.prompt).toBe('switch the store to postgres')
   expect(f.stdin.hook_event_name).toBe('UserPromptSubmit')
   expect(f.env.CLAUDE_PROJECT_DIR).toBe('E:/demo')
@@ -182,7 +188,15 @@ test('no port file: the settings hooks run and nothing is fetched', async ($, on
   t.bottom('UserPromptSubmit', { additionalContext: ['settings'] })
   expect((await $.classic.UserPromptSubmit({ prompt: 'a prompt with no daemon' })).additionalContext).toEqual(['settings'])
   expect(t.fetched.length).toBe(0)
-  expect(t.logs.join('\n')).toContain('no daemon port file')
+  expect(t.logs.join('\n')).toContain('no daemon port and token files')
+})
+
+test('a port file without a token file: the daemon would refuse, so nothing is fetched', async ($, on) => {
+  const t = engine(on, { tokenFile: false })
+  t.bottom('UserPromptSubmit', { additionalContext: ['settings'] })
+  expect((await $.classic.UserPromptSubmit({ prompt: 'a prompt with no token' })).additionalContext).toEqual(['settings'])
+  expect(t.fetched.length).toBe(0)
+  expect(t.logs.join('\n')).toContain('no daemon port and token files')
 })
 
 test('PreToolUse is never bridged: its command hooks decide and nothing is fetched', async ($, on) => {

@@ -96,14 +96,20 @@ def _dbg(msg: str) -> None:
 def _try_daemon(hook_type: str, payload: str) -> bool:
     """One TCP round trip. True = response printed; False = use the fallback."""
     port_file = os.path.join(_storage_dir(), "daemon_port")
+    token_file = os.path.join(_storage_dir(), "daemon_token")
     try:
         with open(port_file) as f:
             port = int(f.read().strip())
+        with open(token_file) as f:
+            token = f.read().strip()  # the daemon's secret; a request without it is refused
+        if not token:
+            return False
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(0.25)
         sock.connect(("127.0.0.1", port))
         sock.settimeout(1.5)  # handlers are ~5-30ms warm; headroom, not budget
         request = {
+            "token": token,
             "hook_event": hook_type,
             "stdin": payload,
             # This process's own session environment, which the daemon

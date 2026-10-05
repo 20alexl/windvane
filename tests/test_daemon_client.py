@@ -68,6 +68,9 @@ def test_the_client_finds_the_store_the_daemon_writes(client, tmp_path: Path, mo
     assert Path(client._storage_dir()) == Path(config.store_dir()) == Path.home() / ".windvane"
 
 
+TOKEN = "f" * 64  # the fake daemon's token, in the store's daemon_token file
+
+
 def _fake_daemon(tmp_path: Path, answer: dict):
     """A listener that reads one JSON line, records it, answers ``answer``."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -90,6 +93,7 @@ def _fake_daemon(tmp_path: Path, answer: dict):
     t = threading.Thread(target=serve, daemon=True)
     t.start()
     (tmp_path / "store" / "daemon_port").write_text(str(srv.getsockname()[1]))
+    (tmp_path / "store" / "daemon_token").write_text(TOKEN)
     return srv, t, got
 
 
@@ -106,6 +110,7 @@ def test_one_round_trip_prints_the_daemons_output(client, tmp_path: Path, monkey
         srv.close()
     assert out.getvalue() == "from the daemon\n"
     req = got[0]
+    assert req["token"] == TOKEN  # the daemon refuses a request without its token
     assert req["hook_event"] == "prompt_json" and req["stdin"] == '{"prompt": "hi"}'
     assert set(req["env"]) == set(client.SESSION_ENV)
     assert req["env"]["CLAUDE_PROJECT_DIR"] == "/proj" and req["env"]["WINDVANE_AUTONOMY"] == "1"
@@ -122,6 +127,20 @@ def test_an_error_answer_or_no_daemon_means_the_fallback(client, tmp_path: Path)
     assert client._try_daemon("prompt_json", "{}") is False  # no port file
     (tmp_path / "store" / "daemon_port").write_text("1")  # nobody listens
     assert client._try_daemon("prompt_json", "{}") is False
+    # No token file, or an empty one: the daemon would refuse, so the client
+    # never connects and runs the handler itself.
+    srv, t, got = _fake_daemon(tmp_path, {"output": "never"})
+    try:
+        (tmp_path / "store" / "daemon_token").unlink()
+        assert client._try_daemon("prompt_json", "{}") is False
+        (tmp_path / "store" / "daemon_token").write_text("")
+        assert client._try_daemon("prompt_json", "{}") is False
+        assert got == []
+    finally:
+        with socket.create_connection(("127.0.0.1", srv.getsockname()[1]), timeout=5) as s:
+            s.sendall(b"{}\n")  # let the listener's one accept finish
+        t.join(5)
+        srv.close()
 
 
 def test_the_fallback_runs_the_dispatch_in_process(client, monkeypatch):

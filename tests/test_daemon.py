@@ -20,6 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CLIENT_TIMEOUT = 30
+TOKEN = "f" * 64  # the token the test store's daemon_token file holds
 
 
 def _has(module: str, attr: str = "") -> bool:
@@ -47,6 +48,7 @@ def ss(tmp_path: Path):
 
     mod = importlib.reload(daemon)
     assert mod.PORT_FILE.parent == tmp_path / "store"
+    mod.TOKEN_FILE.write_text(TOKEN)  # what serve() would have minted; _handle_client reads it
     yield mod
     importlib.reload(daemon)
 
@@ -111,11 +113,16 @@ def _raw(port: int, data: bytes) -> bytes:
             out += chunk
 
 
+def _line(request: dict, token: str = TOKEN) -> bytes:
+    """One line-protocol request carrying the daemon's token."""
+    return json.dumps({**request, "token": token}).encode() + b"\n"
+
+
 def _post(port: int, body: dict, headers: "dict | None" = None, path: str = "/hook", method: str = "POST"):
     import http.client
 
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=CLIENT_TIMEOUT)
-    hdrs = {"Content-Type": "application/json", "X-Windvane-Hook": "1"}
+    hdrs = {"Content-Type": "application/json", "X-Windvane-Hook": "1", "X-Windvane-Token": TOKEN}
     hdrs.update(headers or {})
     conn.request(method, path, body=json.dumps(body), headers=hdrs)
     res = conn.getresponse()
@@ -136,8 +143,9 @@ def test_both_protocols_share_one_listener(ss, listener, monkeypatch):
 
     monkeypatch.setattr(ss, "_serve_hook_event", fake_serve)
     port = listener
-    line = _raw(port, json.dumps({"hook_event": "prompt_json", "stdin": "{}", "env": {}}).encode() + b"\n")
+    line = _raw(port, _line({"hook_event": "prompt_json", "stdin": "{}", "env": {}}))
     assert json.loads(line) == {"output": "served prompt_json"}
+    assert "token" not in seen[0], "the token is the daemon's business, never the handler's"
 
     status, ctype, conn_hdr, body = _post(port, {"hook_event": "stop_json", "stdin": '{"session_id": "s1"}', "env": {"CLAUDE_PROJECT_DIR": "/demo"}})
     assert (status, ctype, conn_hdr) == (200, "application/json", "close")
@@ -145,13 +153,56 @@ def test_both_protocols_share_one_listener(ss, listener, monkeypatch):
     assert seen[1] == {"hook_event": "stop_json", "stdin": '{"session_id": "s1"}', "env": {"CLAUDE_PROJECT_DIR": "/demo"}}
 
     # The scorer protocol is untouched: a still-loading model degrades as before.
-    assert json.loads(_raw(port, b'{"text": "let us use redis for the cache"}\n')) == {"error": "model unavailable"}
+    assert json.loads(_raw(port, _line({"text": "let us use redis for the cache"}))) == {"error": "model unavailable"}
 
 
 def test_without_the_semantic_tier_every_model_request_says_so(ss, tierless_listener):
     port = tierless_listener
-    for req in (b'{"text": "let us use redis for the cache"}\n', b'{"embed": "x"}\n', b'{"embed_batch": ["x"]}\n'):
-        assert json.loads(_raw(port, req)) == {"error": "no semantic tier"}
+    for req in ({"text": "let us use redis for the cache"}, {"embed": "x"}, {"embed_batch": ["x"]}):
+        assert json.loads(_raw(port, _line(req))) == {"error": "no semantic tier"}
+
+
+def test_the_token_guards_both_protocols(ss, listener, monkeypatch):
+    """Loopback is every account on the machine. A request without the
+    daemon's token runs no handler on either protocol, and a daemon with no
+    token of its own refuses everything rather than everything in."""
+    ran = []
+    monkeypatch.setattr(ss, "_serve_hook_event", lambda request: ran.append(request) or {"output": "ran"})
+    port = listener
+    hook = {"hook_event": "prompt_json", "stdin": "{}", "env": {}}
+    refused = {"error": "missing or wrong token"}
+    assert json.loads(_raw(port, json.dumps(hook).encode() + b"\n")) == refused  # no token
+    assert json.loads(_raw(port, _line(hook, token="e" * 64))) == refused  # another's
+    assert json.loads(_raw(port, _line({"embed": "x"}, token=""))) == refused  # the model requests too
+    assert json.loads(_raw(port, b'{"hook_event": "prompt_json", "token": 7}\n')) == refused  # not even a string
+    assert _post(port, hook, headers={"X-Windvane-Token": ""})[0] == 403
+    assert _post(port, hook, headers={"X-Windvane-Token": "e" * 64})[0] == 403
+    head = b"POST /hook HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Windvane-Hook: 1\r\nContent-Length: 2\r\n\r\n{}"
+    assert int(_raw(port, head).split(b" ", 2)[1]) == 403  # the hook header alone is not enough
+    assert ran == []
+
+    assert json.loads(_raw(port, _line(hook))) == {"output": "ran"}
+    assert _post(port, hook)[0] == 200
+    assert len(ran) == 2
+
+    ss.TOKEN_FILE.unlink()
+    ss._TOKEN = None  # a daemon that never minted one and finds no file
+    assert json.loads(_raw(port, _line(hook))) == refused
+    assert _post(port, hook)[0] == 403
+    assert len(ran) == 2
+
+
+def test_the_token_is_minted_for_the_owner_alone(ss, tmp_path: Path):
+    token = ss._write_token()
+    assert re.fullmatch(r"[0-9a-f]{64}", token) and ss.TOKEN_FILE.read_text() == token == ss.read_token()
+    if os.name != "nt":
+        assert ss.TOKEN_FILE.stat().st_mode & 0o777 == 0o600
+    assert ss._write_token() != token  # a new daemon, a new secret
+    assert ss._with_token({"embed": "x"}) == {"embed": "x", "token": ss.read_token()}
+    assert ss._token_ok(ss.read_token()) and not ss._token_ok(token) and not ss._token_ok(None)
+    ss._remove_files()
+    assert not ss.TOKEN_FILE.exists() and ss.read_token() is None
+    assert ss._with_token({"embed": "x"}) == {"embed": "x"}  # nothing to add; the daemon then refuses
 
 
 def test_http_refuses_what_is_not_a_hook_post(ss, listener, monkeypatch):
@@ -168,7 +219,7 @@ def test_http_refuses_what_is_not_a_hook_post(ss, listener, monkeypatch):
     def raw_status(data: bytes) -> int:
         return int(_raw(port, data).split(b" ", 2)[1])
 
-    head = b"POST /hook HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Windvane-Hook: 1\r\n"
+    head = b"POST /hook HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Windvane-Hook: 1\r\nX-Windvane-Token: " + TOKEN.encode() + b"\r\n"
     assert raw_status(head + b"\r\n") == 411  # no Content-Length
     assert raw_status(head + b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n") == 501
     assert raw_status(head + b"Content-Length: 9\r\n\r\nnot json!") == 400
@@ -375,8 +426,8 @@ def test_inside_the_daemon_a_handler_never_probes_or_replaces_it(ss, monkeypatch
 
 def test_the_files_are_named_for_windvane(ss, tmp_path: Path):
     store = tmp_path / "store"
-    assert (ss.PORT_FILE, ss.LOCK_FILE, ss.PID_FILE, ss.MODEL_FILE) == (
-        store / "daemon_port", store / "daemon.lock", store / "daemon_pid", store / "daemon_model")
+    assert (ss.PORT_FILE, ss.TOKEN_FILE, ss.LOCK_FILE, ss.PID_FILE, ss.MODEL_FILE) == (
+        store / "daemon_port", store / "daemon_token", store / "daemon.lock", store / "daemon_pid", store / "daemon_model")
 
 
 @pytest.mark.skipif(not _has("windvane.proc_lock", "acquire"), reason="windvane.proc_lock (port-hooks) not in the tree yet")
@@ -633,9 +684,15 @@ def test_a_real_daemon_binds_announces_and_answers(tmp_path: Path):
             assert daemon_pid in family
         except ImportError:
             assert daemon_pid > 0
-        assert json.loads(_raw(port, b'{"embed": "x"}\n')) == {"error": "no semantic tier"}
-        assert "unsupported" in json.loads(_raw(port, b'{"hook_event": "nope", "stdin": ""}\n'))["error"]
-        assert _post(port, {"hook_event": "session_end_json", "stdin": "{}"})[0] == 200
+        token = (store / "daemon_token").read_text()
+        assert re.fullmatch(r"[0-9a-f]{64}", token)
+        if os.name != "nt":
+            assert (store / "daemon_token").stat().st_mode & 0o777 == 0o600
+        assert json.loads(_raw(port, _line({"embed": "x"}, token=token))) == {"error": "no semantic tier"}
+        assert "unsupported" in json.loads(_raw(port, _line({"hook_event": "nope", "stdin": ""}, token=token)))["error"]
+        assert json.loads(_raw(port, b'{"hook_event": "nope", "stdin": ""}\n')) == {"error": "missing or wrong token"}
+        assert _post(port, {"hook_event": "session_end_json", "stdin": "{}"}, headers={"X-Windvane-Token": token})[0] == 200
+        assert _post(port, {"hook_event": "session_end_json", "stdin": "{}"})[0] == 403  # the test constant is not this daemon's
         # A second daemon on the same store finds the lock held and leaves.
         second = subprocess.run([sys.executable, "-m", "windvane.daemon"], cwd=str(ROOT), env=env,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)

@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-Three more risks the Agent Memory Atlas review of claude-engram named, read against the code and fixed.
+Four more risks the Agent Memory Atlas review of claude-engram named, read against the code and fixed.
 
+- **The daemon answers its owner alone.** The loopback listener took a request from any account on the machine, and the handlers write the store. The daemon now mints a secret at start and writes it to `daemon_token` in the store, readable by the owner alone; a JSON line carries it as `token`, an HTTP request as `X-Windvane-Token`, and a request without it is refused before any handler runs. The thin client, the mod and the doctor read it beside the port, and without it they work in their own process as they do when no daemon runs. On a single-user machine nothing changes; on a shared host the daemon is now as private as the store files.
 - **An acknowledged mistake stays acknowledged.** The duplicate check on a new mistake read the hot entries only, so a mistake acknowledged into the archive came back as a fresh entry, and into the pre-edit banners, the next time a hook or the miner logged it. A new mistake is now matched against the project's archived mistakes too, and a match stays in the archive.
 - **Forgetting a project forgets its archive.** `memory(forget)` removed the project's directory and its manifest row and left its archived entries in the archive file. They go too.
 - **A short rule is a rule.** The post-session cleanup called any memory under 20 characters broken and deleted it, rules and mistakes included, so a rule such as "Use pathlib." did not survive the next session. The broken-memory pass now skips rules and mistakes, as the decay pass always did.

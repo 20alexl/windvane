@@ -106,6 +106,8 @@ The daemon binds a random port on 127.0.0.1 and writes it to `daemon_port` in th
 
 One listener serves two protocols, chosen by the first line of a connection. The thin client sends a JSON line. The mod sends HTTP, `POST /hook` and `POST /tool`, which must carry the `X-Windvane-Hook: 1` header and a loopback host if they send one. A web page can neither add that header across origins nor pass the host check through DNS rebinding, so a browser cannot drive the handlers.
 
+Both protocols also need the daemon's token. The daemon mints a random secret when it starts and writes it to `daemon_token` in the store, readable by the store's owner alone (mode 0600 where file modes exist; on Windows the file takes the profile directory's permissions). A JSON line carries it as `token`, an HTTP request as `X-Windvane-Token`, and a request without it is refused before any handler runs. Loopback is reachable by every account on the machine, and the handlers write the store, so the token makes the daemon exactly as private as the store files are. A daemon that finds no token of its own refuses everything. The clients read the token beside the port, and without it they do their own work in process, as they do when no daemon runs.
+
 With the `semantic` extra installed and the tier requested, the daemon also loads the sentence encoder in the background and answers scoring and embedding requests with it. Otherwise it never imports the encoder.
 
 A session search keeps the index it read, up to two of them, while the file is unchanged: the chunks, their lowercased previews and an inverted word index. The first search of a large index takes a few seconds and a few hundred megabytes of memory; the searches after it answer a keyword query in well under a second.

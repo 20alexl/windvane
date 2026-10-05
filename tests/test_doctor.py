@@ -84,7 +84,8 @@ def test_a_daemon_that_answers_is_reported_with_its_port(tmp_path: Path):
         data = b""
         while b"\n" not in data:
             data += conn.recv(4096)
-        assert json.loads(data)["hook_event"] == "doctor_ping"
+        ping = json.loads(data)
+        assert ping["hook_event"] == "doctor_ping" and ping["token"] == "f" * 64  # the daemon refuses a ping without its token
         conn.sendall(b'{"error": "unsupported hook_event \'doctor_ping\'"}\n')
         conn.close()
 
@@ -92,6 +93,7 @@ def test_a_daemon_that_answers_is_reported_with_its_port(tmp_path: Path):
     t.start()
     (tmp_path / "store").mkdir()
     (tmp_path / "store" / "daemon_port").write_text(str(port))
+    (tmp_path / "store" / "daemon_token").write_text("f" * 64)
     try:
         rc, out = _run()
     finally:

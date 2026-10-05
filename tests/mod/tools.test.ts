@@ -13,6 +13,7 @@ import { expect, mock, test } from 'claude-code/testing'
 const STORE = 'C:/tmp/windvane-tools-store'
 const SID = 'aaaaaaaa-0000-4000-8000-00000000000a'
 const PORT = 47124
+const TOKEN = 'f'.repeat(64) // the store's daemon_token; the daemon refuses a POST without it
 
 type Run = { argv: readonly string[]; init?: { stdin?: string; env?: Record<string, string>; timeoutMs?: number } }
 type Fetched = { url: string; headers: Record<string, string>; body: Record<string, unknown> }
@@ -42,6 +43,7 @@ function engine(on: On, setup: { daemon: Daemon; reply?: ReturnType<typeof ran> 
   on('fs.read', ($, e) => {
     const p = e.path.replace(/\\/g, '/')
     if (p === `${STORE}/daemon_port` && setup.daemon !== 'none') return { value: `${PORT}\n` }
+    if (p === `${STORE}/daemon_token` && setup.daemon !== 'none') return { value: `${TOKEN}\n` }
     throw new Error(`ENOENT ${p}`)
   })
   on('http.fetch', ($, e) => {
@@ -124,6 +126,7 @@ test('the daemon answers first: one POST, no process', async ($, on) => {
   const f = t.fetched[0]!
   expect(f.url).toBe(`http://127.0.0.1:${PORT}/tool`)
   expect(f.headers['X-Windvane-Hook']).toBe('1')
+  expect(f.headers['X-Windvane-Token']).toBe(TOKEN)
   expect(f.body.tool).toBe('checkpoint')
   const args = f.body.arguments as Record<string, unknown>
   expect(args.operation).toBe('save')

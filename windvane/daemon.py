@@ -17,10 +17,17 @@ encoder and answers those requests with ``{"error": "no semantic tier"}``;
 every caller then uses its regex tier.
 
 Two protocols share the one loopback listener; the first line of a
-connection decides which (``_handle_client``):
+connection decides which (``_handle_client``). Both need the daemon's token:
+a secret the daemon mints at start and writes to ``daemon_token`` in the
+store, readable by the store's owner alone (mode 0600; on Windows the
+profile directory's ACL). Loopback is reachable by every account on the
+machine, and the handlers write the store, so the token makes the daemon
+as private as the files are. A request without it is refused and the
+callers fall back to their own process.
 
-JSON lines over TCP (a first line starting with ``{``):
-  Request:  {"text": "let's use Redis"}\\n
+JSON lines over TCP (a first line starting with ``{``), with ``"token"`` in
+the object:
+  Request:  {"text": "let's use Redis", "token": "..."}\\n
   Response: {"score": 0.85, "text": "let's use redis"}\\n
   Also {"embed": ...}, {"embed_batch": [...]}, and the hook dispatch
   {"hook_event": <hook_type>, "stdin": <hook stdin text>,
@@ -34,20 +41,23 @@ hooks module, which reaches the daemon through ``$.http.fetch``:
   application/json, body {"output": ...} or {"error": ...}, Connection:
   close. POST /tool with {"tool", "arguments", "env"} -> 200 and the
   ``windvane.tools.run`` answer {"text", "isError", "ms"}. The request must
-  carry ``X-Windvane-Hook: 1`` and, when it sends a Host, a loopback one: a
-  web page can neither add the header cross-origin (no preflight is ever
-  answered) nor pass the Host check through DNS rebinding, so a browser
-  cannot drive the handlers. 403 otherwise, 404 for another path, 405 for
-  another method, 400 for a malformed request, 411 without Content-Length,
-  413 past ``HTTP_MAX_BODY``, 501 for a chunked body.
+  carry ``X-Windvane-Token`` with the token, ``X-Windvane-Hook: 1`` and, when
+  it sends a Host, a loopback one: a web page can neither add a header
+  cross-origin (no preflight is ever answered) nor pass the Host check
+  through DNS rebinding, so a browser cannot drive the handlers. 403
+  otherwise, 404 for another path, 405 for another method, 400 for a
+  malformed request, 411 without Content-Length, 413 past ``HTTP_MAX_BODY``,
+  501 for a chunked body.
 
 Entry point: ``python -m windvane.daemon``.
 """
 
 from typing import Any
+import hmac
 import json
 import os
 import re
+import secrets
 import signal
 import socket
 import sys
@@ -83,6 +93,8 @@ def _storage_root() -> Path:
 
 
 PORT_FILE = _storage_root() / "daemon_port"
+TOKEN_FILE = _storage_root() / "daemon_token"
+TOKEN_HEADER = "X-Windvane-Token"
 PID_FILE = _storage_root() / "daemon_pid"
 MODEL_FILE = _storage_root() / "daemon_model"
 DEVICE_FILE = _storage_root() / "daemon_device"
@@ -292,6 +304,65 @@ _HTTP_REASONS = {
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 HOOK_HEADER = "X-Windvane-Hook"
 
+_TOKEN: "str | None" = None  # this daemon's token, minted by serve()
+
+
+def _write_token() -> str:
+    """Mint this daemon's token and write it to ``TOKEN_FILE`` for the
+    store's owner alone. Mode 0600 where modes exist; on Windows the file
+    takes the profile directory's ACL, which is the owner's already."""
+    global _TOKEN
+    token = secrets.token_hex(32)
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(TOKEN_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, token.encode("ascii"))
+    finally:
+        os.close(fd)
+    if os.name != "nt":
+        try:
+            os.chmod(str(TOKEN_FILE), 0o600)  # the file may have existed with a wider mode
+        except OSError:
+            pass
+    _TOKEN = token
+    return token
+
+
+def read_token() -> "str | None":
+    """The running daemon's token, from its file, or None when there is none
+    to read. Callers without a token do their own work instead."""
+    try:
+        text = TOKEN_FILE.read_text(encoding="ascii").strip()
+    except (OSError, ValueError):
+        return None
+    return text or None
+
+
+def _own_token() -> "str | None":
+    """The token this daemon checks requests against: the one serve() minted,
+    or, in a process that serves connections without serve(), the file's."""
+    global _TOKEN
+    if _TOKEN is None:
+        _TOKEN = read_token()
+    return _TOKEN
+
+
+def _token_ok(given) -> bool:
+    """Whether ``given`` is this daemon's token. Without a token of its own
+    the daemon refuses everything: closed, never open, when the file is gone."""
+    own = _own_token()
+    if own is None or not isinstance(given, str):
+        return False
+    return hmac.compare_digest(own.encode("utf-8"), given.encode("utf-8"))
+
+
+def _with_token(request: dict) -> dict:
+    """``request`` with the running daemon's token added, for the line protocol."""
+    token = read_token()
+    if token is not None:
+        request["token"] = token
+    return request
+
 
 def _http_reply(conn, status: int, body: dict) -> None:
     payload = json.dumps(body).encode("utf-8")
@@ -351,6 +422,9 @@ def _serve_http(conn, data: bytes) -> None:
         return
     if headers.get(HOOK_HEADER.lower()) != "1":
         _http_reply(conn, 403, {"error": f"missing {HOOK_HEADER} header"})
+        return
+    if not _token_ok(headers.get(TOKEN_HEADER.lower())):
+        _http_reply(conn, 403, {"error": f"missing or wrong {TOKEN_HEADER} header"})
         return
     route = target.split("?", 1)[0]
     if route not in ("/hook", "/tool"):
@@ -452,6 +526,9 @@ def _handle_client(conn, holder):
             return
 
         request = json.loads(data.decode("utf-8").strip())
+        if not isinstance(request, dict) or not _token_ok(request.pop("token", None)):
+            conn.sendall(b'{"error": "missing or wrong token"}\n')
+            return
 
         if "hook_event" in request:
             response = json.dumps(_serve_hook_event(request)) + "\n"
@@ -503,11 +580,13 @@ def serve():
     port = server_sock.getsockname()[1]
     server_sock.listen(LISTEN_BACKLOG)
 
-    # Write model signature, PID and port so hooks can find and validate us.
-    # The port file goes last: a client that reads it finds the rest in place.
+    # Write model signature, PID, token and port so hooks can find and
+    # validate us. The port file goes last: a client that reads it finds the
+    # rest in place.
     PORT_FILE.parent.mkdir(parents=True, exist_ok=True)
     MODEL_FILE.write_text(sig)
     PID_FILE.write_text(str(os.getpid()))
+    _write_token()
     PORT_FILE.write_text(str(port))
     # Clear the spawn marker: we're up, spawns may flow again
     STARTING_FILE.unlink(missing_ok=True)
@@ -621,7 +700,7 @@ def _cleanup():
 
 
 def _remove_files():
-    for f in (PORT_FILE, PID_FILE, MODEL_FILE, DEVICE_FILE):
+    for f in (PORT_FILE, TOKEN_FILE, PID_FILE, MODEL_FILE, DEVICE_FILE):
         try:
             f.unlink(missing_ok=True)
         except Exception:
@@ -764,7 +843,7 @@ def score_via_server(text: str) -> tuple[float, str]:
         sock.settimeout(1.0)
         sock.connect(("127.0.0.1", port))
 
-        request = json.dumps({"text": text}) + "\n"
+        request = json.dumps(_with_token({"text": text})) + "\n"
         sock.sendall(request.encode("utf-8"))
 
         data = b""
@@ -817,7 +896,7 @@ def embed_via_server(text: str) -> list[float]:
         sock.settimeout(2.0)
         sock.connect(("127.0.0.1", port))
 
-        request = json.dumps({"embed": text}) + "\n"
+        request = json.dumps(_with_token({"embed": text})) + "\n"
         sock.sendall(request.encode("utf-8"))
 
         data = b""
@@ -854,7 +933,7 @@ def embed_batch_via_server(texts: list[str]) -> list[list[float]]:
         sock.settimeout(30.0)  # Batch can take longer
         sock.connect(("127.0.0.1", port))
 
-        request = json.dumps({"embed_batch": [t[:500] for t in texts]}) + "\n"
+        request = json.dumps(_with_token({"embed_batch": [t[:500] for t in texts]})) + "\n"
         sock.sendall(request.encode("utf-8"))
 
         # Batch responses can be large (~3KB * N texts)

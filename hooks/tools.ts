@@ -7,7 +7,8 @@
 // `{ tool, arguments, env }`:
 //
 // 1. first to the daemon, `POST http://127.0.0.1:<port>/tool` with the
-//    header `X-Windvane-Hook: 1`, the port read from `<store>/daemon_port`
+//    headers `X-Windvane-Hook: 1` and `X-Windvane-Token`, the port and the
+//    token read from `<store>/daemon_port` and `<store>/daemon_token`
 //    (warm imports, one handler instance across calls);
 // 2. when the daemon is down (no port file, a refused connection, a non-200,
 //    a body that is not an answer), to `python -m windvane.tools` with the
@@ -227,20 +228,22 @@ export function readReply(raw: unknown): Reply | undefined {
 // subprocess), 'timeout' when the request may have run.
 async function askDaemon(host: Host, store: string, request: Request): Promise<Asked> {
   let portText: string
+  let token: string
   try {
     portText = await host.read(`${store}/daemon_port`)
+    token = (await host.read(`${store}/daemon_token`)).trim() // the daemon's secret; without it the request is refused
   } catch {
     return 'down'
   }
   const port = parseInt(portText.trim(), 10)
-  if (!Number.isInteger(port) || port <= 0) return 'down'
+  if (!Number.isInteger(port) || port <= 0 || token === '') return 'down'
 
   let timer: Timer | undefined
   const timeout = new Promise<'timeout'>(resolve => {
     timer = host.after(TOOL_TIMEOUT_MS, () => resolve('timeout'))
   })
   try {
-    const res = await Promise.race([host.post(port, 'tool', JSON.stringify(request)), timeout])
+    const res = await Promise.race([host.post(port, token, 'tool', JSON.stringify(request)), timeout])
     if (res === 'timeout') return 'timeout'
     if (res.status !== 200) return 'down'
     return readReply(JSON.parse(res.text)) ?? 'down'

@@ -80,7 +80,8 @@ def _daemon_info(timeout=1.0):
     try:
         sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
         sock.settimeout(timeout)
-        sock.sendall(b'{"hook_event": "doctor_ping", "stdin": ""}\n')
+        ping = daemon._with_token({"hook_event": "doctor_ping", "stdin": ""})
+        sock.sendall((json.dumps(ping) + "\n").encode("utf-8"))
         data = b""
         while b"\n" not in data:
             chunk = sock.recv(4096)
