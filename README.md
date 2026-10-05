@@ -42,7 +42,7 @@ Every row happens without a call from you or the model.
 | After a failed tool | Logs the error as a mistake unless it was a failing test run. If the error matches one seen before, shows the known fix at once. |
 | After a batch of tool calls | Accounts the calls to the turn for stall detection and records detector matches on non-shell tools. |
 | Plan approved or task completed | Asks for the plan to be banked as a checkpoint, or counts a finished task as a step done. |
-| Turn ends | Saves an automatic handoff. If the turn edited files and nothing was banked on purpose, banks the drafted checkpoint, at most once per ten minutes. Judges the turn for stalls. Ticks the background miner. |
+| Turn ends | Saves an automatic handoff. If the turn edited files and nothing was banked on purpose, banks the drafted checkpoint, at most once per ten minutes. A checkpoint saved before the turn's edits is brought up to the draft in place. Judges the turn for stalls. Ticks the background miner. |
 | Before compaction | Banks the drafted checkpoint and indexes the transcript while the detail is still in it. |
 | After compaction | Opens a new pressure cycle. The session-start banner that follows restores the state, unless the compacted conversation already carries it. |
 | API failure or notification | Records the failure with its type and, for a usage limit, the reset time. In autonomy mode, sends an alert. |

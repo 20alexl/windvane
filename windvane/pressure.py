@@ -562,6 +562,14 @@ def note_manual_checkpoint(state: dict) -> None:
     ps["stops_since_checkpoint"] = 0
     ps["last_manual_checkpoint_at"] = time.time()
     ps["milestone_pending"] = None
+    # Where the session's edit count stood at the save: an edit after it
+    # means the record describes the state before the edit, and the turn-end
+    # and before-compaction hooks bring it up to the draft (windvane.draft
+    # refresh_deliberate).
+    try:
+        ps["edits_at_manual_checkpoint"] = int(state.get("edits_total") or 0)
+    except (TypeError, ValueError):
+        ps["edits_at_manual_checkpoint"] = 0
 
 
 def _ring_manual_after(project_dir: str, t: float) -> bool:

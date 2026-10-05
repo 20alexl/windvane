@@ -270,6 +270,26 @@ def _set_session(session_id: str) -> None:
 # ── the previous record ─────────────────────────────────────────────────────
 
 
+def _record_dirs(project_dir: str, work_project: str) -> list:
+    """The rings a session's own record can sit in: the work project's
+    candidates, plus the rings of every registered sub-project under the
+    session's directory."""
+    from windvane import checkpoints as ck
+
+    dirs = ck.candidate_dirs(work_project)
+    try:
+        root = ck._normalize(project_dir) + "/"
+        manifest = json.loads((ck.storage_dir() / "manifest.json").read_text(encoding="utf-8"))
+        for p, info in (manifest.get("projects") or {}).items():
+            if p.startswith(root) and info.get("hash"):
+                d = ck.storage_dir() / "projects" / info["hash"]
+                if d not in dirs:
+                    dirs.append(d)
+    except Exception:
+        pass
+    return dirs
+
+
 def _previous(project_dir: str, work_project: str, session_id: str, transcript_path: str) -> tuple:
     """(record, source): this session's newest deliberate checkpoint on the
     live branch, as the compaction banner picks it, else the project's
@@ -277,17 +297,7 @@ def _previous(project_dir: str, work_project: str, session_id: str, transcript_p
     try:
         from windvane import checkpoints as ck
 
-        dirs = ck.candidate_dirs(work_project)
-        try:
-            root = ck._normalize(project_dir) + "/"
-            manifest = json.loads((ck.storage_dir() / "manifest.json").read_text(encoding="utf-8"))
-            for p, info in (manifest.get("projects") or {}).items():
-                if p.startswith(root) and info.get("hash"):
-                    d = ck.storage_dir() / "projects" / info["hash"]
-                    if d not in dirs:
-                        dirs.append(d)
-        except Exception:
-            pass
+        dirs = _record_dirs(project_dir, work_project)
         try:
             own, _skipped = _hook("_own_session_checkpoint")(dirs, session_id, transcript_path)
         except Exception:
@@ -851,6 +861,147 @@ def bank(record: dict, session_id: str, trigger: str = "bank") -> dict:
         ring = ck.register_project_ring(wp)
     ck.write_handoff(entry, [ring, ck.global_ring_dir()])
     return entry
+
+
+# ── the refresh of a deliberate record ──────────────────────────────────────
+#
+# A save early in a turn describes the state before the turn's edits: the
+# model banks the checkpoint on the CHECKPOINT NOW note, then does the edit,
+# and the record a compaction restores says the edit is still to come
+# (2026-10-05, the live demo). The hooks that run after the turn bring such
+# a record up to the draft, without touching what the model wrote itself.
+
+# ring field -> record field, for a deliberate entry's twin names
+_RING_TWINS = {
+    "files_in_progress": "files_involved",
+    "next_steps": "pending_steps",
+    "warnings": "handoff_warnings",
+    "context_needed": "handoff_context_needed",
+    "decisions": "key_decisions",
+}
+
+
+def _saved_value(saved: dict, field: str):
+    """A field of a ring entry, under the record's name or its ring twin."""
+    v = saved.get(field)
+    if v in (None, "", []):
+        for twin, f in _RING_TWINS.items():
+            if f == field:
+                v = saved.get(twin)
+    if field == "handoff_summary" and v in (None, ""):
+        v = saved.get("summary")
+    return v
+
+
+def _file_key(path: str) -> str:
+    return str(path or "").replace("\\", "/").rstrip("/").lower()
+
+
+def _dedupe_files(items: list) -> list:
+    out, seen = [], set()
+    for f in items:
+        k = _file_key(f)
+        if k and k not in seen:
+            seen.add(k)
+            out.append(f)
+    return out
+
+
+def merge_into_deliberate(saved: dict, record: dict) -> tuple:
+    """(the refreshed ring entry, the fields refreshed). A field the draft
+    filled at the save (``metadata.drafted_fields``), or one the save left
+    empty, takes the fresh draft's value. A list the model wrote keeps its
+    items first and gains the draft's new ones; ``pending_steps`` the model
+    wrote stay as written, since they say what the model meant to do next. A
+    string the model wrote stays. ``(saved, [])`` when nothing changes."""
+    md = dict(saved.get("metadata") or {})
+    drafted = {str(f) for f in (md.get("drafted_fields") or [])}
+    out = dict(saved)
+    refreshed: list = []
+    for f in FIELDS:
+        new = record.get(f)
+        if f in STRING_FIELDS:
+            new = " ".join(str(new or "").split())
+            cur = " ".join(str(_saved_value(saved, f) or "").split())
+            if not new or new == cur:
+                continue
+            if cur and f not in drafted:
+                continue
+            out[f] = new
+        else:
+            new = [x for x in (new or []) if x]
+            cur = list(_saved_value(saved, f) or [])
+            if not new:
+                continue
+            if cur and f not in drafted:
+                if f == "pending_steps":
+                    continue
+                merged = _dedupe_files(cur + new) if f == "files_involved" else _dedupe(cur + new)
+            else:
+                merged = _dedupe_files(new) if f == "files_involved" else _dedupe(new)
+            if f == "files_involved":
+                merged = merged[:MAX_FILES]
+            if merged == cur:
+                continue
+            out[f] = merged
+        if not cur:
+            drafted.add(f)
+        refreshed.append(f)
+    if not refreshed:
+        return saved, []
+    # The entry carries each list under both names, as a compact_now bank does.
+    for twin, f in _RING_TWINS.items():
+        out[f] = out[twin] = list(out.get(f) or _saved_value(saved, f) or [])
+    out["summary"] = out.get("handoff_summary") or saved.get("summary") or out.get("task_description") or ""
+    md["drafted_fields"] = sorted(drafted)
+    md["refreshed"] = {"at": time.time(), "fields": list(refreshed)}
+    out["metadata"] = md
+    return out, refreshed
+
+
+def refresh_deliberate(record: dict, project_dir: str, session_id: str, transcript_path: str, state: dict) -> Optional[dict]:
+    """Bring this session's newest deliberate checkpoint up to ``record``
+    (the draft just made) when the session edited a file after saving it.
+    The ring entry and the task file are rewritten in place, same task id,
+    still deliberate, so the restore and the compaction brief read the
+    state at the turn's end. The state's edit mark moves to the current
+    count, so a turn with no further edit refreshes nothing. The refreshed
+    entry, or None when there was nothing to refresh. Never raises."""
+    try:
+        st = state if isinstance(state, dict) else {}
+        from windvane import pressure as _p
+
+        ps = _p.pressure_state(st)
+        at_save = ps.get("edits_at_manual_checkpoint")
+        if at_save is None:
+            return None
+        edits = int(st.get("edits_total") or 0)
+        if edits <= int(at_save or 0):
+            return None
+        work_project = work_project_of(project_dir, st)
+        dirs = _record_dirs(project_dir, work_project)
+        own, _skipped = _hook("_own_session_checkpoint")(dirs, session_id, transcript_path)
+        ps["edits_at_manual_checkpoint"] = edits
+        if not own or not own.get("task_id") or own.get("trigger") == "compact_now":
+            return None
+        entry, fields = merge_into_deliberate(own, record)
+        if not fields:
+            return None
+        try:
+            from windvane import repo_state as _rs
+
+            pp = str(entry.get("project_path") or (entry.get("metadata") or {}).get("project_path") or work_project)
+            commit = _rs.head(pp)
+            if commit:
+                entry["commit"] = commit
+        except Exception:
+            pass
+        from windvane import checkpoints as ck
+
+        ck.replace_handoff(entry, dirs)
+        return entry
+    except Exception:
+        return None
 
 
 def main(argv: "Optional[list]" = None) -> int:

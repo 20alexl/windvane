@@ -52,6 +52,8 @@ Every failure leaves a field empty. The draft never raises. Each saved record no
 
 The draft is banked in three ways: the model calls `checkpoint(save)` with no fields (a deliberate record), the before-compaction hook banks it as an automatic record, and the turn-end hook banks it as an automatic record when the turn edited files and nothing deliberate was banked, at most once per ten minutes per session.
 
+A deliberate record saved before the session's latest edits describes the state before them: the model banks the checkpoint on the CHECKPOINT NOW note at the top of a turn, then does the edit, and the record a compaction would restore says the edit is still to come. The turn-end and before-compaction hooks bring such a record up to the draft in place, same task id, still deliberate. A field the draft filled at the save, or one the save left empty, takes the fresh draft; a list the model wrote keeps its items and gains the draft's new ones; a string the model wrote, and the pending steps it typed, stay as written. The record notes which fields were refreshed and when.
+
 ## The ring
 
 Checkpoints and handoffs are one construct. Each project directory in the store keeps a history of its last 20 deliberate saves and a pointer to the latest record. An automatic record only contends for the pointer, under a guard: a trivial automatic record (no files, no decisions, no real next steps) is dropped, and an automatic record does not replace a deliberate one unless it is at least as substantive or the deliberate one is a day old. This keeps a per-turn automatic entry from evicting real checkpoints.

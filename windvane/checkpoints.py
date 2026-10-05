@@ -347,6 +347,44 @@ def write_handoff(
     return report
 
 
+def replace_handoff(entry: dict, target_dirs: Sequence[Optional[Path]]) -> dict:
+    """Rewrite a deliberate record in place: the history entry with the same
+    ``task_id`` in each target ring, the ``latest`` pointer where it names
+    that task, and the per-task file. Nothing is appended, so the ring's
+    order and count stay. Returns {"replaced", "promoted", "task_file"}."""
+    report: dict = {"replaced": [], "promoted": [], "task_file": ""}
+    tid = str(entry.get("task_id") or "")
+    if not tid:
+        return report
+    for d in target_dirs:
+        if d is None:
+            continue
+        history = _load_history(d)
+        at = [i for i, h in enumerate(history) if str((h or {}).get("task_id") or "") == tid]
+        if at:
+            history[at[-1]] = entry
+            _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
+            report["replaced"].append(str(d))
+        ptr = _read_json(d / LATEST_FILENAME)
+        if ptr and str(ptr.get("task_id") or "") == tid:
+            _atomic_write(d / LATEST_FILENAME, entry)
+            report["promoted"].append(str(d))
+    try:
+        task_file = global_ring_dir() / f"{tid}.json"
+        data = _read_json(task_file)
+        if data:
+            for k in ("task_description", "current_step", "completed_steps", "pending_steps", "files_involved",
+                      "key_decisions", "handoff_summary", "handoff_context_needed", "handoff_warnings",
+                      "metadata", "commit"):
+                if k in entry:
+                    data[k] = entry[k]
+            _atomic_write(task_file, data)
+            report["task_file"] = str(task_file)
+    except Exception:
+        pass
+    return report
+
+
 def prune_task_files(storage: Path, keep_days: int = TASK_FILE_KEEP_DAYS) -> list:
     """Remove the per-task files (``checkpoints/task_*.json``) older than
     ``keep_days`` that no ring names any more. Every ring keeps its newest

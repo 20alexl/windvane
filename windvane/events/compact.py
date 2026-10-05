@@ -39,6 +39,11 @@ def _precompact_handoff(project_dir: str, state: dict, handoff_project: str, tri
     from windvane import draft as _cd
 
     record, ctx = _cd.draft_with_context(project_dir, c._session_id, transcript, state)
+    # A deliberate save the session has edited past is brought up to this
+    # draft first: the brief after the compaction restores the deliberate
+    # record, not the automatic entry banked below.
+    if _cd.refresh_deliberate(record, project_dir, c._session_id, transcript, state) is not None:
+        state["draft_refreshed"] = True
     if not ctx:
         ctx = _get_session_context_for_handoff(handoff_project)
     entry = _cd.ring_record(record, c._session_id, trigger)
@@ -88,6 +93,12 @@ def _hook_pre_compact(project_dir: str) -> None:
             handoff,
             [_project_hash_dir(handoff_project), _global_handoff_dir()],
         )
+        # The refresh moved the state's edit mark; keep it.
+        if state.pop("draft_refreshed", None):
+            try:
+                save_state(state)
+            except Exception:
+                pass
 
         # Compaction is the one point where mid-session mining pays off: the
         # detail about to be dropped from the context window is still in the

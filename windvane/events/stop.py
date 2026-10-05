@@ -93,12 +93,36 @@ def _turn_banked_deliberately(state: dict) -> bool:
     return False
 
 
+def _transcript_of(state: dict, data: dict) -> str:
+    _run = state.get("run")
+    return str((data or {}).get("transcript_path") or "") or str(
+        (_run if isinstance(_run, dict) else {}).get("transcript_path") or ""
+    )
+
+
+def _refresh_deliberate(state: dict, data: dict, project_dir: str) -> bool:
+    """A deliberate checkpoint saved before the session's latest edits
+    describes the state before them; bring it up to the recorder's draft
+    (``windvane.draft.refresh_deliberate``). True when a record was
+    refreshed."""
+    try:
+        from windvane import draft as _draft
+
+        transcript = _transcript_of(state, data)
+        record, _ctx = _draft.draft_with_context(project_dir, c._session_id, transcript, state)
+        return _draft.refresh_deliberate(record, project_dir, c._session_id, transcript, state) is not None
+    except Exception:
+        return False
+
+
 def _maybe_bank_draft(state: dict, data: dict, project_dir: str, deliberate: bool) -> bool:
     """Bank the recorder's draft at Stop when the turn ended with no
     deliberate checkpoint and the session edited a file since the last bank;
     at most once per DRAFT_BANK_GAP_SECS per session. The record is the
     draft PreCompact banks (``windvane.draft``). A deliberate checkpoint
-    resets the edit baseline. Returns True when a draft was banked."""
+    resets the edit baseline; one saved before the turn's edits is brought
+    up to the draft instead of banked over. Returns True when a draft was
+    banked."""
     db = state.get("draft_bank")
     if not isinstance(db, dict):
         db = {}
@@ -109,6 +133,9 @@ def _maybe_bank_draft(state: dict, data: dict, project_dir: str, deliberate: boo
         edits = 0
     if deliberate:
         db["edits"] = edits
+        # The save came at the top of the turn and the edits after it: the
+        # record a compaction would restore says the edits are still to come.
+        _refresh_deliberate(state, data, project_dir)
         return False
     try:
         baseline = int(db.get("edits") or 0)
@@ -122,11 +149,11 @@ def _maybe_bank_draft(state: dict, data: dict, project_dir: str, deliberate: boo
     except Exception:
         return False
     try:
-        _run = state.get("run")
-        transcript = str((data or {}).get("transcript_path") or "") or str(
-            (_run if isinstance(_run, dict) else {}).get("transcript_path") or ""
-        )
+        transcript = _transcript_of(state, data)
         record, _ctx = _draft.draft_with_context(project_dir, c._session_id, transcript, state)
+        # An earlier deliberate save the session has edited past is refreshed
+        # from the same draft before the automatic entry is banked.
+        _draft.refresh_deliberate(record, project_dir, c._session_id, transcript, state)
         _draft.bank(record, c._session_id, trigger="stop")
     except Exception:
         return False

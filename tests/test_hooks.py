@@ -826,6 +826,56 @@ def test_stop_banks_the_draft_after_an_edit_at_most_once_per_ten_minutes(tmp_pat
     assert _state(store, sid)["draft_bank"]["at"] > time.time() - 60
 
 
+def test_stop_brings_a_save_made_before_the_turns_edits_up_to_the_draft(tmp_path: Path, monkeypatch):
+    """The live demo: the model banks the checkpoint on the CHECKPOINT NOW
+    note at the top of the turn, then edits; the record said the edit was
+    still to come. The turn end refreshes it in place."""
+    pytest.importorskip("windvane.draft")
+    from windvane import checkpoints as ck
+
+    proj = _proj(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
+    store = tmp_path / "store"
+    sid = "s-refresh"
+    t = tmp_path / "t-refresh.jsonl"
+    _edit_transcript(t, proj / "api.py")
+    stop = {"session_id": sid, "cwd": str(proj), "transcript_path": str(t),
+            "last_assistant_message": "Added cursor paging. Next: the tests.", "stop_hook_active": False}
+
+    # The turn's first act: the save, as the tool makes it (the tool process
+    # learns the session from the environment), with the summary drafted.
+    _run("post_batch_json", {"session_id": sid, "cwd": str(proj), "tool_calls": [
+        {"tool_name": "mcp__windvane__checkpoint", "tool_input": {"operation": "save"}, "tool_use_id": "c1", "tool_response": "saved"}]})
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    resp = ck.ContextGuard().save_checkpoint(
+        task_description="Cursor pagination for GET /items", current_step="", completed_steps=[], files_involved=[],
+        handoff_summary="Cursor paging is only planned.", pending_steps=["Keep page= working"],
+        project_path=str(proj), drafted_fields=["handoff_summary"])
+    assert resp.status == "success"
+    assert _state(store, sid)["pressure"]["edits_at_manual_checkpoint"] == 0
+    before = ck.read_latest(ck.candidate_dirs(str(proj))) or {}
+    assert before["kind"] == "manual" and before["files_in_progress"] == []
+
+    # Then the edit, and the turn ends.
+    _run("post_edit_json", {"session_id": sid, "tool_name": "Edit", "tool_input": {"file_path": str(proj / "api.py")}})
+    _run("stop_json", stop)
+    after = ck.read_latest(ck.candidate_dirs(str(proj))) or {}
+    assert after["task_id"] == before["task_id"] and after["kind"] == "manual"
+    assert [Path(f).name for f in after["files_in_progress"]] == ["api.py"]
+    assert after["task_description"] == "Cursor pagination for GET /items"
+    assert after["next_steps"] == ["Keep page= working"]
+    assert after["summary"] != "Cursor paging is only planned." and after["metadata"]["refreshed"]["fields"]
+    assert sum(1 for h in ck.read_history(ck.candidate_dirs(str(proj))) if h["kind"] == "manual") == 1
+    # No automatic entry was banked over it, and the mark moved.
+    assert not (_state(store, sid)["draft_bank"]).get("at")
+    assert _state(store, sid)["pressure"]["edits_at_manual_checkpoint"] == 1
+
+    # A turn with no further edit changes nothing.
+    stamp = after["metadata"]["refreshed"]["at"]
+    _run("stop_json", stop)
+    assert (ck.read_latest(ck.candidate_dirs(str(proj))) or {})["metadata"]["refreshed"]["at"] == stamp
+
+
 def test_pre_compact_banks_the_draft_to_the_ring(tmp_path: Path, monkeypatch):
     pytest.importorskip("windvane.draft")
     proj = _proj(tmp_path)

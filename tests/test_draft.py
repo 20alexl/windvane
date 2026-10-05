@@ -349,6 +349,81 @@ def test_the_hooks_bank_stays_an_automatic_entry(tmp_path, monkeypatch):
     assert sum(1 for h in history if h["kind"] == "manual") == 1
 
 
+def test_the_refresh_keeps_what_the_model_wrote_and_takes_the_draft_for_the_rest():
+    from windvane import draft as d
+
+    saved = {"task_id": "task_7", "kind": "manual", "created": 1000.0, "session_id": "s",
+             "task_description": "Cursor pagination for GET /items",
+             "handoff_summary": "Cursor paging is only planned.", "summary": "Cursor paging is only planned.",
+             "completed_steps": [], "next_steps": ["Keep page= working"], "files_in_progress": [],
+             "warnings": ["never push"], "context_needed": [], "decisions": [],
+             "metadata": {"project_path": "/p", "drafted_fields": ["handoff_summary"]}}
+    record = {"task_description": "We are adding cursor pagination. Read docs/API.md",
+              "current_step": "the edit", "handoff_summary": "Added cursor paging to api.py; page= still works.",
+              "completed_steps": ["Edit items_api/api.py"], "pending_steps": ["tests for the cursor"],
+              "files_involved": ["/p/items_api/api.py", "/p/items_api/API.PY"], "key_decisions": [],
+              "handoff_warnings": ["nothing was run"], "handoff_context_needed": []}
+    out, fields = d.merge_into_deliberate(saved, record)
+    # The model's own words stay: the task, and the pending steps it typed.
+    assert out["task_description"] == saved["task_description"]
+    assert out["pending_steps"] == out["next_steps"] == ["Keep page= working"]
+    # A drafted or empty field takes the fresh draft; a list the model wrote gains the new items.
+    assert out["handoff_summary"] == out["summary"] == "Added cursor paging to api.py; page= still works."
+    assert out["current_step"] == "the edit"
+    assert out["files_involved"] == out["files_in_progress"] == ["/p/items_api/api.py"]
+    assert out["completed_steps"] == ["Edit items_api/api.py"]
+    assert out["handoff_warnings"] == out["warnings"] == ["never push", "nothing was run"]
+    assert sorted(fields) == ["completed_steps", "current_step", "files_involved", "handoff_summary", "handoff_warnings"]
+    assert (out["kind"], out["task_id"], out["created"]) == ("manual", "task_7", 1000.0)
+    md = out["metadata"]
+    assert md["drafted_fields"] == ["completed_steps", "current_step", "files_involved", "handoff_summary"]
+    assert md["refreshed"]["fields"] == fields and md["project_path"] == "/p"
+    # The same draft again changes nothing.
+    assert d.merge_into_deliberate(out, record) == (out, [])
+
+
+def test_the_refresh_rewrites_the_session_record_in_place_once_the_session_edited_past_the_save(tmp_path, monkeypatch):
+    from windvane import checkpoints as ck
+    from windvane import draft as d
+
+    sid = "aaaaaaaa-0000-4000-8000-0000000000d7"
+    proj, ring, entry = _project_with_ring(tmp_path, sid)
+    entry["metadata"] = {"drafted_fields": ["handoff_summary"]}
+    (ring / "handoff_history.json").write_text(json.dumps({"handoffs": [entry]}), encoding="utf-8")
+    (ring / "latest_handoff.json").write_text(json.dumps(entry), encoding="utf-8")
+    task_file = ck.global_ring_dir() / "task_9.json"
+    task_file.parent.mkdir(parents=True, exist_ok=True)
+    task_file.write_text(json.dumps({"task_id": "task_9", "files_involved": [], "handoff_summary": "wire the brief"}), encoding="utf-8")
+    monkeypatch.setattr(d, "work_project_of", lambda project_dir, state=None: project_dir)
+    monkeypatch.setattr(d, "_record_dirs", lambda project_dir, work_project: [ring])
+    hooks = {"_own_session_checkpoint": lambda dirs, s, tp: (entry if s == sid else None, [])}
+    monkeypatch.setattr(d, "_hook", lambda name: hooks[name])
+    record = {"task_description": "Phase 2 brief CLI", "current_step": "", "completed_steps": ["agents hook", "the compact hook"],
+              "pending_steps": ["smoke test"], "files_involved": ["src/loader.py", "src/compact.py"], "key_decisions": [],
+              "handoff_summary": "The compact hook is in; next the smoke test.", "handoff_warnings": [], "handoff_context_needed": []}
+
+    # No save mark, or no edit since the save: nothing happens.
+    assert d.refresh_deliberate(record, str(proj), sid, "", {"edits_total": 3}) is None
+    state = {"edits_total": 3, "pressure": {"edits_at_manual_checkpoint": 3}}
+    assert d.refresh_deliberate(record, str(proj), sid, "", state) is None
+
+    state["edits_total"] = 5
+    out = d.refresh_deliberate(record, str(proj), sid, "", state)
+    assert out is not None and out["task_id"] == "task_9" and out["kind"] == "manual"
+    assert out["files_in_progress"] == ["src/loader.py", "src/compact.py"]
+    assert out["completed_steps"] == ["agents hook", "the compact hook"]
+    assert out["next_steps"] == ["the compact hook", "smoke test"]  # the model's own list stays
+    assert out["summary"] == "The compact hook is in; next the smoke test."
+    # In place: one history entry still, the pointer follows, the task file too.
+    history = json.loads((ring / "handoff_history.json").read_text(encoding="utf-8"))["handoffs"]
+    assert len(history) == 1 and history[0]["files_in_progress"] == out["files_in_progress"]
+    assert json.loads((ring / "latest_handoff.json").read_text(encoding="utf-8"))["summary"] == out["summary"]
+    assert json.loads(task_file.read_text(encoding="utf-8"))["files_involved"] == out["files_in_progress"]
+    # The mark moved to the current count, so the same state refreshes nothing more.
+    assert state["pressure"]["edits_at_manual_checkpoint"] == 5
+    assert d.refresh_deliberate(record, str(proj), sid, "", state) is None
+
+
 def test_a_bank_for_a_project_the_store_has_not_met_registers_its_ring(tmp_path, monkeypatch):
     from windvane import checkpoints as ck
     from windvane import draft as d
