@@ -589,15 +589,15 @@ class ContextGuard:
             "handoff_context_needed": checkpoint.handoff_context_needed,
             "handoff_warnings": checkpoint.handoff_warnings,
         }
-        # Where the repo and the run stood: the commit lets a restore say how
-        # far the repo moved since; the goal lets a resumed session read what
-        # it was working toward.
+        # Where the repo and the run stood: the commit, the branch and the
+        # checkout (a worktree's, when the session runs in one) let a restore
+        # say how far the repo moved since; the goal lets a resumed session
+        # read what it was working toward.
         try:
             from windvane import repo_state as _rs
 
-            _commit = _rs.head(project_path) if project_path else ""
-            if _commit:
-                checkpoint_data["commit"] = _commit
+            if project_path:
+                _rs.stamp(checkpoint_data, project_path)
             _goal = _rs.goal_for_session(_hook_attr("load_state")())
             if _goal:
                 checkpoint_data["goal"] = str(_goal)[:500]
@@ -785,12 +785,7 @@ class ContextGuard:
 
             _pp = data.get("project_path") or (data.get("metadata") or {}).get("project_path") or project_path or ""
             _since = _rs.since_text(
-                _rs.since(
-                    str(data.get("commit") or ""),
-                    str(_pp),
-                    data.get("files_in_progress") or data.get("files_involved") or [],
-                    saved_at=_created_ts(data),
-                )
+                _rs.since_for(data, str(_pp), data.get("files_in_progress") or data.get("files_involved") or [])
             )
             if _since:
                 summary_lines.append(f"**{_since}**")

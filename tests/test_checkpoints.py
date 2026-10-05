@@ -280,7 +280,9 @@ def test_a_save_stamps_the_commit_and_a_restore_says_what_moved(tmp_path, monkey
     _git(repo, "commit", "-qam", "second")
     text = guard.restore_checkpoint(None, project_path=str(repo)).to_formatted_string()
     assert "**Task:** Wire the parser" in text and "1 commit" in text.lower()
-    assert f"HEAD {_git(repo, 'rev-parse', '--short', 'HEAD').stdout.strip()}, clean tree" in text
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    assert rec.get("branch") == branch and "repo_path" not in rec  # the project's own checkout
+    assert f"HEAD {_git(repo, 'rev-parse', '--short', 'HEAD').stdout.strip()} on {branch}, clean tree" in text
     # The working tree now: the first thing a resumed session loses.
     (repo / "a.py").write_text("x = 3\n")
     (repo / "b.py").write_text("y = 1\n")
@@ -290,6 +292,66 @@ def test_a_save_stamps_the_commit_and_a_restore_says_what_moved(tmp_path, monkey
     assert repo_state.tree(str(tmp_path / "nowhere")) is None and repo_state.tree_text(None) == ""
     text = guard.restore_checkpoint(None, project_path=str(repo)).to_formatted_string()
     assert "1 modified, 1 untracked" in text
+
+
+def test_a_save_from_a_worktree_records_that_checkout_and_the_restore_reads_git_there(tmp_path, monkeypatch):
+    """A session that entered a worktree under the project commits on the
+    worktree's branch. The record names that checkout and the restore
+    compares against it, not the main checkout (the clocked-in report,
+    2026-10-05); once the worktree is gone the project is the fallback."""
+    pytest.importorskip("windvane.repo_state")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if _git(repo, "init", "-q").returncode != 0:
+        pytest.skip("git is not available")
+    for k, v in (("user.email", "t@example.invalid"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        _git(repo, "config", k, v)
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "first")
+    wt = repo / ".claude" / "worktrees" / "lane"
+    wt.parent.mkdir(parents=True)
+    if _git(repo, "worktree", "add", "-q", "-b", "lane", str(wt)).returncode != 0:
+        pytest.skip("git worktree is not available")
+    from windvane import checkpoints as ck
+    from windvane import repo_state
+    from windvane.store import MemoryStore
+
+    MemoryStore().remember_project(str(repo))
+    # The session runs in the worktree (the mod sends its cwd as
+    # CLAUDE_PROJECT_DIR); the project it works on is the main checkout.
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(wt))
+    guard = ck.ContextGuard()
+    resp = guard.save_checkpoint("Lane work", "step", [], ["tests"], ["a.py"], project_path=str(repo))
+    rec = json.loads((guard.storage_dir / f"{resp.data['task_id']}.json").read_text(encoding="utf-8"))
+    assert rec["branch"] == "lane"
+    assert repo_state._norm(rec["repo_path"]) == repo_state._norm(str(wt))
+    # Two commits on the lane, none on the main checkout's branch.
+    for i in (2, 3):
+        (wt / "a.py").write_text(f"x = {i}\n")
+        _git(wt, "commit", "-qam", f"lane {i}")
+    text = guard.restore_checkpoint(None, project_path=str(repo)).to_formatted_string()
+    assert "2 commits" in text and "on lane, clean tree" in text
+    # A record from a session that ran in the main checkout, read now that
+    # HEAD there is on another branch than the lane: said in one phrase.
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    main_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    info = repo_state.since(rec["commit"], str(repo), [], branch_was="lane")
+    assert info is not None
+    said = repo_state.since_text(info)
+    assert "2 commits on other local branches" in said
+    assert f"HEAD {_git(repo, 'rev-parse', '--short', 'HEAD').stdout.strip()} on {main_branch}" in said
+    assert said.endswith("; the checkpoint was saved on branch lane")
+    # The worktree is removed: the restore falls back to the project.
+    assert _git(repo, "worktree", "remove", "--force", str(wt)).returncode == 0
+    assert repo_state.where_of(rec, str(repo)) == str(repo)
+    text = guard.restore_checkpoint(None, project_path=str(repo)).to_formatted_string()
+    assert "no commits on this branch" in text
+    # Outside the project the session's checkout says nothing about it.
+    elsewhere = tmp_path / "other"
+    elsewhere.mkdir()
+    _git(elsewhere, "init", "-q")
+    assert repo_state.checkout_for(str(repo), str(elsewhere)) == str(repo)
 
 
 # ── hygiene ─────────────────────────────────────────────────────────────────

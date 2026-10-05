@@ -932,6 +932,15 @@ def bank(record: dict, session_id: str, trigger: str = "bank") -> dict:
 
     entry = ring_record(record, session_id, trigger)
     wp = entry["project_path"]
+    # Where the repo stands, as a save records it: the restore then says how
+    # far it moved, in the checkout the session works in.
+    try:
+        from windvane import repo_state as _rs
+
+        if wp:
+            _rs.stamp(entry, wp)
+    except Exception:
+        pass
     # A project the store has not met yet gets its ring here, as a save
     # gives it one: a bank with nowhere to land is a bank lost.
     ring = ck.project_ring_dir(wp)
@@ -1072,9 +1081,7 @@ def refresh_deliberate(record: dict, project_dir: str, session_id: str, transcri
             from windvane import repo_state as _rs
 
             pp = str(entry.get("project_path") or (entry.get("metadata") or {}).get("project_path") or work_project)
-            commit = _rs.head(pp)
-            if commit:
-                entry["commit"] = commit
+            _rs.stamp(entry, pp)
         except Exception:
             pass
         from windvane import checkpoints as ck
