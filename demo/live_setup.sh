@@ -15,6 +15,11 @@
 #            checkpoint) by demo/build_fixture.py. The rules are seeded by
 #            the session's own first start.
 #   proj/    the fixture project, a git repository with two commits.
+#   plugin/  a snapshot of this repository (no .git, no caches) that the
+#            tape loads with --plugin-dir. Claude Code hot-reloads a plugin
+#            folder when a file in it changes, and a reload during a take
+#            drops the typed prompt; the snapshot keeps the take still
+#            while the repository is being edited.
 #
 # The real stores (~/.windvane, ~/.claude) are only read: the credentials
 # file and the onboarding answers are copied from them.
@@ -68,7 +73,14 @@ PY
 printf '{\n  "autoCompactWindow": %s\n}\n' "$WINDOW" > "$ROOT/config/settings.json"
 
 (cd "$REPO" && python3 demo/build_fixture.py --seed-live "$ROOT" "$ROOT/config") >&2
-echo "seeded $ROOT (window $WINDOW)" >&2
+
+# The plugin snapshot the tape loads, so an edit to the repository during
+# the take reloads nothing.
+mkdir -p "$ROOT/plugin"
+tar -C "$REPO" --exclude=.git --exclude=__pycache__ --exclude=.claude-plugin/types \
+    --exclude=demo/screenshots-live --exclude=demo/windvane.gif --exclude=demo/windvane.mp4 \
+    -cf - . | tar -C "$ROOT/plugin" -xf -
+echo "seeded $ROOT (window $WINDOW), plugin snapshot at $ROOT/plugin" >&2
 
 cat <<EOF
 export PATH="\$HOME/.local/bin:\$PATH"

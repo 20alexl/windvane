@@ -23,6 +23,11 @@
   <line x1="130" y1="156" x2="130" y2="176" stroke="#7d8590"/>
   <text x="130" y="192" fill="#7d8590" font-size="11" text-anchor="middle">session start</text>
 
+  <!-- the optional early_compaction row: the band opens here instead -->
+  <line x1="400" y1="138" x2="400" y2="176" stroke="#4f8577" stroke-dasharray="3 3"/>
+  <text x="400" y="192" fill="#4f8577" font-size="11" text-anchor="middle">early_compaction (optional)</text>
+  <text x="400" y="206" fill="#7d8590" font-size="11" text-anchor="middle">a fill or a turn's cost opens the band here</text>
+
   <line x1="560" y1="156" x2="560" y2="176" stroke="#7d8590"/>
   <text x="560" y="192" fill="#7d8590" font-size="11" text-anchor="middle">heads-up</text>
   <text x="560" y="220" fill="#7d8590" font-size="11" text-anchor="middle">a tenth of the window before the point</text>

@@ -36,23 +36,30 @@ Hide
 Type `eval "$(bash demo/live_setup.sh 2>/dev/null)" && cd /tmp/wv-demo/proj && clear`
 Enter
 Wait+Line@60s /\$\s*$/
-Type "claude --plugin-dir /mnt/e/workspace/windvane --dangerously-skip-permissions --model sonnet"
+# The plugin is the snapshot live_setup.sh made, so nothing reloads mid-take.
+Type "claude --plugin-dir /tmp/wv-demo/plugin --dangerously-skip-permissions --model sonnet"
 Enter
 # The bypass-permissions acceptance screen: pick "Yes, I accept".
 Wait+Screen@60s /Bypass Permissions/
 Down
 Enter
 # Before the first turn the segment reads "windvane ctx ?": no figure yet.
+# Then the prompt box, and a pause for the startup notices to settle.
 Wait+Screen@60s /windvane ctx/
+Wait+Screen@30s /❯/
+Sleep 3s
 Show
 
 # 1: the session opens: the status segment and the band above the prompt.
 Sleep 1500ms
 Screenshot demo/screenshots-live/1-open.png
 
-# 2: one short prompt that edits the api file. The prompt names the file,
-# so the wait is for the edit tool's own row, not the file name.
+# 2: one short prompt that edits the api file. The typed text must be on
+# screen before Enter (a dropped prompt fails here in seconds, not after
+# the long wait). The prompt names the file, so the wait after it is for
+# the edit tool's own row, not the file name.
 Type "Edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
+Wait+Screen@10s /cursor pagination/
 Enter
 Wait+Screen@240s /(?i)(update|edit|write)\(items_api|Bash\(/
 Screenshot demo/screenshots-live/2-edit.png
