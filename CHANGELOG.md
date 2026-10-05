@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 1.0.1 (2026-10-05)
 
+The plugin directory's static reader and the first day in public.
+
+- **The continue prompt is skipped only when you typed.** After a compaction windvane started, its resume prompt was dropped when any prompt had arrived during the compaction, a subagent's or another session's included, and the session then sat waiting. Only a prompt you typed, at the keyboard or over Remote Control, counts as you continuing.
+- **A denied edit still names its file.** The pane's "last file" is noted as the call is made, before the permission check, so the mistakes for the file show even when the edit was refused.
+- **The hooks module as the directory reads it.** Every hook is registered in one file and the pieces take a host object of closures; the mod's tests moved to `tests/mod/`. No change in what the hooks do.
 - **The bridge leaves `PreToolUse` to the command hooks.** The mod hooks each classic event by name instead of `classic.*`, and has no hook on the pre-tool event: a permission check's hook may only deny, ask or pass the event on, and a bridged check whose handlers gave context and no decision would have had to pass it on and run them twice. The pre-edit, pre-read and shell checks and the halt now run through their command hooks in every session, one client process per call, as before the bridge. Every other classic event is bridged as before.
+- **For the plugin directory.** The README section "What it runs, reads, writes and sends" lists every program, file, request and prompt of the plugin's, and a paragraph at the top says what the plugin replaces: the watch on the context fill. The demo gif is under the directory's 5 MiB file limit, and the plugin carries an icon.
 
 ## 1.0.0 (2026-10-05)
 
