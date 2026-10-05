@@ -14,11 +14,17 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture(autouse=True)
 def _store(tmp_path, monkeypatch):
+    from windvane import config
+
     store = tmp_path / "store"
     monkeypatch.setenv("WINDVANE_DIR", str(store))
     monkeypatch.setenv("WINDVANE_NO_DAEMON", "1")
     for k in ("WINDVANE_DEFAULT_RULES", "WINDVANE_STRICT_PACK", "WINDVANE_STRUCTURE"):
         monkeypatch.delenv(k, raising=False)
+    # With the variables cleared, the plugin's settings rows on this machine
+    # would decide the seeding: a machine with the strict pack on seeded 27
+    # rules where the test counts 16 (2026-10-05). The rows read as none.
+    monkeypatch.setattr(config, "plugin_config", lambda: {})
     return store
 
 
