@@ -56,13 +56,15 @@ Show
 Sleep 1500ms
 Screenshot demo/screenshots-live/1-open.png
 
-# 2: a first prompt that reads the API document. The read is what carries
-# the fill into the checkpoint band (the document is sized for it in
-# build_fixture.py), and the turn ends there with nothing banked. The typed
-# text must be on screen before Enter (a dropped prompt fails here in
-# seconds, not after the long wait); it may wrap inside the prompt box, so
-# the check allows a line break between the words.
-Type "Read docs/API.md and tell me in two lines how paging works today"
+# 2: a first prompt that names the work and reads the API document. The
+# read is what carries the fill into the checkpoint band (the document is
+# sized for it in build_fixture.py), and the turn ends there with nothing
+# banked. The recorder takes a fresh session's task from its first prompt,
+# so the prompt states the task before the question. The typed text must
+# be on screen before Enter (a dropped prompt fails here in seconds, not
+# after the long wait); it may wrap inside the prompt box, so the check
+# allows a line break between the words.
+Type "We are adding cursor pagination to GET /items. Read docs/API.md and tell me in two lines how paging works today"
 Wait+Screen@10s /paging\s+works/
 Enter
 Wait+Screen@240s /(?i)Read\s*\(|Read 1 file/

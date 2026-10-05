@@ -88,6 +88,10 @@ out = {k: v for k, v in base.items() if k not in drop}
 imp = out.get("announcementImpressions")
 if isinstance(imp, dict):
     out["announcementImpressions"] = {k: (99 if isinstance(v, int) else v) for k, v in imp.items()}
+# The other counted notices (the referral line, promotions, the
+# subscription upsell) are shown until their counts reach a maximum too.
+out.update(passesUpsellSeenCount=99, promoStartupSeenCount=99,
+           subscriptionUpsellShownCount=99, subscriptionNoticeCount=99)
 out.update(hasCompletedOnboarding=True, theme="dark", autoUpdates=False,
            officialMarketplaceAutoInstalled=True,
            # the "try the new fullscreen renderer" prompt shows below 3
