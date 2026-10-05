@@ -1,4 +1,4 @@
-"""The thin hook client (engine/windvane/daemon_client.py): stdlib only, one
+"""The thin hook client (windvane/daemon_client.py): stdlib only, one
 round trip to the daemon, an in-process fallback, a guarded spawn."""
 
 import ast
@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-ENGINE = Path(__file__).resolve().parents[1] / "engine"
-CLIENT = ENGINE / "windvane" / "daemon_client.py"
+ROOT = Path(__file__).resolve().parents[1]
+CLIENT = ROOT / "windvane" / "daemon_client.py"
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ def test_the_client_imports_only_the_standard_library():
     fallback = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_run_fallback")
     top_level = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
     assert not any(isinstance(n, ast.ImportFrom) and (n.module or "").startswith("windvane") for n in top_level)
-    assert any(isinstance(n, ast.ImportFrom) and n.module == "windvane.hooks" for n in ast.walk(fallback))
+    assert any(isinstance(n, ast.ImportFrom) and n.module == "windvane.events" for n in ast.walk(fallback))
 
 
 def test_the_session_env_and_events_match_the_daemon(client):
@@ -57,7 +57,7 @@ def test_the_session_env_and_events_match_the_daemon(client):
 
     assert client.SESSION_ENV == daemon.SESSION_ENV
     assert client.DAEMON_EVENTS <= daemon._HOOK_EVENTS
-    assert Path(client._ENGINE_DIR) == ENGINE
+    assert Path(client._ENGINE_DIR) == ROOT
 
 
 def test_the_client_finds_the_store_the_daemon_writes(client, tmp_path: Path, monkeypatch):
@@ -125,20 +125,20 @@ def test_an_error_answer_or_no_daemon_means_the_fallback(client, tmp_path: Path)
 
 
 def test_the_fallback_runs_the_dispatch_in_process(client, monkeypatch):
-    """Mocked seam: the fallback calls windvane.hooks.dispatch and prints
+    """Mocked seam: the fallback calls windvane.events.dispatch and prints
     what it returns; a SystemExit or an exception never escapes."""
     seen = []
-    fake = types.ModuleType("windvane.hooks")
+    fake = types.ModuleType("windvane.events")
     fake.dispatch = lambda event, stdin_text: seen.append((event, stdin_text)) or "handled\n"
-    monkeypatch.setitem(sys.modules, "windvane.hooks", fake)
+    monkeypatch.setitem(sys.modules, "windvane.events", fake)
     import windvane
 
-    monkeypatch.setattr(windvane, "hooks", fake, raising=False)
+    monkeypatch.setattr(windvane, "events", fake, raising=False)
     out = io.StringIO()
     monkeypatch.setattr(sys, "stdout", out)
     client._run_fallback("stop_json", '{"session_id": "s"}')
     assert seen == [("stop_json", '{"session_id": "s"}')] and out.getvalue() == "handled\n"
-    assert sys.path[0] == str(ENGINE) or Path(sys.path[0]) == ENGINE
+    assert sys.path[0] == str(ROOT) or Path(sys.path[0]) == ROOT
 
     def exiting(event, stdin_text):
         raise SystemExit(2)
@@ -151,19 +151,19 @@ def test_the_fallback_runs_the_dispatch_in_process(client, monkeypatch):
 
 def test_the_fallback_drives_main_when_there_is_no_dispatch(client, monkeypatch):
     seen = {}
-    common = types.ModuleType("windvane.hooks.common")
+    common = types.ModuleType("windvane.events.common")
     common._stdin_cache = None
-    fake = types.ModuleType("windvane.hooks")
+    fake = types.ModuleType("windvane.events")
     fake.common = common
     fake.main = lambda: seen.update(argv=list(sys.argv), stdin=common._stdin_cache)
-    monkeypatch.setitem(sys.modules, "windvane.hooks", fake)
-    monkeypatch.setitem(sys.modules, "windvane.hooks.common", common)
+    monkeypatch.setitem(sys.modules, "windvane.events", fake)
+    monkeypatch.setitem(sys.modules, "windvane.events.common", common)
     import windvane
 
-    monkeypatch.setattr(windvane, "hooks", fake, raising=False)
+    monkeypatch.setattr(windvane, "events", fake, raising=False)
     monkeypatch.setattr(sys, "argv", ["daemon_client.py", "stop_json"])
     client._run_fallback("stop_json", '{"session_id": "s"}')
-    assert seen == {"argv": ["windvane.hooks", "stop_json"], "stdin": '{"session_id": "s"}'}
+    assert seen == {"argv": ["windvane.events", "stop_json"], "stdin": '{"session_id": "s"}'}
 
 
 def test_a_spawn_is_guarded_by_the_env_and_the_marker(client, tmp_path: Path, monkeypatch):
@@ -174,7 +174,7 @@ def test_a_spawn_is_guarded_by_the_env_and_the_marker(client, tmp_path: Path, mo
     monkeypatch.delenv("WINDVANE_NO_DAEMON")
     client._nudge_daemon()
     cmd, kw = calls[-1]
-    assert cmd[1:] == ["-m", "windvane.daemon"] and Path(kw["cwd"]) == ENGINE
+    assert cmd[1:] == ["-m", "windvane.daemon"] and Path(kw["cwd"]) == ROOT
     assert (tmp_path / "store" / "daemon_starting").exists()
     client._nudge_daemon()
     assert len(calls) == 1  # one spawn per 30 s

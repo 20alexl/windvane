@@ -1,9 +1,9 @@
 # Troubleshooting
 
-Start with the setup check. Run it from the `engine` folder of the folder you cloned (or set `PYTHONPATH=<folder>/engine`):
+Start with the setup check. Run it from the folder you cloned (or set `PYTHONPATH=<folder>`):
 
 ```bash
-python -m windvane.setup
+python -m windvane.doctor
 ```
 
 It prints one JSON line with the interpreter, the store, the semantic tier and the daemon. It only reads. It never starts, stops or replaces the daemon.
@@ -22,13 +22,13 @@ The daemon is optional for correctness. Without it every hook still runs, in its
 | `daemon_model` | The encoder signature it loaded, or `none`. |
 | `daemon_starting` | A marker that a spawn is under way. Only one spawn is made per 30 seconds. |
 
-**Does it answer?** `python -m windvane.setup` reports `daemon.answers`. It is false when no port file exists, which is normal before the first session and after the daemon's idle exit. The port file with `answers` false means the port is stale or the daemon is stalled.
+**Does it answer?** `python -m windvane.doctor` reports `daemon.answers`. It is false when no port file exists, which is normal before the first session and after the daemon's idle exit. The port file with `answers` false means the port is stale or the daemon is stalled.
 
 **Why it is not running.** The first hook that finds none starts one. Several things stop that: `WINDVANE_NO_DAEMON` is set; a start was already attempted in the last 30 seconds; or the interpreter cannot start (see below). The daemon also exits on its own after 30 idle minutes (`WINDVANE_DAEMON_TIMEOUT` seconds) and whenever the package's source files change on disk, so editing the engine restarts it on the next hook.
 
 **Restart it.** End the one process whose id is in `daemon_pid`, by that id only. Do not end Python processes by name, since others may be yours. The next hook starts a fresh daemon. Stale files with no lock behind them are removed on the next check.
 
-**See what it says.** The spawned daemon discards its output. To read it, start one by hand in the foreground from the `engine` folder with `python -m windvane.daemon`, after ending the running one. It prints the port and whether the semantic tier loaded. Set `WINDVANE_HOOK_DEBUG=1` to make the hook client print why it did or did not use the daemon.
+**See what it says.** The spawned daemon discards its output. To read it, start one by hand in the foreground from the cloned folder with `python -m windvane.daemon`, after ending the running one. It prints the port and whether the semantic tier loaded. Set `WINDVANE_HOOK_DEBUG=1` to make the hook client print why it did or did not use the daemon.
 
 **Several versions of the plugin or several stores.** Each store has its own daemon, because the files live in the store. A client whose configured encoder differs from the running daemon's replaces it.
 
@@ -46,7 +46,7 @@ The semantic tier needs `numpy` and `sentence-transformers` installed in the int
 pip install "sentence-transformers>=2.7.0" "numpy>=1.24.0"
 ```
 
-Then turn on the `semantic` row, or set `WINDVANE_SEMANTIC=1`. Both conditions are needed: requested and installed. `python -m windvane.setup` shows `installed` and `requested` separately. The first request loads the model in the background, so scoring waits on that load and falls back to the regex tier meanwhile. Changing the model or the tier replaces a running daemon. If the tier is on but the extra is missing, nothing breaks and the regex tier scores.
+Then turn on the `semantic` row, or set `WINDVANE_SEMANTIC=1`. Both conditions are needed: requested and installed. `python -m windvane.doctor` shows `installed` and `requested` separately. The first request loads the model in the background, so scoring waits on that load and falls back to the regex tier meanwhile. Changing the model or the tier replaces a running daemon. If the tier is on but the extra is missing, nothing breaks and the regex tier scores.
 
 ## Hooks that time out
 
@@ -81,7 +81,7 @@ The band above the prompt says what windvane last put in front of the model. It 
 
 ## Other symptoms
 
-**A run halted and every tool is denied.** This is the autonomy brake. The denial names the cause. Release it with `python -m windvane.stall release <session_id>` from the `engine` folder, and `/goal clear` if a goal is active. `python -m windvane.stall status <session_id>` prints the strikes and events.
+**A run halted and every tool is denied.** This is the autonomy brake. The denial names the cause. Release it with `python -m windvane.stall release <session_id>` from the cloned folder, and `/goal clear` if a goal is active. `python -m windvane.stall status <session_id>` prints the strikes and events.
 
 **A command was refused by a rule.** A rule with a detector marked `unattended: deny` refuses a matching command in autonomy mode. Either approve the work another way, change the rule with `memory(set_detector)`, or turn autonomy off.
 

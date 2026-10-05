@@ -14,6 +14,9 @@ venv/
 .learnings/
 session-logs/
 
+# windvane's own run reports and exports for this repository
+.windvane/
+
 # Editors and OS
 .idea/
 .vscode/

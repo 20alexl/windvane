@@ -56,7 +56,7 @@ export function registerRemember(on: On, settings: Settings): void {
   on('command.run', { command: 'remember' }, async $ => {
     const selected = await $.ui.selection()
     const text = selected?.text.trim() ?? ''
-    if (!text) return { text: 'Nothing is selected.' }
+    if (!text) return { text: 'Nothing is selected. Select text in the transcript, then run /remember.' }
     return { text: await remember($, settings.python, text) }
   })
 }

@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="340" viewBox="0 0 900 340" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <title>windvane: the mod, the daemon, the engine and the store</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8590"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f8577"/>
+    </marker>
+  </defs>
+
+  <!-- Claude Code session -->
+  <rect x="16" y="16" width="310" height="308" rx="8" fill="none" stroke="#7d8590" stroke-dasharray="5 4"/>
+  <text x="32" y="40" fill="#7d8590" font-weight="600">Claude Code session</text>
+
+  <rect x="32" y="56" width="278" height="150" rx="6" fill="#406b61" fill-opacity="0.12" stroke="#4f8577"/>
+  <text x="46" y="78" fill="#4f8577" font-weight="600">the mod</text>
+  <text x="46" y="96" fill="#7d8590" font-size="12">hooks module, TypeScript, hot-reloaded</text>
+  <text x="46" y="120" fill="#7d8590" font-size="12">status segment, band, /windvane pane</text>
+  <text x="46" y="138" fill="#7d8590" font-size="12">six tools, door, ledger, agent briefs</text>
+  <text x="46" y="156" fill="#7d8590" font-size="12">bridge: answers hook events from the daemon</text>
+  <text x="46" y="174" fill="#7d8590" font-size="12">compaction at the point, brief after the summary</text>
+  <text x="46" y="192" fill="#7d8590" font-size="12">first-run offer of the semantic extra</text>
+
+  <rect x="32" y="226" width="278" height="82" rx="6" fill="#7d8590" fill-opacity="0.08" stroke="#7d8590"/>
+  <text x="46" y="248" fill="#7d8590" font-weight="600">classic hooks</text>
+  <text x="46" y="266" fill="#7d8590" font-size="12">hooks.json, one command per event</text>
+  <text x="46" y="284" fill="#7d8590" font-size="12">the thin client, python -S, stdlib only</text>
+  <text x="46" y="300" fill="#7d8590" font-size="12">what a headless run (claude -p) has</text>
+
+  <!-- daemon -->
+  <rect x="410" y="110" width="215" height="120" rx="6" fill="#406b61" fill-opacity="0.12" stroke="#4f8577"/>
+  <text x="424" y="132" fill="#4f8577" font-weight="600">the daemon</text>
+  <text x="424" y="150" fill="#7d8590" font-size="12">one resident Python process</text>
+  <text x="424" y="168" fill="#7d8590" font-size="12">loopback port, header and host check</text>
+  <text x="424" y="186" fill="#7d8590" font-size="12">serves events and tool calls warm</text>
+  <text x="424" y="204" fill="#7d8590" font-size="12">loads the encoder when the tier is on</text>
+  <text x="424" y="222" fill="#7d8590" font-size="12">exits idle or on a source change</text>
+
+  <!-- engine -->
+  <rect x="655" y="16" width="231" height="170" rx="6" fill="#406b61" fill-opacity="0.12" stroke="#4f8577"/>
+  <text x="669" y="38" fill="#4f8577" font-weight="600">the engine</text>
+  <text x="669" y="56" fill="#7d8590" font-size="12">windvane/, Python, no dependencies</text>
+  <text x="669" y="80" fill="#7d8590" font-size="12">events: the hook handlers</text>
+  <text x="669" y="98" fill="#7d8590" font-size="12">recorder and checkpoint ring</text>
+  <text x="669" y="116" fill="#7d8590" font-size="12">rules, memory, mistakes</text>
+  <text x="669" y="134" fill="#7d8590" font-size="12">pressure bands and nudges</text>
+  <text x="669" y="152" fill="#7d8590" font-size="12">session mining and search</text>
+  <text x="669" y="170" fill="#7d8590" font-size="12">the six tools' handlers</text>
+
+  <!-- store -->
+  <rect x="655" y="236" width="231" height="88" rx="6" fill="#7d8590" fill-opacity="0.08" stroke="#7d8590"/>
+  <text x="669" y="258" fill="#7d8590" font-weight="600">the store</text>
+  <text x="669" y="276" fill="#7d8590" font-size="12">~/.windvane or WINDVANE_DIR</text>
+  <text x="669" y="294" fill="#7d8590" font-size="12">manifest, projects, rings, sessions,</text>
+  <text x="669" y="312" fill="#7d8590" font-size="12">session index, ledger, daemon port</text>
+
+  <!-- mod -> daemon -->
+  <path d="M 310 150 L 408 150" fill="none" stroke="#4f8577" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+  <text x="343" y="142" fill="#7d8590" font-size="11">HTTP</text>
+  <text x="326" y="166" fill="#7d8590" font-size="11">/hook, /tool</text>
+
+  <!-- hook client -> daemon -->
+  <path d="M 310 268 L 380 268 L 380 200 L 408 200" fill="none" stroke="#7d8590" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="318" y="260" fill="#7d8590" font-size="11">one JSON line</text>
+
+  <!-- hook client -> engine (fallback) -->
+  <path d="M 310 296 L 640 296 L 640 150 L 653 150" fill="none" stroke="#7d8590" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <text x="400" y="310" fill="#7d8590" font-size="11">in-process when the daemon is down</text>
+
+  <!-- daemon -> engine -->
+  <path d="M 625 150 L 653 122" fill="none" stroke="#4f8577" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+
+  <!-- engine -> store -->
+  <path d="M 770 186 L 770 234" fill="none" stroke="#4f8577" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+  <text x="779" y="214" fill="#7d8590" font-size="11">writes</text>
+
+  <!-- who imports, who writes -->
+  <text x="410" y="252" fill="#7d8590" font-size="11">The daemon imports the engine once.</text>
+  <text x="410" y="266" fill="#7d8590" font-size="11">The engine writes the store; the mod</text>
+  <text x="410" y="280" fill="#7d8590" font-size="11">reads it and never writes it.</text>
+</svg>

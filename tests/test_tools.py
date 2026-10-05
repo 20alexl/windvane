@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-ENGINE = Path(__file__).resolve().parent.parent / "engine"
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +19,7 @@ def _store(tmp_path, monkeypatch):
     monkeypatch.setenv("WINDVANE_DIR", str(store))
     monkeypatch.setenv("WINDVANE_NO_DAEMON", "1")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     return store
 
 
@@ -137,7 +138,7 @@ def test_compact_now_banks_the_draft(tmp_path, monkeypatch, warm, proj):
     out = call(warm, "compact_now", proj)
     assert out["isError"] is False and out["text"].startswith("Banked the drafted checkpoint (compact_now): Phase 2 brief CLI")
     latest = json.loads((store._project_dir(store._normalize_path(str(proj))) / "latest_handoff.json").read_text(encoding="utf-8"))
-    assert (latest["kind"], latest["trigger"], latest["session_id"]) == ("auto", "compact_now", sid)
+    assert (latest["kind"], latest["trigger"], latest["session_id"]) == ("manual", "compact_now", sid)
 
 
 # ── memory ──────────────────────────────────────────────────────────────────
@@ -159,6 +160,8 @@ def test_memory_operations(warm, proj):
     assert rules.startswith(f"Rules for {warm.store._normalize_path(str(proj))}: 1 own") or "1 own" in rules
     added = call(warm, "memory", proj, operation="add_rule", content="Never push without the word", reason="pushes are public")
     assert "Rule added with id=" in added["text"]
+    cut = call(warm, "memory", proj, operation="list_rules", limit=1)["text"]
+    assert "... and 1 more" in cut and cut.count("\n  [") == 1
     assert "Deleted memory" in call(warm, "memory", proj, operation="delete", memory_id=mid)["text"]
 
     warm.store.remember_discovery(str(proj), "MISTAKE: dropped the index in db.py", category="mistake", relevance=9, auto_embed=False)
@@ -166,7 +169,8 @@ def test_memory_operations(warm, proj):
     assert listed.startswith("Tracked mistakes (1):")
     mistake = warm.store.get_recent_memories(str(proj), category="mistake")[0].id
     ack = call(warm, "memory", proj, operation="acknowledge_mistake", memory_id=mistake)["text"]
-    assert "acknowledged and archived" in ack and call(warm, "memory", proj, operation="list_mistakes")["text"] == "No mistakes tracked"
+    assert "acknowledged and archived" in ack
+    assert call(warm, "memory", proj, operation="list_mistakes")["text"].startswith("No mistakes tracked for this project.")
     assert "Restored memory" in call(warm, "memory", proj, operation="restore", memory_id=mistake)["text"]
     assert "Would archive 0 memories" in call(warm, "memory", proj, operation="archive")["text"]
     assert "Forgot all memories" in call(warm, "memory", proj, operation="forget")["text"]
@@ -244,6 +248,32 @@ def test_with_no_session_the_project_is_the_working_directory(warm, proj, monkey
     assert warm.store.search_memories(str(proj), query="cwd")
 
 
+def test_with_no_session_the_sessions_directory_wins_over_the_processs_cwd(tmp_path, warm, proj, monkeypatch):
+    """The daemon runs in the engine folder; the mod sends the session's
+    working directory as CLAUDE_PROJECT_DIR, and a call naming no project
+    files there, never under the process's own cwd."""
+    engine_folder = tmp_path / "engine-folder"
+    engine_folder.mkdir()
+    monkeypatch.chdir(engine_folder)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
+    out = call(warm, "memory", None, operation="remember", content="filed under the session's directory")
+    assert out["isError"] is False
+    assert warm.store.search_memories(str(proj), query="directory")
+    assert warm.store.get_project(str(engine_folder)) is None
+
+
+def test_a_session_directory_inside_the_project_files_the_save_under_the_project(tmp_path, warm, proj, monkeypatch):
+    """A shell that moved into a subfolder (the repository's own engine
+    folder, 2026-10-05) is still in the project: the save is filed under the
+    repository and the subfolder is never registered as a project."""
+    sub = proj / "engine"
+    sub.mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(sub))
+    out = call(warm, "checkpoint", None, operation="save", task_description="filed under the repository")
+    assert out["isError"] is False and "Filed under proj" in out["text"]
+    assert warm.store.get_project(str(sub)) is None
+
+
 def test_with_no_project_named_by_the_hooks_the_drafts_work_project_wins_over_the_cwd(tmp_path, warm, proj, monkeypatch):
     """The session's state names no project, so session_project answers the
     cwd's repository: that is a fallback, not a hit, and the draft's work
@@ -266,7 +296,7 @@ def test_with_no_project_path_the_sessions_work_project_wins_over_the_cwd(tmp_pa
     naming no project files under the sub-project the session's own edits
     name (the hooks' session_project, read from the session's state), never
     under the workspace root the process runs in."""
-    pytest.importorskip("windvane.hooks.common", reason="session_project is the hooks port's")
+    pytest.importorskip("windvane.events.common", reason="session_project is the hooks port's")
     sid = "aaaaaaaa-0000-4000-8000-0000000000f9"
     (_store / "sessions").mkdir(parents=True, exist_ok=True)
     (_store / "sessions" / f"{sid}.json").write_text(
@@ -335,6 +365,42 @@ def test_mine_reads_the_session_index_when_present(warm, proj):
     assert out["isError"] is False and out["text"] in ("No session data found.", "No struggle patterns detected.") or out["text"].startswith("Struggle areas:")
 
 
+def test_memory_archive_by_id_moves_one_entry_and_restore_brings_it_back(warm, proj):
+    warm.store.remember_discovery(str(proj), "the cache layout uses redis keys", auto_embed=False)
+    mid = warm.store.get_project(str(proj)).entries[0].id
+    out = call(warm, "memory", proj, operation="archive", memory_id=mid)
+    assert out["isError"] is False and f"Archived memory {mid}" in out["text"]
+    assert warm.store.get_project(str(proj)).entries == []
+    assert "redis keys" in call(warm, "memory", proj, operation="archive_search", query="redis")["text"]
+    back = call(warm, "memory", proj, operation="restore", memory_id=mid)
+    assert f"Restored memory {mid}" in back["text"]
+    assert [e.id for e in warm.store.get_project(str(proj)).entries] == [mid]
+    assert "not found" in call(warm, "memory", proj, operation="archive", memory_id="nope")["text"]
+
+
+def test_memory_recall_lists_the_entries_one_per_line(warm, proj):
+    assert call(warm, "memory", proj, operation="recall")["text"].startswith("No memory yet for")
+    warm.store.remember_discovery(str(proj), "the cache layout uses redis keys", auto_embed=False)
+    out = call(warm, "memory", proj, operation="recall")["text"]
+    lines = out.splitlines()
+    assert lines[0].startswith("Project memory for") and lines[0].endswith("1 entries")
+    assert any(line.startswith("[") and "the cache layout uses redis keys" in line for line in lines[1:])
+    assert "discoveries=" not in out
+
+
+def test_deps_map_builds_the_projects_own_index_when_it_has_none(warm, proj):
+    from windvane.code_index import index_dir_for
+
+    (proj / "pkg").mkdir()
+    (proj / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (proj / "pkg" / "base.py").write_text("class Base: pass\n", encoding="utf-8")
+    (proj / "pkg" / "top.py").write_text("from .base import Base\n", encoding="utf-8")
+    assert not (index_dir_for(str(proj)) / "code_index.json").exists()
+    out = call(warm, "deps", proj, operation="map", symbol="Base")
+    assert out["isError"] is False and "module: pkg.base" in out["text"]
+    assert (index_dir_for(str(proj)) / "code_index.json").exists()
+
+
 def test_deps_map_and_impact(warm, proj):
     from windvane.code_index import build_code_index, index_dir_for
 
@@ -353,7 +419,7 @@ def test_deps_map_and_impact(warm, proj):
 
 
 def test_the_cli_reads_one_object_and_prints_one_line(tmp_path, _store, proj):
-    env = dict(os.environ, WINDVANE_DIR=str(_store), WINDVANE_NO_DAEMON="1", PYTHONPATH=str(ENGINE), PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, WINDVANE_DIR=str(_store), WINDVANE_NO_DAEMON="1", PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8")
     env.pop("CLAUDE_CODE_SESSION_ID", None)
 
     def cli(payload: bytes):

@@ -32,12 +32,14 @@ claude plugin install windvane@windvane --config python=/usr/bin/python3 --confi
 
 The rows are `python`, `status_segment`, `result_budget`, `semantic`, `alert_command`, `strict_pack` and `autonomy`. Each is described in [configuration](configuration.md). All of them have working defaults, so nothing needs setting for a first run.
 
+The first interactive session asks one question: whether to install the semantic extra (sentence-transformers and numpy, several hundred megabytes) and turn the `semantic` row on. With it, memory and session search use a small embedding model and find paraphrases a keyword match misses. "Not now" asks again a week later, "Never ask" closes the question, and a headless run is never asked. The same two steps by hand are the pip line in [troubleshooting](troubleshooting.md#the-semantic-extra) and the row in `/plugin configure windvane@windvane`.
+
 ## Verify
 
-The setup check reads the machine and prints one JSON line. It does not start, stop or replace the daemon. Run it from the `engine` folder of the folder you cloned, or set `PYTHONPATH=<folder>/engine`, so that Python can find the package. The installed plugin is read from that folder:
+The setup check reads the machine and prints one JSON line. It does not start, stop or replace the daemon. Run it from the folder you cloned, or set `PYTHONPATH=<folder>`, so that Python can find the package. The installed plugin is read from that folder:
 
 ```bash
-cd <folder>/engine && python -m windvane.setup
+cd <folder> && python -m windvane.doctor
 ```
 
 The line has four parts:
@@ -56,7 +58,7 @@ Start a Claude Code session in a project. The session-start banner begins with `
 To bring over a claude-engram store, either run `/windvane-import` in a session (it shows the files copied, the files skipped and the destination), or run the check with the import flag:
 
 ```bash
-cd <folder>/engine && python -m windvane.setup --import
+cd <folder> && python -m windvane.doctor --import
 ```
 
 By default the source is `~/.claude_engram`. Name another with `--from DIR`. The import copies the manifest, the project folders, the checkpoint rings and the other store files into the windvane store. It leaves out `sessions/` and the runtime files of a live engram process, and respells the engram name in the manifest's top-level keys. It never changes, moves or deletes the source.

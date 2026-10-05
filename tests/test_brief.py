@@ -27,7 +27,7 @@ def test_render_joins_the_blocks_with_one_blank_line():
 
 
 def _hooks():
-    return pytest.importorskip("windvane.hooks.common", reason="the banner pieces are the hooks port's")
+    return pytest.importorskip("windvane.events.common", reason="the banner pieces are the hooks port's")
 
 
 def _brief_store(tmp_path, monkeypatch, sid):

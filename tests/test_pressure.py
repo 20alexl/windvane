@@ -16,7 +16,6 @@ import pytest
 from windvane import alerts, milestones as ms, pressure as cp, procs, repo_state, report as rr
 
 ROOT = Path(__file__).resolve().parent.parent
-ENGINE = ROOT / "engine"
 
 _KNOB_ENV = (
     "WINDVANE_OUTPUT_RESERVE", "WINDVANE_CHECKPOINT_MARGIN", "WINDVANE_HEADSUP_FRACTION",
@@ -314,7 +313,7 @@ def test_a_configured_but_silent_statusline_is_announced_once(tmp_path: Path):
 
 def test_the_statusline_cli_records_and_prints(tmp_path: Path):
     store = tmp_path / "store"
-    env = dict(os.environ, WINDVANE_DIR=str(store), CLAUDE_CODE_AUTO_COMPACT_WINDOW="750000", PYTHONPATH=str(ENGINE))
+    env = dict(os.environ, WINDVANE_DIR=str(store), CLAUDE_CODE_AUTO_COMPACT_WINDOW="750000", PYTHONPATH=str(ROOT))
     run = lambda args, stdin="": subprocess.run(  # noqa: E731
         [sys.executable, "-m", "windvane.pressure", *args], input=stdin,
         capture_output=True, text=True, cwd=str(ROOT), env=env, timeout=60,
@@ -591,9 +590,21 @@ def test_nudge_delivery_is_capped_to_one_an_hour(tmp_path: Path, monkeypatch):
     assert "closed a step" in cp.nudge(state, "s-cap-test", str(tmp_path))[0]
     cp.stage_milestone(state, "step two done", "claim", since=time.time() - 5)
     assert "closed a step" not in cp.nudge(state, "s-cap-test", str(tmp_path))[0]  # within the hour
-    # A task-tool close is structural and never rate-limited.
+    # A task-tool close is structural and never rate-limited, but it waits
+    # for the turn to end: the save usually follows the TaskUpdate.
     cp.stage_milestone(state, "task X", "task", since=time.time() - 5)
+    assert cp.nudge(state, "s-cap-test", str(tmp_path))[0] == ""
+    assert isinstance(state["pressure"]["milestone_pending"], dict)
+    time.sleep(0.01)
+    cp.note_stop(state)
     assert "marked a task done" in cp.nudge(state, "s-cap-test", str(tmp_path))[0]
+    # A save in the same turn as the TaskUpdate answers it before any nudge.
+    cp.stage_milestone(state, "task Y", "task")
+    time.sleep(0.01)
+    cp.note_manual_checkpoint(state)
+    time.sleep(0.01)
+    cp.note_stop(state)
+    assert cp.nudge(state, "s-cap-test", str(tmp_path))[0] == ""
 
 
 def test_a_claim_is_staged_at_stop_and_delivered_once(monkeypatch):
@@ -628,6 +639,8 @@ def test_a_claim_is_staged_at_stop_and_delivered_once(monkeypatch):
     cp.note_manual_checkpoint(state)
     assert cp.nudge(state, sid)[0] == ""  # a checkpoint after the claim answers it silently
     cp.stage_milestone(state, "Implement user authentication", "task")
+    time.sleep(0.01)
+    cp.note_stop(state)  # a task close is delivered once its turn has ended
     t, _ = cp.nudge(state, sid)
     assert "You marked a task done" in t and "Implement user authentication" in t
     # Pressure band outranks the milestone in the same slot; the milestone waits.
@@ -640,7 +653,7 @@ def test_a_claim_is_staged_at_stop_and_delivered_once(monkeypatch):
 
 
 def test_a_save_from_another_process_answers_the_nudge_through_the_ring(tmp_path: Path, monkeypatch):
-    common = pytest.importorskip("windvane.hooks.common", reason="windvane.hooks.common is another agent's module")
+    common = pytest.importorskip("windvane.events.common", reason="windvane.events.common is another agent's module")
     monkeypatch.setattr(cp, "MILESTONE_NUDGE_GAP_SECS", 0)
     proj = str(tmp_path / "proj")
     sid = "s-ring"
@@ -979,13 +992,13 @@ def test_the_census_warns_only_when_two_daemons_share_a_store():
 
 def test_roles_by_command_line():
     assert procs._role("python -S -m windvane.daemon_client post_tool_json") == "hook"
-    assert procs._role("python engine/windvane/daemon_client.py stop_json") == "hook"
+    assert procs._role("python windvane/daemon_client.py stop_json") == "hook"
     assert procs._role("python -m windvane.daemon") == "daemon"
-    assert procs._role("python /opt/x/engine/windvane/daemon.py") == "daemon"
+    assert procs._role("python /opt/x/windvane/daemon.py") == "daemon"
     assert procs._role("python -m windvane.mining.background --project p") == "miner"
     assert procs._role("python -m windvane.semantic.worker in.json out.npy") == "embed worker"
     assert procs._role("python -m windvane.migrate") == "migration"
-    assert procs._role("python -m windvane.hooks session_start_json") == "hook"
+    assert procs._role("python -m windvane.events session_start_json") == "hook"
     assert procs._role("python -m windvane.report") == "other"
     assert procs._role("python -m somethingelse") == ""
 
@@ -1191,7 +1204,7 @@ def test_the_report_reads_the_transcript_and_the_hook_state(tmp_path: Path, monk
 def test_the_report_lists_this_sessions_checkpoints_and_known_errors(tmp_path: Path, monkeypatch):
     jr = pytest.importorskip("windvane.mining.jsonl_reader", reason="windvane.mining.jsonl_reader is another agent's module")
     hs = pytest.importorskip("windvane.checkpoints", reason="windvane.checkpoints is another agent's module")
-    common = pytest.importorskip("windvane.hooks.common", reason="windvane.hooks.common is another agent's module")
+    common = pytest.importorskip("windvane.events.common", reason="windvane.events.common is another agent's module")
     monkeypatch.setattr(jr, "_get_claude_projects_dir", lambda: tmp_path / "claude_projects")
     sid = "sess-1234-abcd"
     project = tmp_path / "proj"
@@ -1272,12 +1285,12 @@ def test_the_automatic_write_is_gated_on_substance(tmp_path: Path):
 
 
 def test_the_report_cli(tmp_path: Path, monkeypatch):
-    env = dict(os.environ, PYTHONPATH=str(ENGINE), CLAUDE_CODE_SESSION_ID="")
+    env = dict(os.environ, PYTHONPATH=str(ROOT), CLAUDE_CODE_SESSION_ID="")
     res = subprocess.run([sys.executable, "-m", "windvane.report"], capture_output=True, text=True,
                          cwd=str(ROOT), env=env, timeout=60, stdin=subprocess.DEVNULL)
     assert res.returncode == 2 and "python -m windvane.report" in res.stdout
-    pytest.importorskip("windvane.hooks.common", reason="--stdout loads the session state through windvane.hooks.common")
-    from windvane.hooks import common
+    pytest.importorskip("windvane.events.common", reason="--stdout loads the session state through windvane.events.common")
+    from windvane.events import common
 
     monkeypatch.setattr(common, "_session_id", "s-cli-report", raising=False)
     common.save_state({"last_session_start": time.time() - 10, "files_edited_this_session": ["a.py"]})

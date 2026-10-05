@@ -56,6 +56,11 @@ test('writes the mirror from usage and compacts in the band only after a save', 
     compactions += 1
     return { messages: [SUMMARY] }
   })
+  const prompts: string[] = []
+  on('prompt.submit', ($, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
   // The engine hands paths to the fs events in the host's spelling (backslashes
   // on Windows); the mod and the test speak forward slashes.
   const fwd = (p: string) => p.replace(/\\/g, '/')
@@ -131,6 +136,8 @@ test('writes the mirror from usage and compacts in the band only after a save', 
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(compactions).toBe(1)
+  // windvane's own prompt resumes the work after the compaction it started.
+  expect(prompts.length).toBe(1)
 
   // The compaction opened a new cycle: still in the band, no second
   // compaction until another save.
@@ -138,11 +145,12 @@ test('writes the mirror from usage and compacts in the band only after a save', 
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(compactions).toBe(1)
+  expect(prompts.length).toBe(1)
 })
 
 // A session in the band, the store's sessions folder present, the engine
 // answering every tool call and every brief.
-type Counters = { compactions: number; statuses: string[]; briefs: number; noSessions?: boolean }
+type Counters = { compactions: number; statuses: string[]; briefs: number; prompts?: string[]; veto?: boolean; noSessions?: boolean }
 
 function inBand(
   on: On,
@@ -157,8 +165,14 @@ function inBand(
   on('session.cwd', () => ({ value: 'E:/demo/proj' }))
   on('session.usage', () => ({ value: usageAt(tokens) }))
   on('session.compact', () => {
+    if (counters.veto) return { skip: 'blocked by a hook' }
     counters.compactions += 1
     return { messages: [SUMMARY] }
+  })
+  // The engine beneath a plugin's $.prompt.submit: the prompt enters.
+  on('prompt.submit', ($, e) => {
+    ;(counters.prompts ??= []).push(e.text)
+    return { text: e.text }
   })
   on('fs.exists', ($, e) => ({ value: counters.noSessions !== true && e.path.replace(/\\/g, '/').endsWith('/sessions') }))
   on('fs.read', () => ({ value: '' }))
@@ -200,12 +214,44 @@ test('compact_now banks, then compacts once when the turn ends', async ($, on) =
   // banner restores the rules and the checkpoint instead (no .briefed
   // marker was written). Pinned so a change in the engine shows here.
   expect({ compactions: counters.compactions, briefs: counters.briefs }).toEqual({ compactions: 1, briefs: 0 })
+  // Then windvane's own prompt resumes the work, once, pointing at the
+  // checkpoint the banner restored.
+  expect(counters.prompts?.length).toBe(1)
+  expect(counters.prompts?.[0]).toContain('Continue from the checkpoint')
+  expect(counters.prompts?.[0]).toContain('session-start brief')
 
   // Asked once, compacted once.
   await clock.advance(10_000)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(counters.compactions).toBe(1)
+  expect(counters.prompts?.length).toBe(1)
+})
+
+test('continue_after_compact off: the compaction happens, no prompt follows', { options: { continue_after_compact: false } }, async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0 }
+  const clock = mock.clock(on)
+  inBand(on, counters, 100_000)
+
+  await $.session.start(START)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  expect(counters.prompts ?? []).toEqual([])
+})
+
+test('a compaction a hook vetoed gets no continue', async ($, on) => {
+  // The veto a classic PreCompact hook makes: the conversation stays.
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, veto: true }
+  const clock = mock.clock(on)
+  inBand(on, counters, 100_000)
+
+  await $.session.start(START)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  expect(counters.prompts ?? []).toEqual([])
 })
 
 test('a compact_now that failed asks for nothing', async ($, on) => {

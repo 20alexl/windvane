@@ -75,6 +75,12 @@ Wait+Screen@300s /(?i)compacted|windvane-compact/
 Sleep 2s
 Screenshot demo/screenshots-live/5-compacted.png
 
+# 5b: nothing is typed. One prompt of windvane's resumes the work from the
+# checkpoint, and the model carries on where it was.
+Wait+Screen@120s /(?i)windvane plugin sent a message|Continue from the checkpoint/
+Sleep 4s
+Screenshot demo/screenshots-live/5b-continue.png
+
 # 6: the pane: the checkpoint, the rules, the mistakes.
 Type "/windvane"
 Enter

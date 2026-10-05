@@ -131,7 +131,9 @@ test('the daemon answers first: one POST, no process', async ($, on) => {
   // No project_path given: none is sent; the engine resolves the project.
   expect('project_path' in args).toBe(false)
   expect(args.tool_use_id).toBe(undefined)
-  expect(f.body.env).toEqual({ CLAUDE_CODE_SESSION_ID: SID, WINDVANE_DIR: STORE })
+  // The session id keys the engine's state; the session's working directory
+  // stands in for the daemon's own, which is the engine folder.
+  expect(f.body.env).toEqual({ CLAUDE_CODE_SESSION_ID: SID, WINDVANE_DIR: STORE, CLAUDE_PROJECT_DIR: 'E:\\demo\\proj' })
 })
 
 test('a refused connection falls back to the subprocess with the same request', async ($, on) => {
@@ -148,13 +150,14 @@ test('a refused connection falls back to the subprocess with the same request', 
   expect(request.tool).toBe('memory')
   expect(request.arguments.content).toBe('The cache is sqlite.')
   expect(request.arguments.project_path).toBe('E:/other')
-  expect(request.env).toEqual({ CLAUDE_CODE_SESSION_ID: SID, WINDVANE_DIR: STORE })
+  expect(request.env).toEqual({ CLAUDE_CODE_SESSION_ID: SID, WINDVANE_DIR: STORE, CLAUDE_PROJECT_DIR: 'E:\\demo\\proj' })
   // The engine ships inside the plugin; the process has no session env of its own.
   const env = run.init?.env ?? {}
-  expect(env.PYTHONPATH?.endsWith('/engine')).toBe(true)
-  expect(env.PYTHONPATH!.length).toBeGreaterThan('/engine'.length)
+  expect(env.PYTHONPATH?.endsWith('/windvane')).toBe(true)
+  expect(env.PYTHONPATH!.length).toBeGreaterThan('/windvane'.length)
   expect(env.CLAUDE_CODE_SESSION_ID).toBe(SID)
   expect(env.WINDVANE_DIR).toBe(STORE)
+  expect(env.CLAUDE_PROJECT_DIR).toBe('E:\\demo\\proj')
   expect(env.PYTHONIOENCODING).toBe('utf-8')
 })
 

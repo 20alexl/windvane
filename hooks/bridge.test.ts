@@ -13,7 +13,7 @@ import { foldClassic, foldPreToolUse, matcherMatches, plan, readOutput, toClassi
 const STORE = 'C:/tmp/windvane-bridge-store'
 const PORT = 47123
 const PY = 'E:/demo/venv/Scripts/python.exe'
-const CLIENT = 'E:/demo/plugins/windvane/engine/windvane/daemon_client.py'
+const CLIENT = 'E:/demo/plugins/windvane/windvane/daemon_client.py'
 
 const client = (type: string) => ({ type: 'command', command: PY, args: ['-S', CLIENT, type], timeout: 1000 })
 const remind = (type: string) => ({ type: 'command', command: PY, args: ['-m', 'windvane.daemon_client', type], timeout: 2000 })
@@ -231,7 +231,7 @@ test('another hook on the event hands it to the settings hooks', async ($, on) =
 
 test("the plugin's own command hooks are read from its folder", async ($, on) => {
   const own = {
-    UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'python "${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py" prompt_json' }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'python "${CLAUDE_PLUGIN_ROOT}/windvane/daemon_client.py" prompt_json' }] }],
   }
   const t = engine(on, { hooks: {}, self: own, answer: () => ok(ctx('UserPromptSubmit', 'from the daemon')) })
   t.bottom('UserPromptSubmit', { additionalContext: ['from the command hook'] })

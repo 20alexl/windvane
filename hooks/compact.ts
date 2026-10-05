@@ -14,6 +14,11 @@
 // message a hook adds without a handle is built from its role and text.
 // A precompute (kept for a later compaction) and a subagent's own
 // compaction pass through untouched, as does a skip.
+//
+// A compaction windvane itself starts ($.session.compact from register.ts)
+// runs beneath windvane's own hooks, so this one never sees it: there the
+// SessionStart(compact) banner carries the rules and the checkpoint, and
+// register.ts's continue prompt points the model at it.
 import type { EngineInterface, On, SessionMessage } from 'claude-code'
 import { BRIEF_TIMEOUT_MS, briefArgv, joinBlocks, parseBrief, type Brief } from './brief'
 import { PLUGIN, engineEnv, pythonOf, type Settings } from './engine'

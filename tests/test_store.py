@@ -13,7 +13,7 @@ def _store(tmp_path, monkeypatch):
     store = tmp_path / "store"
     monkeypatch.setenv("WINDVANE_DIR", str(store))
     monkeypatch.setenv("WINDVANE_NO_DAEMON", "1")
-    monkeypatch.delenv("WINDVANE_SEMANTIC", raising=False)
+    monkeypatch.setenv("WINDVANE_SEMANTIC", "0")
     return store
 
 

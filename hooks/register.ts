@@ -12,7 +12,11 @@
 //   AND a deliberate checkpoint save has landed since the band was entered,
 //   the next turn boundary compacts. Compaction then happens with the state
 //   banked, at windvane's number, instead of at Claude Code's trigger with
-//   whatever happened to be saved.
+//   whatever happened to be saved. After a compaction windvane started, one
+//   prompt of windvane's resumes the work from the checkpoint
+//   (continue_after_compact); the SessionStart(compact) banner carries the
+//   rules and the checkpoint for that one, since a plugin's own
+//   session.compact hooks do not run for a compaction it starts.
 //
 // Each other piece lives in its own module, registered from here: the band
 // above the prompt (band.tsx), the /windvane pane (pane.tsx), /remember
@@ -37,12 +41,25 @@ import { BAND_HIDDEN_KEY, registerBand } from './band'
 import { registerBridge } from './bridge'
 import { registerCompact } from './compact'
 import { registerDoor } from './door'
-import { PLUGIN, VERSION, settingsOf } from './engine'
+import { PLUGIN, VERSION, engineEnv, pythonOf, settingsOf, type Settings } from './engine'
 import { EXPORT_COMMAND, registerExport } from './export'
 import { IMPORT_COMMAND, registerImport } from './import'
 import { LEDGER_COMMAND, add, asEntry, costBaseline, ledgerKey, localDay, registerLedger, turnEntry } from './ledger'
 import { PANE_COMMAND, registerPane } from './pane'
 import { REMEMBER_COMMAND, registerRemember } from './remember'
+import {
+  CHECK_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+  SEMANTIC_OFFER_KEY,
+  SEMANTIC_ROW,
+  checkArgv,
+  extraInstalledFrom,
+  installArgv,
+  offerDue,
+  offerFor,
+  recordOf,
+  rowOnFrom,
+} from './setup'
 import { ageText, normalizePath, readLatest, readManifest, ringsFor, storePath } from './ring'
 import { STRICT_COMMAND, registerStrict } from './strict'
 import { TOOL_NAMES, TOOL_SPECS, registerTools } from './tools'
@@ -54,6 +71,15 @@ const bandHidden = atom({ plugin: 'windvane', key: 'bandHidden' } as const, fals
 
 const MIRROR_EVERY_MS = 10_000
 const COMPACT_DELAY_MS = 250
+
+// The prompt that resumes the work after a compaction windvane started
+// (continue_after_compact). The engine runs it as a turn of its own once the
+// session is idle, framed under the plugin's name. The rules and the
+// checkpoint reach the model beside it, in the SessionStart(compact) banner:
+// a compaction a plugin starts runs beneath that plugin's own hooks, so
+// compact.ts cannot place them in the conversation for this one.
+const CONTINUE_TEXT =
+  'The conversation was compacted with the checkpoint banked. The rules and the checkpoint are in the session-start brief beside this message. Continue from the checkpoint: its current step first, then the pending steps. End your reply with what is done and what is next.'
 
 // The engine's pressure constants (its config knobs' defaults), mirrored.
 // Keep in step with the engine.
@@ -129,6 +155,69 @@ function ioOf($: EngineInterface): Io {
   return { read: p => $.fs.read(p) as Promise<string>, exists: p => $.fs.exists(p) }
 }
 
+// The first-run offer of the semantic tier. setup.ts holds the decisions;
+// the $ work is here, as for the other pieces. Asked at session.start and
+// never awaited there, so the dialog never delays the start. A dismissed
+// dialog records nothing and the next session asks again.
+async function offerSemantic($: EngineInterface, e: { isInteractive: boolean }, settings: Settings): Promise<void> {
+  if (!e.isInteractive || !offerDue(await $.store.get(SEMANTIC_OFFER_KEY), Date.now())) return
+  const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), settings.python)
+  const env = engineEnv($.plugin.root, storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME')))
+  const on = rowOnFrom(await $.config.list())
+  let installed = false
+  try {
+    installed = extraInstalledFrom(await $.process.run(checkArgv(python), { env, timeoutMs: CHECK_TIMEOUT_MS }))
+  } catch {
+    installed = false
+  }
+  const offer = offerFor(on, installed)
+  if (!offer) {
+    await $.store.set(SEMANTIC_OFFER_KEY, recordOf('done'))
+    return
+  }
+  let answer: string
+  try {
+    answer = await $.ui.ask(offer.question, { options: [offer.act, 'Not now', 'Never ask'], header: 'windvane' })
+  } catch {
+    return
+  }
+  $.ui.log(`${PLUGIN}: semantic offer answered: ${answer}`, { to: 'debug' })
+  if (answer === 'Never ask') {
+    await $.store.set(SEMANTIC_OFFER_KEY, recordOf('never'))
+    return
+  }
+  if (answer !== offer.act) {
+    await $.store.set(SEMANTIC_OFFER_KEY, recordOf('later'))
+    return
+  }
+  if (!installed) {
+    $.ui.toast(`${PLUGIN}: installing the semantic extra; this takes a few minutes`)
+    let ok = false
+    try {
+      const run = await $.process.run(installArgv(python), { env, timeoutMs: INSTALL_TIMEOUT_MS })
+      ok = run.exitCode === 0
+      if (!ok) $.ui.log(`${PLUGIN}: pip install failed (exit ${run.exitCode}): ${run.stderr.trim().slice(-400)}`)
+    } catch (err) {
+      $.ui.log(`${PLUGIN}: pip install did not run: ${String(err)}`)
+    }
+    if (!ok) {
+      $.ui.toast(`${PLUGIN}: the semantic extra did not install; see the log, or pip install it yourself`)
+      await $.store.set(SEMANTIC_OFFER_KEY, recordOf('later'))
+      return
+    }
+  }
+  if (!on) {
+    const set = await $.config.set({ key: SEMANTIC_ROW, value: true })
+    if (set.deny) {
+      $.ui.toast(`${PLUGIN}: the semantic row stayed off: ${set.deny}`)
+      await $.store.set(SEMANTIC_OFFER_KEY, recordOf('later'))
+      return
+    }
+  }
+  $.ui.toast(`${PLUGIN}: the semantic tier is on; the daemon loads the model on its next start`)
+  await $.store.set(SEMANTIC_OFFER_KEY, recordOf('done'))
+}
+
 // The UI at session.start: the band's Hide from the last session, and the
 // commands. A failure costs that piece alone, never the mirror.
 async function startUi($: EngineInterface): Promise<void> {
@@ -154,17 +243,22 @@ async function startUi($: EngineInterface): Promise<void> {
   }
 }
 
-// The ledger at session.start: the cost it counts from.
-async function startLedger($: EngineInterface): Promise<void> {
+// The ledger's project: the folder the session was opened in. A shell cd
+// moves $.session.cwd() for the rest of the session; the ledger stays put.
+let ledgerProject = ''
+
+// The ledger at session.start: its project and the cost it counts from.
+async function startLedger($: EngineInterface, cwd: string): Promise<void> {
+  ledgerProject = normalizePath(cwd)
   costBaseline((await $.session.usage()).cost?.usd)
 }
 
-// The ledger at turn.complete: a main-loop turn added to the project's entry
-// for the local day.
+// The ledger at turn.complete: a main-loop turn that counted something,
+// added to the project's entry for the local day.
 async function recordTurn($: EngineInterface, e: TurnCompleteInput): Promise<void> {
-  if (e.agentId !== undefined) return
+  if (e.agentId !== undefined || e.usage === undefined) return
   const entry = turnEntry(e.usage, (await $.session.usage()).cost?.usd)
-  const key = ledgerKey(await $.session.cwd(), localDay(await $.clock.now()))
+  const key = ledgerKey(ledgerProject || (await $.session.cwd()), localDay(await $.clock.now()))
   await $.store.set(key, add(asEntry(await $.store.get(key)), entry))
 }
 
@@ -214,7 +308,7 @@ export const register: Register = (on, options) => {
   registerExport(on, settings)
   registerImport(on, settings)
   registerDoor(on, settings)
-  registerLedger(on)
+  registerLedger(on, () => ledgerProject)
   registerAgents(on, settings)
   registerCompact(on, settings)
   registerBridge(on)
@@ -225,10 +319,13 @@ export const register: Register = (on, options) => {
     // the mirror running, and the mirror's early return leaves them running.
     await startUi($)
     try {
-      await startLedger($)
+      await startLedger($, e.cwd)
     } catch (err) {
       $.ui.log(`${PLUGIN}: ledger off: ${String(err)}`)
     }
+    // The first-run offer of the semantic tier (setup.ts): asked, never
+    // awaited, so the dialog never delays the start.
+    void offerSemantic($, e, settings).catch(err => $.ui.log(`${PLUGIN}: the semantic offer failed: ${String(err)}`, { to: 'debug' }))
 
     sid = await $.session.id()
     const model = await $.session.model()
@@ -323,13 +420,21 @@ export const register: Register = (on, options) => {
       $.ui.toast(`${PLUGIN}: checkpoint banked, compacting at ${Math.round((tokens ?? 0) / 1000)}K`)
       $.clock.after(COMPACT_DELAY_MS, () => {
         void (async () => {
+          let compacted = false
           try {
-            await $.session.compact()
+            const out = await $.session.compact()
+            compacted = !('skip' in out && out.skip)
           } catch (err) {
             $.ui.log(`${PLUGIN}: compaction failed: ${String(err)}`)
           } finally {
             compactRequested = false
             bandEnteredAt = undefined
+          }
+          if (!compacted || !settings.continueAfterCompact) return
+          try {
+            await $.prompt.submit({ text: CONTINUE_TEXT })
+          } catch (err) {
+            $.ui.log(`${PLUGIN}: the continue after the compaction failed: ${String(err)}`)
           }
         })()
       })

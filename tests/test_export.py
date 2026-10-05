@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-ENGINE = Path(__file__).resolve().parent.parent / "engine"
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +101,7 @@ def test_an_empty_project_exports_empty_files(tmp_path):
 def test_the_export_cli_prints_one_json_line(tmp_path, _store):
     proj = tmp_path / "p"
     proj.mkdir()
-    env = dict(os.environ, WINDVANE_DIR=str(_store), WINDVANE_NO_DAEMON="1", PYTHONPATH=str(ENGINE), PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, WINDVANE_DIR=str(_store), WINDVANE_NO_DAEMON="1", PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8")
     run = subprocess.run(
         [sys.executable, "-m", "windvane.export", "--project", str(proj), "--out", str(tmp_path / "o")],
         capture_output=True, env=env, timeout=120,

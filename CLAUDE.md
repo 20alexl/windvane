@@ -7,10 +7,10 @@ This file is for people working on windvane itself. Users read README.md and doc
 ## Layout
 
 - `.claude-plugin/plugin.json` is the manifest and holds the config rows. `marketplace.json` makes the repository its own marketplace.
-- `hooks/` is the mod, in TypeScript. `register.ts` loads the pieces: the band, the pane, `/remember`, the strict, export and import commands, the door, the ledger, the agent briefs, the compaction brief, the bridge and the tools. `hooks.json` declares the classic command hooks used headless and as the bridge's fallback. `*.test.ts` files sit beside their modules.
-- `engine/windvane/` is the Python engine. No dependencies. `hooks/` there holds the hook handlers, `mining/` the session miner, `semantic/` the optional encoder. `daemon.py` and `daemon_client.py` are the resident process and its thin client. `config.py` holds every setting in `KNOBS`.
+- `hooks/` is the mod, in TypeScript. `register.ts` loads the pieces: the band, the pane, `/remember`, the strict, export and import commands, the door, the ledger, the agent briefs, the compaction brief, the bridge, the tools and the first-run offer of the semantic tier (`setup.ts`). `hooks.json` declares the classic command hooks used headless and as the bridge's fallback. `*.test.ts` files sit beside their modules.
+- `windvane/` is the Python engine. No dependencies. `events/` there holds the hook handlers, `mining/` the session miner, `semantic/` the optional encoder. `daemon.py` and `daemon_client.py` are the resident process and its thin client. `config.py` holds every setting in `KNOBS`.
 - `skills/reference/SKILL.md` is the quick reference the model reads (`/windvane:reference`; the plain `/windvane` is the pane, so the skill cannot share that name).
-- `docs/` is the user documentation. `demo/` holds the demo tape and gif.
+- `docs/` is the user documentation. `docs/assets/` holds the logo marks, the social card (uploaded in the repository's settings, nothing links it) and the two SVG diagrams the README and how-it-works embed; the diagrams use only neutral greys and the accent so they read on GitHub's light and dark themes. `demo/` holds the demo tapes and gif.
 - `tests/` holds the Python tests.
 - `types/` and `.claude-plugin/types/` are the type declarations for the mod. The second folder is written by Claude Code when the plugin loads and is not committed.
 
@@ -22,7 +22,9 @@ Python tests, from the repository root (needs `pytest`, available as the `test` 
 python -m pytest tests/test_config.py
 ```
 
-Run the tests for the module you changed, not the whole suite by default. `pyproject.toml` puts `engine` on the path.
+Run the tests for the module you changed, not the whole suite by default. `pyproject.toml` puts the repository root on the path, so `windvane` imports from the tree.
+
+The installed plugin on a development machine is usually this folder. A change that moves or renames `windvane/daemon_client.py`, or the commands in `hooks/hooks.json` that name it, breaks every hook of the running session the moment it lands: fix `hooks.json` first, run `/reload-plugins`, then move the file.
 
 Plugin tests and checks, from the repository root:
 

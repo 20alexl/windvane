@@ -17,7 +17,7 @@ Then the default applies. A value of the wrong type is coerced, and one that wil
 
 Edits are seen without a restart. A boolean accepts `1`, `true`, `yes`, `on` and their opposites. A counted setting accepts `off` for 0.
 
-To print every setting as resolved for a project: `python -m windvane.config <project>`. To print the reference table: `python -m windvane.config --knobs`. Run both from the `engine` folder of the cloned folder.
+To print every setting as resolved for a project: `python -m windvane.config <project>`. To print the reference table: `python -m windvane.config --knobs`. Run both from the cloned folder.
 
 ## The plugin config rows
 
@@ -26,7 +26,7 @@ To print every setting as resolved for a project: `python -m windvane.config <pr
 | `python` | string | empty | The interpreter that runs the engine (3.10 or later). Empty means `python` on PATH. `WINDVANE_PYTHON` wins over this row. |
 | `status_segment` | boolean | true | Show the context fill and the checkpoint age in the status line. The band and the pane stay when it is off. |
 | `result_budget` | string | `60000` | Characters a tool result keeps before its middle is cut. Head and tail stay. `WINDVANE_RESULT_BUDGET` wins over this row. |
-| `semantic` | boolean | false | Use the sentence-transformers encoder for decision capture and memory search when the semantic extra is installed. Off, the regex tier scores. |
+| `semantic` | boolean | false | Use the sentence-transformers encoder for decision capture and memory and session search when the semantic extra is installed. Off, the regex tier scores. The first interactive session offers to install the extra and turn this on. |
 | `alert_command` | string | empty | A shell command that receives one line when an unattended run halts, hits a usage limit or needs input. Empty means no alerts. |
 | `strict_pack` | boolean | false | Seed the strict pack (style and workflow rules) beside the default pack in every new project. |
 | `autonomy` | boolean | false | Stall nudges and the halt brake for unattended runs. Off for an attended session. |
@@ -71,8 +71,8 @@ windvane takes the point from Claude Code. In order: the `CLAUDE_CODE_AUTO_COMPA
 | `WINDVANE_DIR` | The store folder, instead of `~/.windvane`. A leading `~` is expanded. |
 | `WINDVANE_PYTHON` | The interpreter for the engine. Wins over the `python` row. |
 | `WINDVANE_RESULT_BUDGET` | The tool-result budget in characters. Wins over the `result_budget` row. |
-| `WINDVANE_SEMANTIC` | Set to `1` to request the semantic tier. |
 | `WINDVANE_AUTONOMY` | Set to `1` for autonomy mode. |
+| `WINDVANE_SEMANTIC` | `1` turns the semantic tier on, `0` forces it off whatever the row says; unset, the row decides. |
 | `WINDVANE_ALERT_COMMAND`, `WINDVANE_STRIKE_CAP`, `WINDVANE_GOAL_TURN_CAP`, `WINDVANE_LIVE_MINE` | The matching settings above. |
 | `WINDVANE_COMPLIANCE` | Turns the compliance check on or off. |
 | `WINDVANE_NON_PROJECT_DIRS` | The `non_project_dirs` setting. |
@@ -94,7 +94,7 @@ python -m windvane.rules seed --project DIR --strict   # also the strict tier
 python -m windvane.rules seed --project DIR --force    # seed again even if the marker says seeded
 ```
 
-Run these from the `engine` folder of the cloned folder. Each prints one JSON line with `added`, `skipped`, `detectors_attached` and the tiers seeded. A marker, `default_pack.json`, in the project's store folder records what was seeded. `/windvane-strict` runs the strict seed for the session's project.
+Run these from the cloned folder. Each prints one JSON line with `added`, `skipped`, `detectors_attached` and the tiers seeded. A marker, `default_pack.json`, in the project's store folder records what was seeded. `/windvane-strict` runs the strict seed for the session's project.
 
 Manage rules with the memory tool: `list_rules` to see them with their ids, `add_rule` with `content`, `reason` and an optional `detector`, `set_detector` to attach or clear one (`{}` clears), `modify` to change the text, `delete` to remove one, `archive` and `restore` to set one aside and bring it back. A detector has these keys:
 

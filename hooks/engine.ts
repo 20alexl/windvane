@@ -1,7 +1,7 @@
 // windvane: how the mod reaches the engine, and the plugin's options.
 //
 // The engine is the Python package shipped inside the plugin
-// (`<plugin root>/engine/windvane`). The mod runs its modules as
+// (`<plugin root>/windvane`). The mod runs its modules as
 // `python -m windvane.<module>` with PYTHONPATH pointing at that folder, so
 // nothing has to be installed beside the plugin. A process started by
 // `$.process.run` inherits the host's environment, not the session's: what
@@ -26,6 +26,9 @@ export type Settings = {
   statusSegment: boolean
   // The door's budget in characters; undefined leaves the door's default.
   resultBudget: number | undefined
+  // false: a compaction windvane started ends the session's work until the
+  // person types; true: windvane's own prompt resumes it.
+  continueAfterCompact: boolean
 }
 
 // A positive whole number of characters, from a string or a number; anything
@@ -42,6 +45,7 @@ export function settingsOf(options: PluginOptions | undefined): Settings {
     python: typeof o.python === 'string' ? o.python.trim() : '',
     statusSegment: o.status_segment !== false,
     resultBudget: budgetOf(o.result_budget),
+    continueAfterCompact: o.continue_after_compact !== false,
   }
 }
 
@@ -56,7 +60,7 @@ export function pythonOf(env: string | undefined, configured: string): string {
 // engine keys its state by the session.
 export function engineEnv(root: string, store: string, sessionId?: string): Record<string, string> {
   const env: Record<string, string> = {
-    PYTHONPATH: `${root.replace(/\\/g, '/')}/engine`,
+    PYTHONPATH: `${root.replace(/\\/g, '/')}`,
     WINDVANE_DIR: store,
     PYTHONIOENCODING: 'utf-8',
   }

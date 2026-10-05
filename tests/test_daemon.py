@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-ENGINE = Path(__file__).resolve().parents[1] / "engine"
+ROOT = Path(__file__).resolve().parents[1]
 CLIENT_TIMEOUT = 30
 
 
@@ -34,7 +34,7 @@ def _has(module: str, attr: str = "") -> bool:
 def _isolated(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WINDVANE_NO_DAEMON", "1")
     monkeypatch.setenv("WINDVANE_DIR", str(tmp_path / "store"))
-    monkeypatch.delenv("WINDVANE_SEMANTIC", raising=False)
+    monkeypatch.setenv("WINDVANE_SEMANTIC", "0")
     (tmp_path / "store").mkdir()
     yield
 
@@ -181,13 +181,13 @@ def test_http_refuses_what_is_not_a_hook_post(ss, listener, monkeypatch):
     assert json.loads(_raw(port, b"hello\n")) == {"score": 0.0, "text": ""}
 
 
-# ── POST /hook: the seam on windvane.hooks.dispatch ──────────────────────
+# ── POST /hook: the seam on windvane.events.dispatch ──────────────────────
 
 
 def test_a_hook_post_applies_the_session_env_and_restores_it(ss, listener, monkeypatch):
     """Mocked seam: the dispatch sees the request's env and stdin; the
     daemon's own values come back after the call."""
-    from windvane import hooks
+    from windvane import events
 
     seen = {}
 
@@ -197,7 +197,7 @@ def test_a_hook_post_applies_the_session_env_and_restores_it(ss, listener, monke
         print("printed", end="")
         return "returned\n"
 
-    monkeypatch.setattr(hooks, "dispatch", fake_dispatch, raising=False)
+    monkeypatch.setattr(events, "dispatch", fake_dispatch, raising=False)
     monkeypatch.setenv("WINDVANE_AUTONOMY", "daemon-own")
     port = listener
     status, _, _, body = _post(port, {"hook_event": "stop_json", "stdin": "{}", "env": {
@@ -219,39 +219,39 @@ def test_a_hook_post_applies_the_session_env_and_restores_it(ss, listener, monke
         print("before exit", end="")
         raise SystemExit(0)
 
-    monkeypatch.setattr(hooks, "dispatch", exiting, raising=False)
+    monkeypatch.setattr(events, "dispatch", exiting, raising=False)
     assert _post(port, {"hook_event": "bash_json", "stdin": "{}"})[3] == {"output": "before exit"}
     # An exception is an error answer.
-    monkeypatch.setattr(hooks, "dispatch", lambda e, s: 1 / 0, raising=False)
+    monkeypatch.setattr(events, "dispatch", lambda e, s: 1 / 0, raising=False)
     assert "division by zero" in _post(port, {"hook_event": "bash_json", "stdin": "{}"})[3]["error"]
 
 
 def test_without_dispatch_the_argv_style_main_runs_with_common_set(ss, listener, monkeypatch):
     """Mocked seam: a hooks package that has main() but no dispatch() is
     driven the way engram's daemon drove remind.main(): stdin cached in
-    hooks.common, the event in sys.argv, both reset afterwards."""
+    events.common, the event in sys.argv, both reset afterwards."""
     import types
 
     import windvane
 
     seen = {}
-    common = types.ModuleType("windvane.hooks.common")
+    common = types.ModuleType("windvane.events.common")
     common._stdin_cache, common._session_id = None, "stale"
-    hooks = types.ModuleType("windvane.hooks")
-    hooks.common = common
+    fake = types.ModuleType("windvane.events")
+    fake.common = common
 
     def main():
         seen.update(argv=list(sys.argv), stdin=common._stdin_cache, sid=common._session_id)
         print("from main")
 
-    hooks.main = main
-    monkeypatch.setitem(sys.modules, "windvane.hooks", hooks)
-    monkeypatch.setitem(sys.modules, "windvane.hooks.common", common)
-    monkeypatch.setattr(windvane, "hooks", hooks, raising=False)
+    fake.main = main
+    monkeypatch.setitem(sys.modules, "windvane.events", fake)
+    monkeypatch.setitem(sys.modules, "windvane.events.common", common)
+    monkeypatch.setattr(windvane, "events", fake, raising=False)
     argv = list(sys.argv)
     status, _, _, body = _post(listener, {"hook_event": "prompt_json", "stdin": '{"prompt": "x"}'})
     assert status == 200 and body == {"output": "from main\n"}
-    assert seen == {"argv": ["windvane.hooks", "prompt_json"], "stdin": '{"prompt": "x"}', "sid": ""}
+    assert seen == {"argv": ["windvane.events", "prompt_json"], "stdin": '{"prompt": "x"}', "sid": ""}
     assert common._stdin_cache is None and sys.argv == argv
 
 
@@ -260,9 +260,9 @@ def test_session_end_is_not_served_in_process(ss, listener):
     assert status == 200 and "unsupported hook_event" in body["error"]
 
 
-@pytest.mark.skipif(not _has("windvane.hooks", "dispatch"), reason="windvane.hooks.dispatch (port-hooks) not in the tree yet")
+@pytest.mark.skipif(not _has("windvane.events", "dispatch"), reason="windvane.events.dispatch (port-hooks) not in the tree yet")
 def test_a_hook_post_runs_the_real_dispatch(ss, listener, tmp_path: Path, monkeypatch):
-    """Unmocked: POST /hook reaches windvane.hooks.dispatch through
+    """Unmocked: POST /hook reaches windvane.events.dispatch through
     _serve_hook_event; a pre_tool event with nothing halted is a silent pass."""
     monkeypatch.setenv("WINDVANE_AUTONOMY", "daemon-own")
     stdin = json.dumps({"session_id": "bridge-s1", "hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -278,10 +278,10 @@ def test_every_served_event_is_one_the_dispatch_knows(ss):
                  "stop_failure_json", "notification_json", "post_milestone_json"}
     assert lifecycle <= ss._HOOK_EVENTS
     assert "session_end_json" not in ss._HOOK_EVENTS
-    hooks = importlib.import_module("windvane.hooks")
-    known = getattr(hooks, "EVENTS", None)
+    events = importlib.import_module("windvane.events")
+    known = getattr(events, "EVENTS", None)
     if known is None:
-        pytest.skip("windvane.hooks exposes no EVENTS table yet (port-hooks)")
+        pytest.skip("windvane.events exposes no EVENTS table yet (port-hooks)")
     assert ss._HOOK_EVENTS <= set(known)
 
 
@@ -319,6 +319,30 @@ def test_post_tool_keeps_one_warm_instance_and_restores_the_env(ss, listener, mo
     assert status == 200 and body["isError"] is True and "kaput" in body["text"]
     assert _post(port, {"arguments": {}}, path="/tool")[0] == 400
     assert os.environ.get("CLAUDE_PROJECT_DIR") != "/p"
+    monkeypatch.setattr(ss, "_WARM", None)
+
+
+def test_post_tool_applies_the_sessions_id_for_the_call_only(ss, listener, monkeypatch):
+    """Mocked seam: tools.run sees the request's session id; a request that
+    names none runs as no session, although the daemon's own environment
+    holds the id of the session whose hook started it."""
+    import types
+
+    def run(request, warm=None):
+        return {"text": str(os.environ.get("CLAUDE_CODE_SESSION_ID")), "isError": False, "ms": 1}
+
+    fake = types.ModuleType("windvane.tools")
+    fake.Warm, fake.run = type("Warm", (), {}), run
+    monkeypatch.setitem(sys.modules, "windvane.tools", fake)
+    import windvane
+
+    monkeypatch.setattr(windvane, "tools", fake, raising=False)
+    monkeypatch.setattr(ss, "_WARM", None)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "the-starters-session")
+    port = listener
+    assert _post(port, {"tool": "memory", "arguments": {}, "env": {"CLAUDE_CODE_SESSION_ID": "sid-1"}}, path="/tool")[3]["text"] == "sid-1"
+    assert _post(port, {"tool": "memory", "arguments": {}, "env": {}}, path="/tool")[3]["text"] == "None"
+    assert os.environ["CLAUDE_CODE_SESSION_ID"] == "the-starters-session"  # restored after each call
     monkeypatch.setattr(ss, "_WARM", None)
 
 
@@ -413,7 +437,7 @@ def test_a_spawn_runs_the_engine_from_its_own_folder(ss, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: calls.append((cmd, kw)))
     assert ss.start_server_background() is True
     cmd, kw = calls[-1]
-    assert cmd[1:] == ["-m", "windvane.daemon"] and Path(kw["cwd"]) == ENGINE
+    assert cmd[1:] == ["-m", "windvane.daemon"] and Path(kw["cwd"]) == ROOT
     assert ss.STARTING_FILE.exists()
     assert ss.start_server_background() is False  # one spawn per 30 s
     assert len(calls) == 1
@@ -438,6 +462,10 @@ def test_the_tier_is_requested_by_config_or_env(monkeypatch):
     assert semantic.requested() is False
     monkeypatch.setenv("WINDVANE_SEMANTIC", "1")
     assert semantic.requested() is True
+    # "0" forces the tier off whatever the row says (a test run on a machine with the row on).
+    monkeypatch.setenv("WINDVANE_SEMANTIC", "0")
+    monkeypatch.setattr("windvane.config.plugin_config", lambda: {"semantic": True})
+    assert semantic.requested() is False
     monkeypatch.delenv("WINDVANE_SEMANTIC")
     for value, want in ((True, True), ("true", True), ("false", False), (False, False), ("0", False)):
         monkeypatch.setattr("windvane.config.plugin_config", lambda v=value: {"semantic": v})
@@ -450,7 +478,7 @@ def test_importing_the_semantic_package_imports_no_heavy_module():
     code = ("import sys, windvane.semantic, windvane.semantic.config, windvane.semantic.worker, windvane.daemon; "
             "print([m for m in ('numpy', 'torch', 'sentence_transformers') if m in sys.modules])")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                         env={**os.environ, "PYTHONPATH": str(ENGINE)}, stdin=subprocess.DEVNULL, timeout=60)
+                         env={**os.environ, "PYTHONPATH": str(ROOT)}, stdin=subprocess.DEVNULL, timeout=60)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "[]"
 
@@ -582,11 +610,11 @@ def test_a_model_request_is_answered_on_the_pinned_thread():
 @pytest.mark.skipif(not _has("windvane.proc_lock", "acquire"), reason="windvane.proc_lock (port-hooks) not in the tree yet")
 def test_a_real_daemon_binds_announces_and_answers(tmp_path: Path):
     store = tmp_path / "store"
-    env = {**os.environ, "WINDVANE_DIR": str(store), "WINDVANE_NO_DAEMON": "1", "PYTHONPATH": str(ENGINE)}
-    env.pop("WINDVANE_SEMANTIC", None)
+    env = {**os.environ, "WINDVANE_DIR": str(store), "WINDVANE_NO_DAEMON": "1", "PYTHONPATH": str(ROOT)}
+    env["WINDVANE_SEMANTIC"] = "0"  # the daemon under test loads no encoder, whatever this machine's row says
     err_log = tmp_path / "daemon.err"
     err = open(err_log, "wb")  # a file, not a pipe: an undrained pipe can block the daemon
-    proc = subprocess.Popen([sys.executable, "-m", "windvane.daemon"], cwd=str(ENGINE), env=env,
+    proc = subprocess.Popen([sys.executable, "-m", "windvane.daemon"], cwd=str(ROOT), env=env,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
     try:
         port_file = store / "daemon_port"
@@ -609,7 +637,7 @@ def test_a_real_daemon_binds_announces_and_answers(tmp_path: Path):
         assert "unsupported" in json.loads(_raw(port, b'{"hook_event": "nope", "stdin": ""}\n'))["error"]
         assert _post(port, {"hook_event": "session_end_json", "stdin": "{}"})[0] == 200
         # A second daemon on the same store finds the lock held and leaves.
-        second = subprocess.run([sys.executable, "-m", "windvane.daemon"], cwd=str(ENGINE), env=env,
+        second = subprocess.run([sys.executable, "-m", "windvane.daemon"], cwd=str(ROOT), env=env,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         assert "holds the lock" in second.stderr
         assert int(port_file.read_text()) == port

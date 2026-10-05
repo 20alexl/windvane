@@ -4,8 +4,10 @@
 
 windvane has a mod, an engine and a daemon.
 
+![The mod in the session, the daemon, the engine and the store](assets/architecture.svg)
+
 - The **mod** is the hooks module in `hooks/`, written in TypeScript and loaded by Claude Code in an interactive session. It draws the status segment, the band and the pane, registers the six tools and the commands, trims tool results, rewrites agent prompts, compacts the conversation and keeps the ledger.
-- The **engine** is the Python package in `engine/windvane`. It holds the memory store, the checkpoint ring, the recorder, the rules, the mining of past sessions and every hook handler. It has no dependencies. The mod runs it as `python -m windvane.<module>` with the package folder on the module path, so nothing has to be installed beside the plugin.
+- The **engine** is the Python package in `windvane/` at the root of the plugin. It holds the memory store, the checkpoint ring, the recorder, the rules, the mining of past sessions and every hook handler (the `events` subpackage). It has no dependencies. The mod runs it as `python -m windvane.<module>` with the plugin folder on the module path, so nothing has to be installed beside the plugin.
 - The **daemon** is one resident Python process that keeps the engine's imports loaded and answers requests on a loopback port. A cold hook process pays interpreter start and the package imports before any work. The daemon pays them once.
 
 The store, `~/.windvane` or the folder `WINDVANE_DIR` names, is the only thing the parts share. The mod reads it directly (the checkpoint age, the rules, the pane) and never writes it. The engine writes it.
@@ -43,7 +45,7 @@ The handlers never raise into Claude Code. A handler that fails produces no outp
 Most of a checkpoint is already recorded somewhere, so the recorder drafts the whole record and the model accepts or amends it. It reads, and only reads, these sources:
 
 - **The previous record.** This session's newest deliberate checkpoint on the live branch of the conversation. If the session has none, the project's newest deliberate checkpoint lends only its warnings and context needed, because another session's task and pending steps are not this one's.
-- **The transcript.** The session's edits (the files), its task list (open tasks are pending, finished ones are completed, the newest in-progress one is the current step), its git commits, its first typed prompt (the task when nothing carries forward) and the last assistant reply. The closing paragraph of the reply is the handoff note. A closing sentence that says a carried pending step is done, with no negation, closes that step.
+- **The transcript.** The session's edits (the files), its task list (open tasks are pending, finished ones are completed and join the previous record's completed steps, the newest twelve kept, the newest in-progress one is the current step), its git commits, its first typed prompt (the task when nothing carries forward) and the last assistant reply. The closing paragraph of the reply is the handoff note. A closing sentence that says a carried pending step is done, with no negation, closes that step.
 - **The hook state.** Test runs, a staged claim that a step finished, the session start and the decisions stored this session.
 
 Every failure leaves a field empty. The draft never raises. Each saved record notes which fields came from the draft.
@@ -58,6 +60,8 @@ A deliberate save is also written to the global ring in `checkpoints/`, as a per
 
 ## Pressure bands and the compaction point
 
+![One compaction cycle: the brief, the recorded work, the save in the band, the compaction, the next brief](assets/checkpoint-flow.svg)
+
 Hooks receive no context figures, so the mod measures them. Every 10 seconds it reads the session's usage, writes the context mirror and a marker file under `sessions/` and draws the status segment. The engine reads the mirror for its nudges.
 
 The compaction point is the number of tokens at which Claude Code is set to compact. An environment variable, a launch flag or a settings value moves it, and the mod asks the session for the figure it uses. Auto-compaction does not fire at the point. It fires about 32,000 tokens under it, which leaves room for the model's output. Three thresholds follow from that, all distances to the point and not percentages of the window:
@@ -66,13 +70,15 @@ The compaction point is the number of tokens at which Claude Code is set to comp
 2. The **checkpoint band**, a fixed margin above the trigger (20,000 tokens, or 10,000 on a window of 200K or less): bank a checkpoint now.
 3. The **trigger**, where Claude Code compacts.
 
-Each nudge is said once per compaction cycle. A cadence reminder fires after 60 turns with no deliberate checkpoint and no finished step, and a reminder to bank also follows a turn whose closing message claims a step done when the turn changed something and no checkpoint was saved.
+Each nudge is said once per compaction cycle. A cadence reminder fires after 60 turns with no deliberate checkpoint and no finished step, and a reminder to bank also follows a turn whose closing message claims a step done when the turn changed something and no checkpoint was saved. A task closed through the task list gets the same reminder at the next prompt, only when its turn ended without a save.
 
 The mod adds the compaction itself. When the fill is inside the checkpoint band and a deliberate save has landed since the band was entered, the next turn boundary compacts, with a toast naming the size. `compact_now` banks the draft and asks for the same compaction at the turn boundary, because a session cannot be compacted while a turn runs. Any compaction, windvane's or Claude Code's, opens a new cycle.
 
+A compaction a plugin starts runs beneath that plugin's own hooks, so for its own compaction windvane cannot place the rules and the checkpoint inside the conversation the way it does for a `/compact` or an automatic one. Two things stand in. The session-start brief that follows every compaction carries them (the `compact_now` bank is a deliberate record, so the brief restores exactly what was banked). And once the compaction has happened, windvane sends one prompt that resumes the work from the checkpoint; without it the session would sit idle until a person typed. The `continue_after_compact` option turns that prompt off.
+
 ## What rides through a compaction
 
-A compaction replaces the conversation with a summary the model wrote under pressure. Once it finishes, the mod asks the engine for the rules block and the checkpoint the session-start banner would restore, and places one message right after the summary. The checkpoint is this session's own newest deliberate one, with rewound branches skipped, or the project's newest as the fallback. The mod then writes a marker, `sessions/<id>.briefed`. While the marker is under two minutes old, the session-start banner for the compaction leaves out the rules and the checkpoint instead of repeating them.
+A compaction replaces the conversation with a summary the model wrote under pressure. Once it finishes, the mod asks the engine for the rules block and the checkpoint the session-start banner would restore, and places one message right after the summary. The checkpoint is this session's own newest deliberate one, with rewound branches skipped, or the project's newest as the fallback. Its last line says how the repo moved since the record was written, then HEAD and the working tree counts, so the resumed session knows the shape of its uncommitted work. The mod then writes a marker, `sessions/<id>.briefed`. While the marker is under two minutes old, the session-start banner for the compaction leaves out the rules and the checkpoint instead of repeating them.
 
 A subagent starts from its prompt alone. When the model launches one, the mod rewrites the prompt with a header holding the project's rules and, for each file the prompt names (at most eight), the past mistakes recorded for it. The engine renders both, so they read as they do in the banner and the pre-edit check. The rules are cached for 60 seconds, and a fork, which inherits the whole conversation, passes through untouched.
 
@@ -88,7 +94,7 @@ In any other case it passes the event on and the command hooks run as before. A 
 
 ## The tools
 
-Each call goes first to the daemon, `POST /tool` with the call's arguments and the session id, and to `python -m windvane.tools` with the same request on stdin when the daemon is down. The model reads the answer's text. An error comes back as a denied call with the reason. A request that timed out after 60 seconds is not retried, and the model is told to check its effect first.
+Each call goes first to the daemon, `POST /tool` with the call's arguments, the session id and the session's working directory, and to `python -m windvane.tools` with the same request on stdin when the daemon is down. The model reads the answer's text. An error comes back as a denied call with the reason. A request that timed out after 60 seconds is not retried, and the model is told to check its effect first.
 
 ## The daemon
 
@@ -97,6 +103,8 @@ The daemon binds a random port on 127.0.0.1 and writes it to `daemon_port` in th
 One listener serves two protocols, chosen by the first line of a connection. The thin client sends a JSON line. The mod sends HTTP, `POST /hook` and `POST /tool`, which must carry the `X-Windvane-Hook: 1` header and a loopback host if they send one. A web page can neither add that header across origins nor pass the host check through DNS rebinding, so a browser cannot drive the handlers.
 
 With the `semantic` extra installed and the tier requested, the daemon also loads the sentence encoder in the background and answers scoring and embedding requests with it. Otherwise it never imports the encoder.
+
+A session search keeps the index it read, up to two of them, while the file is unchanged: the chunks, their lowercased previews and an inverted word index. The first search of a large index takes a few seconds and a few hundred megabytes of memory; the searches after it answer a keyword query in well under a second.
 
 ## What runs headless
 

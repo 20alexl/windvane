@@ -1,5 +1,9 @@
 <!-- The repository URL is not known yet: <url> in the install lines below is a placeholder to replace before publishing. -->
+<p align="center"><img src="docs/assets/logo.png" width="88" alt=""></p>
+
 # windvane
+
+Session state that survives the context window.
 
 windvane is a Claude Code plugin that keeps the state of a session and steers it. A recorder drafts the checkpoint from what the session already did. Compaction happens at a chosen point with that state banked. The project rules and the checkpoint ride inside the compacted conversation and at the head of every subagent's prompt. Tool results are trimmed and secrets in them are redacted. Project memory and rules are a tool call away, and a token ledger, a pane and a status segment show where the session stands.
 
@@ -15,19 +19,21 @@ claude plugin marketplace add ./windvane
 claude plugin install windvane@windvane
 ```
 
-Python 3.10 or later must be on PATH, or named in the `python` config row or in `WINDVANE_PYTHON`. The engine has no dependencies. Set the config rows with `/plugin configure windvane@windvane`, or pass `--config KEY=VALUE` to the install command. Details are in [docs/install.md](docs/install.md).
+Python 3.10 or later must be on PATH, or named in the `python` config row or in `WINDVANE_PYTHON`. The engine has no dependencies. Set the config rows with `/plugin configure windvane@windvane`, or pass `--config KEY=VALUE` to the install command. The first interactive session offers to install the optional embedding model for memory and session search. Details are in [docs/install.md](docs/install.md).
 
 The mod (the status segment, band, pane, tools and commands) needs an interactive session. A headless `claude -p` run gets the classic hooks only, described under [Headless and unattended](#headless-and-unattended).
 
 ## What runs on its own
 
+![The mod in the session, the daemon, the engine and the store](docs/assets/architecture.svg)
+
 Every row happens without a call from you or the model.
 
 | Moment | What windvane does |
 |---|---|
-| Session start | Prints a banner with the project's rules, the count of past mistakes, the restored checkpoint (whole after a resume or a compaction, a short teaser on a fresh start), the last session's files and activity, and recurring errors. Seeds the default rule pack once per project. Starts the background daemon. States autonomy mode when it is on. |
+| Session start | Prints a banner with the project's rules (the ones with detectors first), the count of its own past mistakes and of the pooled ones, the restored checkpoint (whole after a resume or a compaction, a short teaser on a fresh start) ending with the repo's movement since it and the working tree now, the last session's files and activity, and recurring errors. Seeds the default rule pack once per project. Starts the background daemon. States autonomy mode when it is on. |
 | You send a prompt | Captures a decision from what you typed ("let's use X", "from now on always Y"). Keeps the prompt so the destructive-command rule can see that you approved. Delivers any staged context-pressure nudge. |
-| Before an edit | Warns about past mistakes tied to the file, an edit loop, TODO markers in the file and the memories that match it. Checks that a proposed import resolves in the code index and lists the modules that import the file. Subagents are skipped. |
+| Before an edit | Warns about past mistakes tied to the file (the project's own first), an edit loop, TODO markers in a code file and the memories that match it. Checks that a proposed import resolves in the code index and lists the modules that import the file. Subagents are skipped. |
 | Before a read | Once per file per session: an orientation from the code index and the file's best memories. |
 | Before a shell command | Matches the command against every rule that carries a detector, records the match and shows the rule before the command runs. In autonomy mode a detector marked deny refuses the command. |
 | Before any tool | In autonomy mode after a halt, denies every tool except the few that let the run leave a record. |
@@ -57,7 +63,7 @@ The mod adds these, in an interactive session:
 The model calls these as `mcp__windvane__<name>`. Each takes an optional `project_path`.
 
 - **checkpoint**: `save`, `restore`, `list`. A bare `save` accepts the drafted record. A field given amends that field.
-- **compact_now**: banks the drafted checkpoint and compacts as soon as the turn ends.
+- **compact_now**: banks the drafted checkpoint, compacts as soon as the turn ends, and resumes the work with one prompt of windvane's.
 - **memory**: `remember`, `recall`, `search`, `forget`, `add_rule`, `list_rules`, `modify`, `delete`, `promote`, `archive`, `restore`, `list_mistakes`, `acknowledge_mistake`, `set_detector`.
 - **log**: `mistake`, `decision`. Records what the hooks did not catch.
 - **mine**: `search`, `decisions`, `errors`, `struggles`, `replay`, `timeline`, `run_report`, `run_status`, `status`. Reads the history of past sessions on the project.
@@ -67,13 +73,15 @@ The commands are `/windvane` (a pane with the checkpoint, the rules and the mist
 
 ## Checkpoints and compaction
 
-The recorder drafts the whole checkpoint. It takes the task, warnings and context needed from the last checkpoint or the first prompt, the files from the session's edits, the pending and completed steps from the task list, the git commits and the carried steps the closing reply says are done, and the handoff note from the closing paragraph of the last reply. The model accepts the draft with `checkpoint(save)` and no other argument, or amends one field.
+The recorder drafts the whole checkpoint. It takes the task, warnings and context needed from the last checkpoint or the first prompt, the files from the session's edits, the pending and completed steps from the task list, the git commits and the carried steps the closing reply says are done (the previous record's completed steps stay, the newest twelve), and the handoff note from the closing paragraph of the last reply. The model accepts the draft with `checkpoint(save)` and no other argument, or amends one field.
 
 A checkpoint keeps the last 20 deliberate saves per project in a ring. Restore reads this session's newest deliberate checkpoint, skipping one saved on a branch of the conversation that was rewound, and falls back to the project's newest. The answer says how far the repository moved since the save.
 
-Compaction happens at windvane's point, not at whatever state happened to be saved. The mod mirrors the engine's pressure bands. When the fill is inside the checkpoint band and a deliberate save has landed since the band was entered, the next turn boundary compacts. `compact_now` does the same on request. If neither happens, Claude Code compacts at its own trigger and the before-compaction hook banks the draft as the floor.
+Compaction happens at windvane's point, not at whatever state happened to be saved. The mod mirrors the engine's pressure bands. When the fill is inside the checkpoint band and a deliberate save has landed since the band was entered, the next turn boundary compacts. `compact_now` does the same on request. After a compaction windvane started, the session does not wait for a person: windvane sends one prompt that resumes the work from the checkpoint, with the rules and the checkpoint arriving in the session-start brief (the `continue_after_compact` option turns this off). If neither happens, Claude Code compacts at its own trigger and the before-compaction hook banks the draft as the floor.
 
 When the compaction finishes, one message after the summary carries the rules and the checkpoint. The session-start banner then leaves them out, so they appear once.
+
+![One compaction cycle: the brief, the recorded work, the save in the band, the compaction, the next brief](docs/assets/checkpoint-flow.svg)
 
 ### Context pressure
 
@@ -131,7 +139,11 @@ The store is `~/.windvane`, or the folder named by `WINDVANE_DIR`.
 
 Each project may also hold `.windvane/` with `config.json`, `runs/` (run reports) and `export/` (the output of `/windvane-export`).
 
-To bring over a claude-engram store, run `/windvane-import`, or `python -m windvane.setup --import` from the `engine` folder of the cloned folder. The import copies the memory files, the rings and the session index, leaves out per-session state and the runtime files of a live engram process, and never changes or deletes the source. A destination that already has a store is refused unless you pass `--merge`, which adds only the projects it lacks.
+To bring over a claude-engram store, run `/windvane-import`, or `python -m windvane.doctor --import` from the cloned folder. The import copies the memory files, the rings and the session index, leaves out per-session state and the runtime files of a live engram process, and never changes or deletes the source. A destination that already has a store is refused unless you pass `--merge`, which adds only the projects it lacks.
+
+## What it runs, reads, writes and sends
+
+Runs: the Python interpreter for the engine, as hook processes and as one resident daemon that listens on a loopback port; `pip` once, only when you accept the first-run offer of the semantic extra; the shell command in `alert_command`, if you set one. Reads: the session transcript, the files of the project it indexes, and Claude Code's settings for the plugin's own config rows. Writes: the store under your home directory (`~/.windvane`), and nothing in the project unless the `structure` setting is on or you run `/windvane-export`. Sends: nothing off the machine. The mod's HTTP requests go to the daemon on 127.0.0.1 only. The one download is the embedding model from Hugging Face on the first use of the semantic tier, when that tier is on.
 
 ## Headless and unattended
 
@@ -143,4 +155,4 @@ Autonomy mode, set with the `autonomy` row or `WINDVANE_AUTONOMY=1` (it is also 
 
 ## Lineage
 
-windvane supersedes claude-engram. It is the same engine rewritten as a plugin.
+windvane replaces claude-engram, an earlier project that is no longer public. It is the same engine rewritten as a plugin, and the import command above brings an engram store over.

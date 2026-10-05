@@ -562,18 +562,25 @@ def test_rules_counts_and_the_claude_md_filter(tmp_path):
         {"id": "d1", "category": "decision", "content": "y"},
     ]}
     assert storage.get_project_rules(mem) == [
-        {"id": "r1", "content": "Never force push the main branch"},
-        {"id": "r2", "content": "Prefer small commits with clear messages"},
+        {"id": "r1", "content": "Never force push the main branch", "detector": None},
+        {"id": "r2", "content": "Prefer small commits with clear messages", "detector": None},
     ]
     assert storage.get_memory_counts(mem) == {"rule": 2, "mistake": 1, "decision": 1, "total": 4}
     assert storage.get_memory_counts({}) == {"total": 0}
 
-    proj = tmp_path / "app"
-    proj.mkdir()
+    hub = tmp_path / "hub"
+    proj = hub / "app"
+    proj.mkdir(parents=True)
     rules = storage.get_project_rules(mem)
     assert storage.filter_rules_in_claude_md(rules, str(proj)) == rules  # no CLAUDE.md
     (proj / "CLAUDE.md").write_bytes(b"# Rules\n- Never force push the main branch.\n")
     assert [r["id"] for r in storage.filter_rules_in_claude_md(rules, str(proj))] == ["r2"]
+    # An ancestor's CLAUDE.md is loaded too (a hub's rules bind a spoke).
+    (hub / "CLAUDE.md").write_bytes(b"- Prefer small commits with clear messages.\n")
+    assert storage.filter_rules_in_claude_md(rules, str(proj)) == []
+    # The "(Reason: ...)" tail is not compared: CLAUDE.md states rules without one.
+    reasoned = [{"id": "r3", "content": "Never force push the main branch (Reason: a rewrite cost a day of history and some trust)"}]
+    assert storage.filter_rules_in_claude_md(reasoned, str(proj)) == []
 
 
 def _register(store: Path, projects: dict) -> None:

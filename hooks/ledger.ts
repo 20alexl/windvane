@@ -3,11 +3,14 @@
 //
 // Every main-loop turn.complete adds the turn's usage (TurnUsage: the four
 // token counts as the API reports them) to $.store under
-// `ledger:<normalized cwd>:<YYYY-MM-DD>` (the local day), with a turn count
+// `ledger:<the folder the session was opened in>:<YYYY-MM-DD>` (the local
+// day), with a turn count
 // and the cost: the session's own priced total ($.session.usage().cost.usd)
 // since the previous main turn, so a subagent's spend lands on the turn that
 // waited for it. Subagent turns are not counted on their own (their tokens
-// are in the session's cost, not in the token columns).
+// are in the session's cost, not in the token columns). A turn that counted
+// nothing (an interrupt, an API error: no usage) adds no entry, and a shell
+// cd during the session does not move the project.
 //
 // /windvane-cost prints today's totals for this project, this project's
 // totals over every recorded day, and today's over every project.
@@ -124,8 +127,7 @@ function line(label: string, t: LedgerEntry): string {
   )
 }
 
-async function report($: EngineInterface): Promise<string> {
-  const project = normalizePath(await $.session.cwd())
+async function report($: EngineInterface, project: string): Promise<string> {
   const today = localDay(await $.clock.now())
   let projectToday = empty()
   let projectAll = empty()
@@ -146,6 +148,11 @@ async function report($: EngineInterface): Promise<string> {
   ].join('\n')
 }
 
-export function registerLedger(on: On): void {
-  on('command.run', { command: 'windvane-cost' }, async $ => ({ text: await report($) }))
+// `projectOf` answers the ledger's project: the folder the session was opened
+// in, kept by register.ts from session.start. Empty before that, when the
+// session's cwd stands in.
+export function registerLedger(on: On, projectOf: () => string): void {
+  on('command.run', { command: 'windvane-cost' }, async $ => ({
+    text: await report($, projectOf() || normalizePath(await $.session.cwd())),
+  }))
 }

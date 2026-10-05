@@ -439,7 +439,7 @@ def test_the_halt_leaves_a_record_open():
 
 
 def test_the_cli_reports_and_releases_a_halt(capsys):
-    common = pytest.importorskip("windvane.hooks.common", reason="windvane.hooks.common is the parent agent's module")
+    common = pytest.importorskip("windvane.events.common", reason="windvane.events.common is the parent agent's module")
     sid = "s-stall-cli"
     common._session_id = sid
     state = common.load_state()

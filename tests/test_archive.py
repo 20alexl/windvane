@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-ENGINE = Path(__file__).resolve().parent.parent / "engine" / "windvane"
+PKG = Path(__file__).resolve().parent.parent / "windvane"
 AUTO_DECISION_RELEVANCE = 7  # the miner and the work log mint decisions at this
 MANUAL_REMEMBER_RELEVANCE = 5  # memory(remember) default
 
@@ -56,8 +56,8 @@ def test_the_exemption_stays_above_every_mint_site():
     assert ARCHIVE_EXEMPT_RELEVANCE > AUTO_DECISION_RELEVANCE > MANUAL_REMEMBER_RELEVANCE
     protected = {"rule", "mistake", "lesson"}
     minted: dict = {}
-    sources = [ENGINE / "log.py", ENGINE / "tools.py", ENGINE / "remember.py"]
-    extractors = ENGINE / "mining" / "extractors.py"
+    sources = [PKG / "log.py", PKG / "tools.py", PKG / "remember.py"]
+    extractors = PKG / "mining" / "extractors.py"
     if extractors.exists():
         sources.append(extractors)
     for f in sources:

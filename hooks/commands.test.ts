@@ -27,7 +27,7 @@ test('/windvane-strict seeds the strict pack and shows the summary', async ($, o
   const out = await $.command.run({ command: 'windvane-strict', ...RUN })
   expect(out.text).toBe('Strict pack: 4 strict rules seeded, 2 already present')
   expect(runs[0]?.argv).toEqual(['python', '-m', 'windvane.rules', 'seed', '--project', 'E:/demo/proj', '--strict'])
-  expect(runs[0]?.init?.env?.PYTHONPATH?.endsWith('/engine')).toBe(true)
+  expect(runs[0]?.init?.env?.PYTHONPATH?.endsWith('/windvane')).toBe(true)
   expect(runs[0]?.init?.env?.WINDVANE_DIR).toBe(STORE)
 })
 

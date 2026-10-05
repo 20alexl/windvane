@@ -46,6 +46,12 @@
       "title": "Autonomy mode",
       "description": "Stall nudges and the halt brake for unattended runs. Off for an attended session.",
       "default": false
+    },
+    "continue_after_compact": {
+      "type": "boolean",
+      "title": "Continue after compaction",
+      "description": "After a compaction windvane started (compact_now, or the checkpoint band), windvane sends one prompt that resumes the work from the checkpoint. Off, the session waits for the person.",
+      "default": true
     }
   }
 }

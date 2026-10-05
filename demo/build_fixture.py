@@ -10,7 +10,7 @@ project and a temporary store. demo/play.py only prints these files.
                                         # the live recording's world (demo/live_setup.sh)
 
 What runs, in one temporary directory (deleted at the end):
-  - the hook events, in-process through ``windvane.hooks.dispatch(event,
+  - the hook events, in-process through ``windvane.events.dispatch(event,
     stdin_json)`` with the stdin Claude Code sends (the daemon's path);
   - the tools, through ``windvane.tools.run`` (what the plugin's registered
     tools call), with CLAUDE_CODE_SESSION_ID set as Claude Code exports it;
@@ -41,7 +41,6 @@ from pathlib import Path
 
 DEMO = Path(__file__).resolve().parent
 REPO = DEMO.parent
-ENGINE = REPO / "engine"
 FIXTURE = DEMO / "fixture"
 
 PREV_SID = "0f3c9a4e-0000-4000-8000-00000000d0e1"
@@ -164,7 +163,7 @@ class World:
             p = p.resolve()
             assert tmp in p.parents, f"{p} is not under the temp dir"
         assert self.home.resolve() == real_home, "HOME was not redirected"
-        sys.path.insert(0, str(ENGINE))
+        sys.path.insert(0, str(REPO))
 
     def project_files(self) -> None:
         files = {
@@ -249,13 +248,13 @@ class Transcript:
 
 def hook(world: World, event: str, payload: dict) -> str:
     """One hook event in-process; the additionalContext it emitted ('' when silent)."""
-    from windvane import hooks
+    from windvane import events
 
     payload = {"cwd": str(world.project), **payload}
     prev = os.getcwd()
     os.chdir(world.project)
     try:
-        out = hooks.dispatch(event, json.dumps(payload)).strip()
+        out = events.dispatch(event, json.dumps(payload)).strip()
     finally:
         os.chdir(prev)
     if not out:
@@ -270,7 +269,7 @@ def hook(world: World, event: str, payload: dict) -> str:
 def tool(world: World, sid: str, name: str, arguments: dict) -> str:
     """One call of a registered tool, as the plugin serves it."""
     from windvane import tools
-    from windvane.hooks import common
+    from windvane.events import common
 
     common._session_id = ""
     os.environ["CLAUDE_CODE_SESSION_ID"] = sid
@@ -303,7 +302,7 @@ def compact_brief(world: World, sid: str) -> str:
     """What hooks/compact.ts places after the compaction summary: the brief
     CLI's rules and checkpoint blocks, joined as joinBlocks joins them, in
     the <windvane-compact> tags. Then the `.briefed` marker it writes."""
-    env = dict(os.environ, PYTHONPATH=str(ENGINE), CLAUDE_CODE_SESSION_ID=sid)
+    env = dict(os.environ, PYTHONPATH=str(REPO), CLAUDE_CODE_SESSION_ID=sid)
     r = subprocess.run([sys.executable, "-m", "windvane.brief", "--project", str(world.project),
                         "--session", sid, "--json", "--checkpoint"],
                        cwd=str(world.project), env=env, capture_output=True, text=True,

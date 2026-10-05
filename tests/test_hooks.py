@@ -1,7 +1,7 @@
-"""windvane.hooks: the hook events, end to end and piece by piece.
+"""windvane.events: the hook events, end to end and piece by piece.
 
-The events run in-process through ``windvane.hooks.dispatch`` (the daemon's
-path) and, for the process-level cases, as ``python -m windvane.hooks``.
+The events run in-process through ``windvane.events.dispatch`` (the daemon's
+path) and, for the process-level cases, as ``python -m windvane.events``.
 Every test runs against a temporary store and never starts a daemon.
 """
 
@@ -17,11 +17,10 @@ from pathlib import Path
 
 import pytest
 
-ENGINE = Path(__file__).resolve().parent.parent / "engine"
-REPO = ENGINE.parent
+REPO = Path(__file__).resolve().parent.parent
 
-from windvane import hooks  # noqa: E402
-from windvane.hooks import common  # noqa: E402
+from windvane import events  # noqa: E402
+from windvane.events import common  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +50,7 @@ def _clean_env(monkeypatch, tmp_path: Path):
 
 def _run(event: str, payload: dict) -> dict:
     """Dispatch one event in-process; the parsed hook output ({} when silent)."""
-    out = hooks.dispatch(event, json.dumps(payload)).strip()
+    out = events.dispatch(event, json.dumps(payload)).strip()
     if not out:
         return {}
     return json.loads(out.splitlines()[-1])
@@ -78,19 +77,19 @@ def _proj(tmp_path: Path, name: str = "proj") -> Path:
 
 
 def test_every_wire_event_has_a_handler():
-    for event, (mod, fn) in hooks.EVENTS.items():
-        assert callable(hooks._handler(event)), event
+    for event, (mod, fn) in events.EVENTS.items():
+        assert callable(events._handler(event)), event
     for event in ("pre_edit_json", "post_edit_json", "bash_json", "prompt_json", "pre_read_json",
                   "tool_failure_json", "post_batch_json", "pre_bash_json", "pre_tool_json",
                   "post_milestone_json", "session_start_json", "stop_json", "pre_compact_json",
                   "post_compact_json", "stop_failure_json", "notification_json", "session_end_json"):
-        assert event in hooks.EVENTS
+        assert event in events.EVENTS
 
 
 def test_dispatch_resets_the_per_call_globals_and_an_unknown_event_is_silent():
-    assert hooks.dispatch("no_such_event", '{"session_id": "s-x"}') == ""
+    assert events.dispatch("no_such_event", '{"session_id": "s-x"}') == ""
     assert common._session_id == "" and common._stdin_cache is None
-    hooks.dispatch("pre_tool_json", '{"session_id": "s-y", "tool_name": "Read"}')
+    events.dispatch("pre_tool_json", '{"session_id": "s-y", "tool_name": "Read"}')
     assert common._session_id == "" and common._stdin_cache is None
 
 
@@ -103,9 +102,9 @@ def test_hooks_json_registers_every_event_through_the_client():
             for h in m["hooks"]:
                 assert h["type"] == "command"
                 cmd = h["command"]
-                assert cmd.startswith('python -S "${CLAUDE_PLUGIN_ROOT}/engine/windvane/daemon_client.py" ')
+                assert cmd.startswith('python -S "${CLAUDE_PLUGIN_ROOT}/windvane/daemon_client.py" ')
                 wire = cmd.rsplit(" ", 1)[1]
-                assert wire in hooks.EVENTS
+                assert wire in events.EVENTS
                 seen[(event, m["matcher"])] = (wire, h["timeout"])
     # Timeouts are seconds (Claude Code's unit): 3 on the per-tool hooks,
     # 5 on the turn-level ones, 10 where a cold client may start the daemon.
@@ -137,8 +136,8 @@ def test_a_hook_survives_a_working_directory_that_shadows_the_stdlib(tmp_path: P
     cwd.mkdir()
     (cwd / "email.py").write_text("from .presets import questions\n", encoding="utf-8")
     env = dict(os.environ, WINDVANE_DIR=str(tmp_path / "store"), WINDVANE_NO_DAEMON="1", WINDVANE_LIVE_MINE="0")
-    env["PYTHONPATH"] = str(ENGINE)
-    r = subprocess.run([sys.executable, "-m", "windvane.hooks", "post_compact_json"],
+    env["PYTHONPATH"] = str(REPO)
+    r = subprocess.run([sys.executable, "-m", "windvane.events", "post_compact_json"],
                        input='{"session_id": "s-shadow", "cwd": "%s"}' % str(cwd).replace("\\", "\\\\"),
                        capture_output=True, text=True, cwd=str(cwd), env=env, timeout=120, stdin=None)
     assert r.returncode == 0 and "Traceback" not in r.stderr, r.stderr[-800:]
@@ -146,8 +145,8 @@ def test_a_hook_survives_a_working_directory_that_shadows_the_stdlib(tmp_path: P
 
 def test_every_subprocess_in_the_hooks_detaches_stdin():
     """A child that inherits a stdio server's stdin stalls by the full timeout."""
-    root = ENGINE / "windvane"
-    files = list((root / "hooks").glob("*.py")) + [root / f"{n}.py" for n in (
+    root = REPO / "windvane"
+    files = list((root / "events").glob("*.py")) + [root / f"{n}.py" for n in (
         "pressure", "stall", "milestones", "compliance", "goal", "capture", "paths", "precheck",
         "hot_reader", "storage", "proc_lock", "config", "repo_state", "transcript", "alerts", "procs", "report")]
     offenders = []
@@ -161,7 +160,7 @@ def test_every_subprocess_in_the_hooks_detaches_stdin():
 
 
 def test_the_dropped_modules_left_no_code_path_in_the_hooks():
-    src = "\n".join(p.read_text(encoding="utf-8") for p in (ENGINE / "windvane" / "hooks").glob("*.py"))
+    src = "\n".join(p.read_text(encoding="utf-8") for p in (REPO / "windvane" / "events").glob("*.py"))
     for gone in ("rotation", "outcomes", "predictive", "commitments", "reflect", "scope_guard",
                  "get_scope_status", "take_pending_text", "search_spiral", "scout_search", "windvane.run "):
         assert gone not in src, gone
@@ -252,7 +251,7 @@ def test_counts_name_their_project():
 
 def test_loop_warnings_are_a_code_signal():
     for p, want in (("docs/plan.md", False), ("README.md", False), ("config.json", False), ("notes.txt", False),
-                    ("pyproject.toml", False), ("nb.ipynb", False), ("engine/windvane/stall.py", True),
+                    ("pyproject.toml", False), ("nb.ipynb", False), ("windvane/stall.py", True),
                     ("src/app.ts", True), ("game/Main.luau", True), ("tools/reindex.ps1", True), ("lib.rs", True)):
         assert common._is_code_file(p) is want, p
 
@@ -368,8 +367,8 @@ def test_a_passing_targeted_run_through_the_hook_records_its_files(tmp_path: Pat
 
 
 def test_rule_context_sees_approval_and_session_created_paths():
-    from windvane.hooks.post_tool import _note_created_paths
-    from windvane.hooks.pre_tool import _rule_context
+    from windvane.events.post_tool import _note_created_paths
+    from windvane.events.pre_tool import _rule_context
 
     st: dict = {"last_prompt": "approved, delete the scratch dir"}
     _note_created_paths(st, [{"tool_name": "Bash", "tool_input": {"command": "mkdir -p /w/app/.scratch/tmpwork"}},
@@ -483,6 +482,21 @@ def test_the_rules_block_says_how_many_it_left_out():
     assert all(len(line) <= 2 + 2 + 3 + 120 + 2 for line in out[1:6])
     few = common._rules_block("/w/app", {"entries": rules[:5]})
     assert len(few) == 6 and "more" not in few[-1]
+    # A detector-backed rule is enforced on tool calls, so it is shown first and marked.
+    rules[7] = {"id": "r7", "category": "rule", "content": "never rm", "detector": {"tools": ["Bash"], "command": r"\brm\b"}}
+    first = common._rules_block("/w/app", {"entries": rules})[1]
+    assert first == "  [r7] [detector] never rm"
+
+
+def test_the_pre_edit_mistakes_put_the_projects_own_first():
+    mem = {"entries": [
+        {"id": "m-other", "category": "mistake", "content": "MISTAKE: dropped the index in db.py",
+         "created_at": 200, "_inherited": True, "related_files": ["/w/other/db.py"]},
+        {"id": "m-own", "category": "mistake", "content": "MISTAKE: forgot the migration for db.py",
+         "created_at": 100, "_inherited": True, "related_files": ["/w/app/db.py"]},
+    ]}
+    assert common._file_mistakes(mem, "/w/app/db.py")[0].startswith("dropped")  # newest first, no project
+    assert common._file_mistakes(mem, "/w/app/db.py", "/w/app")[0].startswith("forgot")  # the project's own first
 
 
 def test_the_full_restore_shows_files_relative_to_the_records_project(tmp_path: Path):
@@ -823,7 +837,7 @@ def test_pre_compact_banks_the_draft_to_the_ring(tmp_path: Path, monkeypatch):
     _run("pre_compact_json", {"session_id": sid, "trigger": "auto", "transcript_path": str(t), "cwd": str(proj)})
     entry = _latest(tmp_path / "store")
     assert (entry.get("kind"), entry.get("trigger"), entry.get("session_id")) == ("auto", "auto", sid)
-    from windvane.hooks.compact import _precompact_handoff
+    from windvane.events.compact import _precompact_handoff
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -837,7 +851,7 @@ def test_pre_compact_banks_the_draft_to_the_ring(tmp_path: Path, monkeypatch):
 
 
 def test_the_search_pattern_is_read_from_the_command():
-    from windvane.hooks.post_tool import _failure_is_empty_search, _search_query
+    from windvane.events.post_tool import _failure_is_empty_search, _search_query
 
     assert _search_query('rg -n "AliasRegistery" src') == "AliasRegistery"
     assert _search_query("grep -rn --include=*.py resolve_alais .") == "resolve_alais"
@@ -1015,5 +1029,12 @@ def test_a_milestone_task_close_and_a_plan_approval_inject_at_once(tmp_path: Pat
     sid = "s-ms"
     out = _run("post_milestone_json", {"session_id": sid, "tool_name": "ExitPlanMode", "tool_input": {}})
     assert _ctx(out)
+    # A task close waits for its turn to end: the save usually follows the
+    # TaskUpdate in the same turn. The nudge comes with the next prompt when
+    # the turn ended without one.
     out = _run("post_milestone_json", {"session_id": sid, "tool_name": "TaskUpdate", "tool_input": {"status": "completed", "subject": "wire the CLI"}})
-    assert "wire the CLI" in _ctx(out)
+    assert "wire the CLI" not in _ctx(out)
+    time.sleep(0.01)
+    _run("stop_json", {"session_id": sid, "cwd": str(proj), "hook_event_name": "Stop", "last_assistant_message": "Still waiting.", "stop_hook_active": False})
+    out = _run("prompt_json", {"session_id": sid, "cwd": str(proj), "hook_event_name": "UserPromptSubmit", "prompt": "go on"})
+    assert "wire the CLI" in _ctx(out) and "marked a task done" in _ctx(out)

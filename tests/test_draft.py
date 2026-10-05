@@ -18,6 +18,12 @@ def _store(tmp_path, monkeypatch):
     monkeypatch.setenv("WINDVANE_NO_DAEMON", "1")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    # The draft points the hook modules at the session under test
+    # (common._session_id); put the value back so another file's tests do
+    # not run as this session.
+    from windvane.events import common
+
+    monkeypatch.setattr(common, "_session_id", getattr(common, "_session_id", ""), raising=False)
     return store
 
 
@@ -138,7 +144,7 @@ def test_the_draft_reads_the_previous_record_the_live_chain_and_the_hook_state(t
 
     rec = d.draft(str(proj), sid, str(tp), state)
     assert rec["task_description"] == "Phase 2 brief CLI"
-    assert rec["completed_steps"] == ["commit: draft: the recorder fills the record", "the compact hook",
+    assert rec["completed_steps"] == ["agents hook", "commit: draft: the recorder fills the record", "the compact hook",
                                       "tests: 2 runs, last passed", "Phase 3 draft built"]
     assert rec["pending_steps"] == ["wire the CLI", "smoke test"]
     assert rec["files_involved"] == [str(proj / "src" / "draft.py"), str(proj / "src" / "cli.py")]
@@ -148,7 +154,7 @@ def test_the_draft_reads_the_previous_record_the_live_chain_and_the_hook_state(t
     assert rec["metadata"]["draft_sources"] == {
         "task_description": "previous checkpoint",
         "current_step": "closing reply",
-        "completed_steps": "task list+commits+hook state",
+        "completed_steps": "previous checkpoint+task list+commits+hook state",
         "pending_steps": "task list+previous checkpoint",
         "files_involved": "transcript edits",
         "key_decisions": "hook state",
@@ -156,6 +162,19 @@ def test_the_draft_reads_the_previous_record_the_live_chain_and_the_hook_state(t
         "handoff_context_needed": "previous checkpoint",
         "handoff_warnings": "previous checkpoint",
     }
+
+
+def test_a_message_relayed_by_another_agent_is_never_the_first_prompt(tmp_path):
+    from windvane import draft as d
+
+    tp = tmp_path / "relay.jsonl"
+    recs = [
+        _rec("u0", None, "user", 'Another Claude session sent a message:\n<teammate-message teammate_id="port-hooks">seam names</teammate-message>'),
+        _rec("a0", "u0", "assistant", "Noted."),
+        _rec("u1", "a0", "user", "Port the hooks to the new engine"),
+    ]
+    tp.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    assert d.read_transcript(str(tp))["first_prompt"] == "Port the hooks to the new engine"
 
 
 def test_with_nothing_to_carry_the_first_prompt_is_the_task(tmp_path, monkeypatch):
@@ -289,7 +308,8 @@ def test_a_title_older_than_the_session_is_redrafted_after_a_compaction(tmp_path
 # ── banking and the CLI ─────────────────────────────────────────────────────
 
 
-def test_bank_writes_an_automatic_ring_entry_and_summary_line(tmp_path, monkeypatch):
+def test_a_compact_now_bank_is_a_deliberate_ring_entry_with_a_summary_line(tmp_path, monkeypatch):
+    from windvane import checkpoints as ck
     from windvane import draft as d
 
     sid = "aaaaaaaa-0000-4000-8000-0000000000d4"
@@ -300,12 +320,57 @@ def test_bank_writes_an_automatic_ring_entry_and_summary_line(tmp_path, monkeypa
     monkeypatch.setattr(d, "work_project_of", lambda project_dir, state=None: project_dir)
     rec = d.draft(str(proj), sid, str(tp), {})
     banked = d.bank(rec, sid, trigger="compact_now")
-    assert (banked["kind"], banked["trigger"], banked["session_id"]) == ("auto", "compact_now", sid)
+    assert (banked["kind"], banked["trigger"], banked["session_id"]) == ("manual", "compact_now", sid)
     assert banked["next_steps"] == banked["pending_steps"] == ["wire the CLI", "smoke test"]
     latest = json.loads((ring / "latest_handoff.json").read_text(encoding="utf-8"))
     assert latest["created"] == banked["created"] and latest["summary"] == SUMMARY
+    # Deliberate: in the history too, newest, as the compaction banner's
+    # own-session pick reads it.
+    assert ck.read_history([ring])[0]["created"] == banked["created"]
     line = d.summary_line(banked)
     assert line.startswith("Banked the drafted checkpoint (compact_now): Phase 2 brief CLI") and "2 pending" in line
+
+
+def test_the_hooks_bank_stays_an_automatic_entry(tmp_path, monkeypatch):
+    from windvane import checkpoints as ck
+    from windvane import draft as d
+
+    sid = "aaaaaaaa-0000-4000-8000-0000000000d5"
+    proj, ring, entry = _project_with_ring(tmp_path, sid)
+    tp = _session_transcript(tmp_path, proj)
+    _context(monkeypatch)
+    _own_previous(monkeypatch, entry)
+    monkeypatch.setattr(d, "work_project_of", lambda project_dir, state=None: project_dir)
+    banked = d.bank(d.draft(str(proj), sid, str(tp), {}), sid)
+    assert (banked["kind"], banked["trigger"]) == ("auto", "bank")
+    # The pointer moved (the history's manual entry is older), the history did not grow.
+    history = ck.read_history([ring])
+    assert [h["kind"] for h in history if h["created"] == banked["created"]] == ["auto"]
+    assert sum(1 for h in history if h["kind"] == "manual") == 1
+
+
+def test_a_bank_for_a_project_the_store_has_not_met_registers_its_ring(tmp_path, monkeypatch):
+    from windvane import checkpoints as ck
+    from windvane import draft as d
+    from windvane.store import MemoryStore
+
+    sid = "aaaaaaaa-0000-4000-8000-0000000000d6"
+    proj, ring, entry = _project_with_ring(tmp_path, sid)
+    fresh = tmp_path / "fresh"
+    (fresh / "src").mkdir(parents=True)
+    (fresh / "pyproject.toml").write_bytes(b"[project]\nname = 'fresh'\n")
+    assert ck.project_ring_dir(str(fresh)) is None
+    tp = _session_transcript(tmp_path, proj)
+    _context(monkeypatch)
+    _own_previous(monkeypatch, entry)
+    monkeypatch.setattr(d, "work_project_of", lambda project_dir, state=None: project_dir)
+    rec = d.draft(str(proj), sid, str(tp), {})
+    rec["metadata"]["project_path"] = str(fresh)
+    banked = d.bank(rec, sid, trigger="compact_now")
+    fresh_ring = MemoryStore()._project_dir(MemoryStore()._normalize_path(str(fresh)))
+    assert ck.project_ring_dir(str(fresh)) == fresh_ring
+    latest = json.loads((fresh_ring / "latest_handoff.json").read_text(encoding="utf-8"))
+    assert latest["created"] == banked["created"]
 
 
 def test_the_cli_prints_the_draft_as_json(tmp_path, monkeypatch, capsys):
@@ -323,7 +388,7 @@ def test_the_cli_prints_the_draft_as_json(tmp_path, monkeypatch, capsys):
 
 def test_the_hooks_own_session_pick_feeds_the_draft(tmp_path, monkeypatch):
     """End to end with the hooks port's ``_own_session_checkpoint``."""
-    pytest.importorskip("windvane.hooks.common", reason="_own_session_checkpoint is the hooks port's")
+    pytest.importorskip("windvane.events.common", reason="_own_session_checkpoint is the hooks port's")
     from windvane import draft as d
 
     sid = "aaaaaaaa-0000-4000-8000-0000000000e1"

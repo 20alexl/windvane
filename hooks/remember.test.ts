@@ -40,7 +40,7 @@ test('/remember stores the selection as a decision through the engine', async ($
   ])
   expect(runs[0]?.init?.stdin).toBe('Use sqlite for the cache, not redis.')
   expect(runs[0]?.init?.env?.WINDVANE_DIR).toBe(STORE)
-  expect(runs[0]?.init?.env?.PYTHONPATH?.endsWith('/engine')).toBe(true)
+  expect(runs[0]?.init?.env?.PYTHONPATH?.endsWith('/windvane')).toBe(true)
 
   // The engine's duplicate check answers.
   reply = ran('{"stored": false, "id": "abc123", "project": "e:/demo/proj", "message": "Duplicate of existing memory (id=abc123)"}')
@@ -56,9 +56,9 @@ test('/remember stores the selection as a decision through the engine', async ($
 
   // Nothing selected: nothing runs.
   selection = undefined
-  expect((await $.command.run({ command: 'remember', ...RUN })).text).toBe('Nothing is selected.')
+  expect((await $.command.run({ command: 'remember', ...RUN })).text).toBe('Nothing is selected. Select text in the transcript, then run /remember.')
   selection = { text: '   ' }
-  expect((await $.command.run({ command: 'remember', ...RUN })).text).toBe('Nothing is selected.')
+  expect((await $.command.run({ command: 'remember', ...RUN })).text).toBe('Nothing is selected. Select text in the transcript, then run /remember.')
   expect(runs).toHaveLength(4)
 })
 

@@ -13,7 +13,7 @@ import pytest
 
 from windvane import migrate
 
-ENGINE = Path(__file__).resolve().parents[1] / "engine"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -133,7 +133,7 @@ def test_the_default_destination_is_the_configured_store(tmp_path: Path):
 
 def test_the_cli_prints_one_json_line(tmp_path: Path):
     src = _engram_store(tmp_path, {"e:/w/a": "h1"})
-    env = {**os.environ, "PYTHONPATH": str(ENGINE), "WINDVANE_DIR": str(tmp_path / "dst"), "WINDVANE_NO_DAEMON": "1"}
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "WINDVANE_DIR": str(tmp_path / "dst"), "WINDVANE_NO_DAEMON": "1"}
 
     def run(*args):
         r = subprocess.run([sys.executable, "-m", "windvane.migrate", *args], capture_output=True, text=True,

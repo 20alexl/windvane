@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-ENGINE = Path(__file__).resolve().parent.parent / "engine"
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +130,7 @@ def test_a_rule_an_ancestor_already_has_is_skipped_and_adopts_the_detector(tmp_p
 
 def test_the_seed_cli_prints_one_json_line(tmp_path, _store):
     proj = _project(tmp_path)
-    env = dict(os.environ, WINDVANE_DIR=str(_store), WINDVANE_NO_DAEMON="1", PYTHONPATH=str(ENGINE), PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, WINDVANE_DIR=str(_store), WINDVANE_NO_DAEMON="1", PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8")
     run = subprocess.run(
         [sys.executable, "-m", "windvane.rules", "seed", "--project", str(proj), "--strict"],
         capture_output=True, env=env, timeout=120,

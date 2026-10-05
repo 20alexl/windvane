@@ -39,8 +39,8 @@ from windvane.mining.session_index import (
     merge_session_meta,
 )
 
-ENGINE = Path(__file__).resolve().parents[1] / "engine"
-MINING = ENGINE / "windvane" / "mining"
+ROOT = Path(__file__).resolve().parents[1]
+MINING = ROOT / "windvane" / "mining"
 
 
 def _has(module: str, *attrs: str) -> bool:
@@ -66,7 +66,7 @@ def _isolated(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WINDVANE_NO_DAEMON", "1")
     monkeypatch.setenv("WINDVANE_DIR", str(tmp_path / "store"))
     monkeypatch.delenv("WINDVANE_SESSION_RETENTION_DAYS", raising=False)
-    monkeypatch.delenv("WINDVANE_SEMANTIC", raising=False)
+    monkeypatch.setenv("WINDVANE_SEMANTIC", "0")
 
 
 # ── synthetic transcripts ────────────────────────────────────────────────
@@ -344,7 +344,8 @@ def test_the_sharded_embedding_store(tmp_path: Path, monkeypatch):
 
 def test_without_the_semantic_tier_search_is_keyword_only(tmp_path: Path, monkeypatch):
     """The daemon's clients answer empty without the tier, so the store
-    keeps no vectors and hybrid search still answers by keyword."""
+    keeps no vectors and hybrid search still answers by keyword. The tier
+    is off here whatever this machine's settings say (conftest)."""
     storage = tmp_path / "store"
     (storage / "projects" / "h1").mkdir(parents=True)
     (storage / "manifest.json").write_text(json.dumps({"projects": {search._normalize_path("/p"): {"hash": "h1"}}}))
@@ -359,6 +360,90 @@ def test_without_the_semantic_tier_search_is_keyword_only(tmp_path: Path, monkey
     assert semantic.numpy_module() is None
     index = SimpleNamespace(sessions={"s": {"user_message_count": 1, "assistant_message_count": 0}})
     assert search.build_session_embeddings("/p", index, str(storage)) == 0  # no tier, no vectors
+
+
+def test_keyword_search_matches_whole_words_weighted_by_rarity(tmp_path: Path):
+    """"store" is not inside "restore", "the" scores nothing, and a word
+    found in one chunk outweighs one found in both: measured on a 200k-chunk
+    index, the substring scorer let a median of 267 chunks outscore the
+    right one, and unweighted whole words tied nine at the top."""
+    storage = tmp_path / "store"
+    (storage / "projects" / "h1").mkdir(parents=True)
+    (storage / "manifest.json").write_text(json.dumps({"projects": {search._normalize_path("/p"): {"hash": "h1"}}}))
+    chunk = {"session_id": "s", "jsonl_file": "s.jsonl", "msg_offset": 1, "timestamp": "2026-09-01T00:00:00Z", "msg_type": "user", "related_files": []}
+    (storage / "projects" / "h1" / "session_embeddings_index.json").write_text(json.dumps({
+        "version": 2, "model": "none", "shards": {"2026-09": {"chunks": [
+            dict(chunk, preview="the restore of the alias from the ring"),
+            dict(chunk, preview="moved the alias store to sqlite"),
+        ]}}, "session_progress": {}}))
+    hits = search.search_sessions("/p", "the alias store", method="keyword", windvane_storage_dir=str(storage))
+    assert [h.chunk_text for h in hits] == ["moved the alias store to sqlite", "the restore of the alias from the ring"]
+    assert hits[0].score == 1.0  # "the" is not a query word
+    assert 0.2 < hits[1].score < 0.5  # "alias" is in both chunks, so it is worth less than "store"
+    # An identifier-like query word is found inside a prefixed name.
+    ident = search.search_sessions("/p", "compact_now", method="keyword", windvane_storage_dir=str(storage))
+    assert ident == []
+    (storage / "projects" / "h1" / "session_embeddings_index.json").write_text(json.dumps({
+        "version": 2, "model": "none", "shards": {"2026-09": {"chunks": [
+            dict(chunk, preview="the tool mcp__windvane__compact_now answered"),
+            dict(chunk, preview="compact the summary now"),
+        ]}}, "session_progress": {}}))
+    ident = search.search_sessions("/p", "compact_now", method="keyword", windvane_storage_dir=str(storage))
+    assert [h.chunk_text for h in ident] == ["the tool mcp__windvane__compact_now answered"]
+    # A query word with an apostrophe or a hyphen is split the way the previews are.
+    (storage / "projects" / "h1" / "session_embeddings_index.json").write_text(json.dumps({
+        "version": 2, "model": "none", "shards": {"2026-09": {"chunks": [
+            dict(chunk, preview="don't record new memories while sleeping"),
+            dict(chunk, preview="a made-up number in the report"),
+        ]}}, "session_progress": {}}))
+    assert search.search_sessions("/p", "don't record", method="keyword", windvane_storage_dir=str(storage))[0].chunk_text.startswith("don't")
+    assert search.search_sessions("/p", "made-up", method="keyword", windvane_storage_dir=str(storage))[0].chunk_text.startswith("a made-up")
+
+
+def test_a_loaded_index_is_kept_while_its_file_is_unchanged(tmp_path: Path, monkeypatch):
+    """The daemon serves many searches: the index is parsed and tokenized
+    once per file version, and a rewritten file is read again."""
+    storage = tmp_path / "store"
+    (storage / "projects" / "h1").mkdir(parents=True)
+    (storage / "manifest.json").write_text(json.dumps({"projects": {search._normalize_path("/p"): {"hash": "h1"}}}))
+    idx = storage / "projects" / "h1" / "session_embeddings_index.json"
+    chunk = {"session_id": "s", "jsonl_file": "s.jsonl", "msg_offset": 1, "timestamp": "2026-09-01T00:00:00Z", "msg_type": "user", "related_files": []}
+    idx.write_text(json.dumps({"version": 2, "model": "none", "shards": {"2026-09": {"chunks": [dict(chunk, preview="the alias store moved to sqlite")]}}, "session_progress": {}}))
+    loads = []
+    real = json.loads
+    # The manifest is read on every call; only parses of the index itself count.
+    monkeypatch.setattr(search.json, "loads", lambda s, *a, **k: (loads.append(1) if '"shards"' in s else None, real(s, *a, **k))[1])
+    kw = dict(method="keyword", windvane_storage_dir=str(storage))
+    assert search.search_sessions("/p", "alias store", **kw)[0].chunk_text.endswith("sqlite")
+    assert search.search_sessions("/p", "alias", **kw)[0].chunk_text.endswith("sqlite")
+    assert len(loads) == 1  # the second search read nothing
+    # A month outside since/until is skipped whole; a chunk on the boundary month is filtered by its day.
+    assert search.search_sessions("/p", "alias", since="2026-10-01", **kw) == []
+    assert search.search_sessions("/p", "alias", since="2026-09-02", **kw) == []
+    assert search.search_sessions("/p", "alias", since="2026-09-01", until="2026-09-30", **kw)
+    idx.write_text(json.dumps({"version": 2, "model": "none", "shards": {"2026-09": {"chunks": [dict(chunk, preview="the alias store moved to postgres now")]}}, "session_progress": {}}))
+    assert search.search_sessions("/p", "alias", **kw)[0].chunk_text.endswith("now")
+    assert len(loads) == 2  # the rewritten file was read again
+
+
+def test_an_inherited_index_ranks_hits_that_name_the_sub_project_first(tmp_path: Path):
+    """A sub-project without sessions of its own searches the hub's index,
+    which pools every spoke; a hit naming the spoke ranks above the rest."""
+    storage = tmp_path / "store"
+    (storage / "projects" / "h1").mkdir(parents=True)
+    (storage / "manifest.json").write_text(json.dumps({"projects": {search._normalize_path("/w"): {"hash": "h1"}}}))
+    chunk = {"session_id": "s", "jsonl_file": "s.jsonl", "msg_offset": 1, "timestamp": "2026-09-01T00:00:00Z", "msg_type": "user", "related_files": []}
+    (storage / "projects" / "h1" / "session_embeddings_index.json").write_text(json.dumps({
+        "version": 2, "model": "none", "shards": {"2026-09": {"chunks": [
+            dict(chunk, preview="switch the alias store to sqlite in the hub"),
+            dict(chunk, preview="switch the alias store to sqlite in windvane"),
+        ]}}, "session_progress": {}}))
+    kw = dict(method="keyword", windvane_storage_dir=str(storage))
+    hub = search.search_sessions("/w", "alias store sqlite", **kw)
+    assert [h.chunk_text.rsplit(" ", 1)[-1] for h in hub] == ["hub", "windvane"]  # equal scores, index order
+    spoke = search.search_sessions("/w/windvane", "alias store sqlite", **kw)
+    assert [h.chunk_text.rsplit(" ", 1)[-1] for h in spoke] == ["windvane", "hub"]
+    assert spoke[0].score > spoke[1].score
 
 
 def _git_repo_with_a_reason(tmp_path: Path) -> Path:
@@ -702,7 +787,7 @@ def test_a_post_session_run_right_after_another_becomes_a_live_tick(tmp_path: Pa
     assert bg.start_mining_background("e:/w", mode="post_session", windvane_storage_dir=str(store))
     cmd, kw = spawned[-1]
     assert cmd[cmd.index("--mode") + 1] == "live"
-    assert cmd[1:3] == ["-m", "windvane.mining.background"] and Path(kw["cwd"]) == ENGINE
+    assert cmd[1:3] == ["-m", "windvane.mining.background"] and Path(kw["cwd"]) == ROOT
     (store / "mining_status.json").write_text(json.dumps({"status": "completed", "mode": "post_session", "completed": time.time() - 7200}), encoding="utf-8")
     bg.start_mining_background("e:/w", mode="post_session", windvane_storage_dir=str(store))
     assert spawned[-1][0][spawned[-1][0].index("--mode") + 1] == "post_session"
@@ -727,7 +812,7 @@ def test_only_one_of_several_miners_started_together_gets_the_lock(tmp_path: Pat
         "print('ACQUIRED' if bg._acquire_lock() else 'blocked')\n"
         "time.sleep(1)\n"
     )
-    env = dict(os.environ, WINDVANE_DIR=str(store), PYTHONPATH=str(ENGINE))
+    env = dict(os.environ, WINDVANE_DIR=str(store), PYTHONPATH=str(ROOT))
     procs = [subprocess.Popen([sys.executable, "-c", child], env=env, stdout=subprocess.PIPE, text=True) for _ in range(4)]
     time.sleep(1.5)
     (store / "go").write_text("1")

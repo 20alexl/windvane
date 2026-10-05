@@ -119,6 +119,25 @@ def _save(guard, **kw):
     )
 
 
+def test_a_first_save_registers_the_project_and_files_in_its_ring(tmp_path):
+    """Unmocked: a project nothing was remembered about has no manifest row
+    yet; its first checkpoint registers it and lands in its own ring, not in
+    the global folder alone."""
+    from windvane import checkpoints as ck
+
+    proj = tmp_path / "ws" / "fresh"
+    proj.mkdir(parents=True)
+    assert ck.project_ring_dir(str(proj)) is None
+    resp = ck.ContextGuard().save_checkpoint(
+        task_description="First task", current_step="step 1", completed_steps=[], pending_steps=["step 2"],
+        files_involved=["a.py"], project_path=str(proj),
+    )
+    assert "Filed under fresh." in resp.reasoning
+    ring = ck.project_ring_dir(str(proj))
+    assert ring is not None and (ring / ck.LATEST_FILENAME).exists()
+    assert (ck.global_ring_dir() / ck.LATEST_FILENAME).exists()
+
+
 def test_a_saved_record_carries_one_name_per_concept(tmp_path, monkeypatch):
     ring = tmp_path / "ring"
     guard = _guard_with_ring(tmp_path, monkeypatch, ring)
@@ -261,6 +280,16 @@ def test_a_save_stamps_the_commit_and_a_restore_says_what_moved(tmp_path, monkey
     _git(repo, "commit", "-qam", "second")
     text = guard.restore_checkpoint(None, project_path=str(repo)).to_formatted_string()
     assert "**Task:** Wire the parser" in text and "1 commit" in text.lower()
+    assert f"HEAD {_git(repo, 'rev-parse', '--short', 'HEAD').stdout.strip()}, clean tree" in text
+    # The working tree now: the first thing a resumed session loses.
+    (repo / "a.py").write_text("x = 3\n")
+    (repo / "b.py").write_text("y = 1\n")
+    from windvane import repo_state
+
+    assert repo_state.tree_text(repo_state.tree(str(repo))).endswith(", 1 modified, 1 untracked")
+    assert repo_state.tree(str(tmp_path / "nowhere")) is None and repo_state.tree_text(None) == ""
+    text = guard.restore_checkpoint(None, project_path=str(repo)).to_formatted_string()
+    assert "1 modified, 1 untracked" in text
 
 
 # ── hygiene ─────────────────────────────────────────────────────────────────
@@ -337,7 +366,7 @@ def _rewound(tmp_path):
 
 
 def test_restore_prefers_this_sessions_live_checkpoint(tmp_path, monkeypatch):
-    common = pytest.importorskip("windvane.hooks.common", reason="_own_session_checkpoint is the hooks port's")
+    common = pytest.importorskip("windvane.events.common", reason="_own_session_checkpoint is the hooks port's")
     tc = pytest.importorskip("windvane.transcript")
     from windvane import checkpoints as ck
 

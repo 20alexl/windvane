@@ -41,7 +41,7 @@ test('the brief heads the subagent prompt, file mistakes included', async ($, on
   expect(runs.length).toBe(1)
   expect(runs[0]!.argv.slice(0, 3)).toEqual(['C:/venv/python.exe', '-m', 'windvane.brief'])
   // The engine package inside the plugin, the store and the session ride in env.
-  expect(runs[0]!.env?.PYTHONPATH?.endsWith('/engine')).toBe(true)
+  expect(runs[0]!.env?.PYTHONPATH?.endsWith('/windvane')).toBe(true)
   expect(runs[0]!.env?.WINDVANE_DIR).toBe('C:/tmp/windvane-agents-store')
   expect(runs[0]!.env?.CLAUDE_CODE_SESSION_ID).toBe(SID)
   expect(runs[0]!.argv).toContain('--json')

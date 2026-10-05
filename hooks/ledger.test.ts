@@ -56,8 +56,10 @@ test('two turns accumulate under the project and day, and the command prints the
     commands.push(e.name)
     return { value: { command: e.name } }
   })
-  // The engine hands the cwd in the host's spelling.
-  on('session.cwd', () => ({ value: 'E:\\demo\\proj' }))
+  // The engine hands the cwd in the host's spelling. By the time the turns
+  // end a shell cd has moved it: the ledger keeps the folder the session was
+  // opened in.
+  on('session.cwd', () => ({ value: 'E:\\demo\\proj\\elsewhere' }))
   on('session.usage', () => ({
     value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: cost } },
   }))
@@ -82,6 +84,9 @@ test('two turns accumulate under the project and day, and the command prints the
   await $.turn.complete(turnEnd([9_999, 9_999, 9_999, 9_999], 'agent-1'))
   cost = 1.75
   await $.turn.complete(turnEnd([200, 30, 2_000, 0]))
+  // A turn that counted nothing (no usage): no entry, not even a turn.
+  const { usage: _none, ...counted } = turnEnd([0, 0, 0, 0])
+  await $.turn.complete(counted)
 
   expect(store[`ledger:e:/demo/proj:${today}`]).toEqual({
     input: 300,

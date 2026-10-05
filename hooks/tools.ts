@@ -13,6 +13,11 @@
 //    a body that is not an answer), to `python -m windvane.tools` with the
 //    same request on stdin.
 //
+// `env` carries the session id (the engine keys the draft and the hook
+// state by it) and the session's working directory as CLAUDE_PROJECT_DIR:
+// the daemon runs in the plugin folder, and a call that names no project
+// must be filed under the session's, never the daemon's.
+//
 // Either answers `{ text, isError, ms }`. The model reads `text`; an error
 // is returned as a deny, which the model receives as an error result with
 // the reason. A daemon request that timed out may still have run, so it is
@@ -90,7 +95,7 @@ const MEMORY_FIELDS = {
   reason: { type: 'string', description: 'add_rule / promote: why the rule exists.' },
   query: { type: 'string', description: 'search / archive_search: what to look for.' },
   memory_id: { type: 'string', description: 'modify / delete / promote / restore / acknowledge_mistake / set_detector: the id shown in brackets.' },
-  limit: { type: 'integer', description: 'recall / recent / search / archive_search / list_mistakes: how many.' },
+  limit: { type: 'integer', description: 'recall / recent / search / archive_search / list_rules / list_mistakes: how many.' },
   detector: {
     type: 'object',
     description:
@@ -257,7 +262,7 @@ async function askProcess($: EngineInterface, python: string, store: string, req
   try {
     run = await $.process.run([python, '-m', 'windvane.tools'], {
       stdin: JSON.stringify(request),
-      env: engineEnv($.plugin.root, store, sessionId),
+      env: { ...engineEnv($.plugin.root, store, sessionId), ...request.env },
       timeoutMs: TOOL_TIMEOUT_MS,
     })
   } catch (err) {
@@ -277,7 +282,11 @@ async function serve($: EngineInterface, name: ToolShort, e: Record<string, unkn
   // The handlers key the recorder's draft and the session state by the
   // session id; a process the mod starts has no session environment.
   const sessionId = await $.session.id()
-  const request: Request = { tool: name, arguments: args, env: { CLAUDE_CODE_SESSION_ID: sessionId, WINDVANE_DIR: store } }
+  const request: Request = {
+    tool: name,
+    arguments: args,
+    env: { CLAUDE_CODE_SESSION_ID: sessionId, WINDVANE_DIR: store, CLAUDE_PROJECT_DIR: await $.session.cwd() },
+  }
 
   let reply: Reply
   const asked = await askDaemon($, store, request)
