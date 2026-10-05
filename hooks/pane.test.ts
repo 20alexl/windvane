@@ -108,6 +108,9 @@ test('/windvane shows the checkpoint, the rules and the touched file mistakes', 
     opened.push(e)
     return { value: { isPlaced: true as const } }
   })
+  // The pane asks for rows inline, takes the keys (the arrows scroll it) and
+  // closes on Escape.
+  const openArgs = () => opened[0] as { rows?: number; focus?: true; closeOnEscape?: true }
   on('ui.log', () => ({ value: undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('tool.call', () => ({ result: { content: [{ type: 'text', text: 'ok' }] } }))
@@ -119,6 +122,9 @@ test('/windvane shows the checkpoint, the rules and the touched file mistakes', 
   // Before any touch: no file named.
   await $.command.run({ command: 'windvane', ...RUN })
   expect(opened).toHaveLength(1)
+  expect(openArgs().rows).toBe(24)
+  expect(openArgs().focus).toBe(true)
+  expect(openArgs().closeOnEscape).toBe(true)
   const first = await $.ui.mount({ plugin: 'windvane', surface: 'terminal', ...PANE })
   expect(await first.find({ type: 'Text', text: 'no file touched yet' })).toBeDefined()
   await first.unmount()
@@ -133,25 +139,29 @@ test('/windvane shows the checkpoint, the rules and the touched file mistakes', 
     const ui = await $.ui.mount({ plugin: 'windvane', surface, ...PANE })
     const text = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
 
-    // The checkpoint whole, from the project's ring (newer than the root's).
-    expect(text).toContain('manual · 5m ago · task_7 · E:/demo/proj')
-    expect(text).toContain('Task: Port the index to the new schema')
-    expect(text).toContain('Current step: Step 3: migration test')
-    expect(text).toContain('Completed (2):\n    - Step 1: schema\n    - Step 2: port')
-    expect(text).toContain('Pending (2):\n    - Step 3: migration test\n    - Step 4: docs')
-    expect(text).toContain('Files: src/db.py, tests/test_db.py')
-    expect(text).toContain('Warnings:\n    ! Do not touch legacy.py')
-    expect(text).toContain('Context needed:\n    ! docs/schema.md')
-    expect(text).toContain('Handoff note: Index ported; the migration test is next')
-    expect(text).toContain('Goal: ship the schema')
+    // The summary row: what the pane holds (no pressure figures in this test).
+    expect(text).toContain('2 rules · 3 mistakes for db.py')
+
+    // The checkpoint whole, from the project's ring (newer than the root's):
+    // a labelled column, one item per row, paths by their last segment.
+    expect(text).toContain('Checkpoint · manual · 5m ago · task_7 · proj')
+    expect(text).toContain('  Task       Port the index to the new schema')
+    expect(text).toContain('  Step       Step 3: migration test')
+    expect(text).toContain('  Done 2     Step 1: schema\n             Step 2: port')
+    expect(text).toContain('  Pending 2  Step 3: migration test\n             Step 4: docs')
+    expect(text).toContain('  Files 2    db.py, test_db.py')
+    expect(text).toContain('  Warnings 1 Do not touch legacy.py')
+    expect(text).toContain('  Needed 1   docs/schema.md')
+    expect(text).toContain('  Handoff    Index ported; the migration test is next')
+    expect(text).toContain('  Goal       ship the schema')
     expect(text).not.toContain('older root work')
 
     // The rules: the project's own first, the inherited one after, one copy per id.
-    expect(text).toContain('Rules (2, e:/demo/proj)\n  [r-own] run the targeted tests only\n  [r-root] never push without the word')
+    expect(text).toContain('Rules · 2 · proj\n  [r-own] run the targeted tests only\n  [r-root] never push without the word')
     expect(text).not.toContain('stale root copy')
 
     // The mistakes for db.py, newest first: by name, by MISTAKE: prefix, by related file.
-    expect(text).toContain('Mistakes for e:/demo/proj/src/db.py (3)')
+    expect(text).toContain('Mistakes · 3 · db.py')
     expect(text).toContain('  [m-new] db.py: forgot the index on user_id\n  [m-file] the pool closed early\n  [m-old] src/db.py dropped the migration')
     expect(text).not.toContain('archived one')
     expect(text).not.toContain('other.py')
@@ -170,7 +180,7 @@ test('/windvane shows the checkpoint, the rules and the touched file mistakes', 
   // Refresh reads the store again.
   disk[`${STORE}/projects/proj0001/latest_handoff.json`] = JSON.stringify({ ...RING_PROJ, current_step: 'Step 4: docs' })
   await ui.press({ key: 'windvane-refresh' })
-  expect(await ui.find({ type: 'Text', text: 'Current step: Step 4: docs' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Step       Step 4: docs' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -189,8 +199,8 @@ test('an empty store says so instead of failing', async ($, on) => {
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'windvane', surface, ...PANE })
     const text = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
-    expect(text).toContain('Checkpoint\n  none in the ring')
-    expect(text).toContain('Rules (0)\n  none')
+    expect(text).toContain('Checkpoint · none in the ring')
+    expect(text).toContain('Rules · 0\n  none')
     await ui.unmount()
   }
 })

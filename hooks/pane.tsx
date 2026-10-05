@@ -38,6 +38,30 @@ const bandHidden = atom({ plugin: 'windvane', key: 'bandHidden' } as const, fals
 const PANE = 'windvane'
 const TITLE = 'windvane'
 const TOUCH_TOOLS = new Set(['Edit', 'Write', 'Read', 'MultiEdit', 'NotebookEdit'])
+// The body rows asked for while the pane sits inline above the prompt: the
+// summary, the checkpoint and the first rules without scrolling.
+const PANE_ROWS = 24
+// The label column of the checkpoint's rows, and how many items of a list
+// are shown before "and N more".
+const LABEL = 11
+const LIST_ROWS = 6
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text
+}
+
+function basename(path: string): string {
+  const parts = path.replace(/\\/g, '/').replace(/\/+$/, '').split('/')
+  return parts[parts.length - 1] || path
+}
+
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
 
 // Registered at session.start by register.ts.
 export const PANE_COMMAND = {
@@ -106,7 +130,9 @@ async function showBand($: EngineInterface): Promise<void> {
 export function registerPane(on: On): void {
   on('command.run', { command: 'windvane' }, async $ => {
     await refresh($)
-    await $.ui.open({ id: PANE, title: TITLE })
+    // Tall enough inline for the summary, the checkpoint and the first rules;
+    // the keys go to the pane so the arrows scroll it, and Escape closes it.
+    await $.ui.open({ id: PANE, title: TITLE, rows: PANE_ROWS, focus: true, closeOnEscape: true })
     return { text: 'windvane pane opened.' }
   })
 
@@ -132,57 +158,77 @@ export function registerPane(on: On): void {
     const hidden = await read($, bandHidden)
     const now = Date.now()
 
+    // The body's width, so prose that may take two rows is cut after them;
+    // every other row is cut at the edge by the surface, with an ellipsis.
+    const width = Math.max(24, e.props.bodyColumns || 80)
     const rows: RenderElement[] = []
     let n = 0
-    const line = (text: string, style: { bold?: boolean; dimColor?: boolean; color?: string } = {}) =>
+    type Style = { bold?: boolean; dimColor?: boolean }
+    const row = (text: string, style: Style = {}) =>
       rows.push(
-        <Text key={`l${n++}`} wrap="wrap" {...style}>
+        <Text key={`l${n++}`} wrap="truncate-end" {...style}>
           {text}
         </Text>,
       )
+    const gap = () => row(' ')
+    const pad = (label: string) => label.padEnd(LABEL)
+    // A labelled row of prose: up to two rows, then an ellipsis.
+    const prose = (label: string, text: string) =>
+      rows.push(
+        <Text key={`l${n++}`} wrap="wrap">
+          {`  ${pad(label)}${clip(oneLine(text), 2 * width - LABEL - 4)}`}
+        </Text>,
+      )
+    // A labelled list: the count in the label, one item per row, the first
+    // LIST_ROWS of them.
+    const items = (label: string, list: string[]) => {
+      row(`  ${pad(`${label} ${list.length}`)}${oneLine(list[0] ?? '')}`)
+      for (const s of list.slice(1, LIST_ROWS)) row(`  ${pad('')}${oneLine(s)}`)
+      if (list.length > LIST_ROWS) row(`  ${pad('')}and ${list.length - LIST_ROWS} more`, { dimColor: true })
+    }
 
-    if (figures) line(`ctx ${figures.percent ?? '?'}% · ${ageText(figures.checkpointCreated, now)}${figures.inBand ? ' · checkpoint now' : ''}`, { dimColor: true })
+    // One row of figures: the fill, the checkpoint age, the band, and what
+    // the pane holds below.
+    const summary = [
+      figures ? `ctx ${figures.percent ?? '?'}%` : undefined,
+      figures ? ageText(figures.checkpointCreated, now) : undefined,
+      figures?.inBand ? 'checkpoint now' : undefined,
+      view ? count(view.rules.length, 'rule') : undefined,
+      view?.file ? `${count(view.mistakes.length, 'mistake')} for ${basename(view.file)}` : undefined,
+    ].filter((s): s is string => s !== undefined)
+    if (summary.length) row(summary.join(' · '), { dimColor: true })
 
     if (!view) {
-      line('Nothing read yet: press Refresh.', { dimColor: true })
+      row('Nothing read yet: press Refresh.', { dimColor: true })
     } else {
       const c = view.checkpoint
-      line('Checkpoint', { bold: true })
+      gap()
       if (!c) {
-        line('  none in the ring', { dimColor: true })
+        row('Checkpoint · none in the ring', { bold: true })
       } else {
-        line(`  ${c.kind ?? 'auto'} · ${ageText(c.created, now).replace('ckpt ', '')} ago${c.task_id ? ` · ${c.task_id}` : ''}${c.project_path ? ` · ${c.project_path}` : ''}`, { dimColor: true })
-        if (c.task_description) line(`  Task: ${c.task_description}`)
-        if (c.current_step) line(`  Current step: ${c.current_step}`)
-        if (c.completed.length) {
-          line(`  Completed (${c.completed.length}):`)
-          for (const s of c.completed) line(`    - ${s}`)
-        }
-        if (c.pending.length) {
-          line(`  Pending (${c.pending.length}):`)
-          for (const s of c.pending) line(`    - ${s}`)
-        }
-        if (c.files.length) line(`  Files: ${c.files.join(', ')}`)
-        if (c.warnings.length) {
-          line('  Warnings:')
-          for (const s of c.warnings) line(`    ! ${s}`)
-        }
-        if (c.context_needed.length) {
-          line('  Context needed:')
-          for (const s of c.context_needed) line(`    ! ${s}`)
-        }
-        if (c.handoff) line(`  Handoff note: ${c.handoff}`)
-        if (c.goal) line(`  Goal: ${c.goal}`)
+        const meta = [c.kind ?? 'auto', `${ageText(c.created, now).replace('ckpt ', '')} ago`, c.task_id, c.project_path ? basename(c.project_path) : undefined]
+        row(`Checkpoint · ${meta.filter(Boolean).join(' · ')}`, { bold: true })
+        if (c.task_description) prose('Task', c.task_description)
+        if (c.current_step) prose('Step', c.current_step)
+        if (c.completed.length) items('Done', c.completed)
+        if (c.pending.length) items('Pending', c.pending)
+        if (c.files.length) row(`  ${pad(`Files ${c.files.length}`)}${c.files.map(basename).join(', ')}`)
+        if (c.warnings.length) items('Warnings', c.warnings)
+        if (c.context_needed.length) items('Needed', c.context_needed)
+        if (c.handoff) prose('Handoff', c.handoff)
+        if (c.goal) prose('Goal', c.goal)
       }
 
-      line(`Rules (${view.rules.length}${view.project ? `, ${view.project}` : ''})`, { bold: true })
-      if (!view.rules.length) line('  none', { dimColor: true })
-      for (const r of view.rules) line(`  [${r.id}] ${r.content}`)
+      gap()
+      row(`Rules · ${view.rules.length}${view.project ? ` · ${basename(view.project)}` : ''}`, { bold: true })
+      if (!view.rules.length) row('  none', { dimColor: true })
+      for (const r of view.rules) row(`  [${r.id}] ${oneLine(r.content)}`)
 
-      line(view.file ? `Mistakes for ${view.file} (${view.mistakes.length})` : 'Mistakes', { bold: true })
-      if (!view.file) line('  no file touched yet this session', { dimColor: true })
-      else if (!view.mistakes.length) line('  none', { dimColor: true })
-      for (const m of view.mistakes) line(`  [${m.id}] ${m.content}`)
+      gap()
+      row(view.file ? `Mistakes · ${view.mistakes.length} · ${basename(view.file)}` : 'Mistakes', { bold: true })
+      if (!view.file) row('  no file touched yet this session', { dimColor: true })
+      else if (!view.mistakes.length) row('  none', { dimColor: true })
+      for (const m of view.mistakes) row(`  [${m.id}] ${oneLine(m.content)}`)
     }
 
     return (
