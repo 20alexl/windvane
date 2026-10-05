@@ -274,6 +274,22 @@ def _excerpt(tool_input: Any) -> str:
         return str(ti)[:EXCERPT]
 
 
+RULE_CHARS = 160
+
+
+def _cut_rule(text: str, limit: int = RULE_CHARS) -> str:
+    """A rule's text for a match record: whole when it fits, else cut at the
+    last word boundary before ``limit`` with "..." (a mid-word cut read as
+    "Prefer a t -- command")."""
+    s = " ".join(str(text or "").split())
+    if len(s) <= limit:
+        return s
+    cut = s[: limit - 3]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-") + "..."
+
+
 def record(
     state: dict,
     rules: list[dict],
@@ -305,8 +321,9 @@ def record(
     for h in hits:
         rec = {
             "rule_id": h["rule_id"],
-            "rule": h["rule"][:160],
+            "rule": _cut_rule(h["rule"]),
             "what": h["what"],
+            "note": h.get("note", ""),
             "tool": tool_name,
             "input": _excerpt(tool_input),
             "tool_use_id": key,

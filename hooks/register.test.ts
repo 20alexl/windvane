@@ -19,7 +19,12 @@ function usageAt(tokens: number): SessionUsage {
   return {
     startedAt: 0,
     context: { tokens, window: 1_000_000, percent: Math.round(tokens / 10_000), breakdown: { rawMaxTokens: 750_000 } },
-    rateLimits: [{ kind: 'five_hour', percentUsed: 9, resetsAt: '2026-10-04T06:20:00.000Z' }],
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 9, resetsAt: '2026-10-04T06:20:00.000Z' },
+      { kind: 'seven_day', percentUsed: 30, resetsAt: '2026-10-09T00:00:00.000Z' },
+      // A model-specific weekly window: a kind the flat keys do not name.
+      { kind: 'seven_day_model', percentUsed: 92, resetsAt: '2026-10-08T12:00:00.000Z' },
+    ],
   } as unknown as SessionUsage
 }
 
@@ -98,6 +103,11 @@ test('writes the mirror from usage and compacts in the band only after a save', 
   expect(mirror.total_input_tokens).toBe(100_000)
   expect(mirror.context_window_size).toBe(1_000_000)
   expect(mirror.five_hour_pct).toBe(9)
+  expect(mirror.seven_day_pct).toBe(30)
+  // Every window by kind, the third one included.
+  expect(Object.keys(mirror.rate_limits)).toEqual(['five_hour', 'seven_day', 'seven_day_model'])
+  expect(mirror.rate_limits.seven_day_model).toEqual({ pct: 92, resets_at: Date.parse('2026-10-08T12:00:00.000Z') / 1000 })
+  expect(mirror.rate_limits.five_hour.pct).toBe(9)
   expect(typeof mirror.five_hour_resets_at).toBe('number')
   expect(written[`${STORE}/sessions/${SID}.mod`]).toContain('windvane')
 

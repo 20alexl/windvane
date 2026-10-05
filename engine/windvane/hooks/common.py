@@ -800,6 +800,20 @@ def _own_session_checkpoint(dirs: list, session_id: str, transcript_path: str) -
         return None, []
 
 
+def _display_path(path, project_path: str = "") -> str:
+    """A file as the banner shows it: relative to the record's project when
+    it is under it, else the bare name. A relative path is shown as stored.
+    The stored record keeps the full path."""
+    s = str(path or "")
+    if not s or not os.path.isabs(s):
+        return s
+    norm = s.replace("\\", "/")
+    root = str(project_path or "").replace("\\", "/").rstrip("/")
+    if root and norm.lower().startswith(root.lower() + "/"):
+        return norm[len(root) + 1:]
+    return Path(s).name
+
+
 def _format_restored_full(entry: dict, skipped: "list | None" = None) -> list[str]:
     """The whole checkpoint for the banner after a compaction or on resume:
     every completed and pending step, every file, warning and context note,
@@ -829,7 +843,8 @@ def _format_restored_full(entry: dict, skipped: "list | None" = None) -> list[st
         out.extend(f"    - {s}" for s in pending)
     files = entry.get("files_in_progress") or entry.get("files_involved") or []
     if files:
-        out.append("  Files: " + ", ".join(str(f) for f in files))
+        _pp = entry.get("project_path") or (entry.get("metadata") or {}).get("project_path", "")
+        out.append("  Files: " + ", ".join(_display_path(f, _pp) for f in files))
     for key, label in (("warnings", "Warnings"), ("handoff_warnings", "Warnings"),
                        ("context_needed", "Context needed"), ("handoff_context_needed", "Context needed")):
         items = [s for s in (entry.get(key) or []) if s]
@@ -1723,6 +1738,8 @@ def _rules_block(work_project: str, project_memory: "dict | None" = None) -> lis
         return []
     out = [f"Rules ({len(rules)}, {_project_label(work_project)}):"]
     out.extend(f"  [{r['id']}] {_truncate(r['content'], 120)}" for r in rules[:5])
+    if len(rules) > 5:
+        out.append(f"  ... and {len(rules) - 5} more (the /windvane pane lists all)")
     return out
 
 

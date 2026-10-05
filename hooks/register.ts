@@ -81,6 +81,17 @@ type Mirror = {
   five_hour_resets_at?: number
   seven_day_pct?: number
   seven_day_resets_at?: number
+  // Every rate-limit window the session reports, by kind (five_hour,
+  // seven_day, a model-specific weekly window, ...); the flat keys above
+  // stay for older readers.
+  rate_limits: Record<string, { pct?: number; resets_at?: number }>
+}
+
+// usage.rateLimits as the mirror's rate_limits dict, one entry per kind.
+function rateLimitsOf(limits: readonly { kind: string; percentUsed?: number; resetsAt?: string }[]): Mirror['rate_limits'] {
+  const out: Mirror['rate_limits'] = {}
+  for (const r of limits) out[r.kind] = { pct: r.percentUsed, resets_at: epochSeconds(r.resetsAt) }
+  return out
 }
 
 function thresholds(window: number, point: number) {
@@ -265,6 +276,7 @@ export const register: Register = (on, options) => {
         five_hour_resets_at: epochSeconds(five?.resetsAt),
         seven_day_pct: seven?.percentUsed,
         seven_day_resets_at: epochSeconds(seven?.resetsAt),
+        rate_limits: rateLimitsOf(usage.rateLimits),
       }
       await $.fs.write(mirrorPath, JSON.stringify(rec))
       await $.fs.write(markerPath, JSON.stringify({ plugin: PLUGIN, version: VERSION, ts: rec.ts }))

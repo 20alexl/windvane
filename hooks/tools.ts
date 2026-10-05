@@ -68,7 +68,9 @@ const MEMORY_FIELDS = {
     enum: [
       'remember',
       'recall',
+      'recent',
       'search',
+      'archive_search',
       'forget',
       'add_rule',
       'list_rules',
@@ -82,13 +84,13 @@ const MEMORY_FIELDS = {
       'set_detector',
     ],
     description:
-      'remember stores a discovery; recall lists the project memory; search finds entries by query; forget clears the project memory; add_rule stores a permanent rule (with reason); list_rules lists them; modify, delete, promote (to a rule), archive, restore and acknowledge_mistake act on one entry by id; list_mistakes lists the tracked mistakes; set_detector attaches a detector to a rule.',
+      'remember stores a discovery; recall lists the project memory; recent lists the newest entries first; search finds entries by query; archive_search finds archived entries by query; forget clears the project memory; add_rule stores a permanent rule (with reason); list_rules lists them; modify, delete, promote (to a rule), archive, restore and acknowledge_mistake act on one entry by id; list_mistakes lists the tracked mistakes; set_detector attaches a detector to a rule.',
   },
   content: { type: 'string', description: 'remember / add_rule / modify: the text.' },
   reason: { type: 'string', description: 'add_rule / promote: why the rule exists.' },
-  query: { type: 'string', description: 'search: what to look for.' },
+  query: { type: 'string', description: 'search / archive_search: what to look for.' },
   memory_id: { type: 'string', description: 'modify / delete / promote / restore / acknowledge_mistake / set_detector: the id shown in brackets.' },
-  limit: { type: 'integer', description: 'recall / search / list_mistakes: how many.' },
+  limit: { type: 'integer', description: 'recall / recent / search / archive_search / list_mistakes: how many.' },
   detector: {
     type: 'object',
     description:
@@ -114,9 +116,14 @@ const LOG_FIELDS = {
 const MINE_FIELDS = {
   operation: {
     type: 'string',
-    enum: ['search', 'decisions', 'errors', 'struggles', 'replay', 'timeline', 'run_report', 'run_status', 'status'],
+    enum: ['search', 'decisions', 'errors', 'struggles', 'replay', 'timeline', 'run_report', 'run_status', 'status', 'reindex'],
     description:
-      'search finds past conversation by query (kind narrows the hits); decisions finds when and why something was decided; errors lists recurring errors; struggles lists the areas of repeated difficulty; replay finds the discussions of a file; timeline is the project history; run_report writes and returns this session\'s run report; run_status is the /goal run as recorded; status is the mining index coverage.',
+      'search finds past conversation by query (kind narrows the hits); decisions finds when and why something was decided; errors lists recurring errors; struggles lists the areas of repeated difficulty; replay finds the discussions of a file; timeline is the project history; run_report writes and returns this session\'s run report; run_status is the /goal run as recorded; status is the mining index coverage; reindex rebuilds the index (mode).',
+  },
+  mode: {
+    type: 'string',
+    enum: ['bootstrap', 'incremental'],
+    description: 'reindex: bootstrap mines the whole history again; incremental adds what is new.',
   },
   query: { type: 'string', description: 'search / decisions: what to look for.' },
   file_path: { type: 'string', description: 'replay: the file.' },
@@ -153,7 +160,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   {
     name: 'memory',
     description:
-      "Store and manage this project's memory: discoveries, rules and mistakes (remember, recall, search, forget, add_rule, list_rules, modify, delete, promote, archive, restore, list_mistakes, acknowledge_mistake, set_detector).",
+      "Store and manage this project's memory: discoveries, rules and mistakes (remember, recall, recent, search, archive_search, forget, add_rule, list_rules, modify, delete, promote, archive, restore, list_mistakes, acknowledge_mistake, set_detector).",
     inputSchema: { type: 'object', properties: MEMORY_FIELDS, required: ['operation'] },
   },
   {
@@ -164,7 +171,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   {
     name: 'mine',
     description:
-      'Search the history of past sessions on this project: conversations, decisions, recurring errors and struggles, a file\'s discussions, the timeline, and this session\'s run report (search, decisions, errors, struggles, replay, timeline, run_report, run_status, status).',
+      'Search the history of past sessions on this project: conversations, decisions, recurring errors and struggles, a file\'s discussions, the timeline, and this session\'s run report, or rebuild the index (search, decisions, errors, struggles, replay, timeline, run_report, run_status, status, reindex).',
     inputSchema: { type: 'object', properties: MINE_FIELDS, required: ['operation'] },
   },
   {

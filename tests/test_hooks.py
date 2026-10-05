@@ -475,6 +475,28 @@ def test_after_a_compaction_the_banner_shows_this_sessions_own_full_checkpoint(t
     assert common._own_session_checkpoint([ring], "nobody", str(p)) == (None, [])
 
 
+def test_the_rules_block_says_how_many_it_left_out():
+    rules = [{"id": f"r{i}", "category": "rule", "content": f"rule number {i} " + "x" * 200} for i in range(8)]
+    out = common._rules_block("/w/app", {"entries": rules})
+    assert out[0].startswith("Rules (8, app)") and len(out) == 7
+    assert out[-1] == "  ... and 3 more (the /windvane pane lists all)"
+    assert all(len(line) <= 2 + 2 + 3 + 120 + 2 for line in out[1:6])
+    few = common._rules_block("/w/app", {"entries": rules[:5]})
+    assert len(few) == 6 and "more" not in few[-1]
+
+
+def test_the_full_restore_shows_files_relative_to_the_records_project(tmp_path: Path):
+    proj = tmp_path / "app"
+    inside = proj / "src" / "draft.py"
+    outside = tmp_path / "elsewhere" / "notes.md"
+    entry = {"kind": "manual", "created": time.time(), "task_description": "t", "summary": "s",
+             "project_path": str(proj).replace("\\", "/").lower(),
+             "files_in_progress": [str(inside), str(outside), "rel/x.py"]}
+    files = [l for l in common._format_restored_full(entry) if l.startswith("  Files: ")][0]
+    assert files == "  Files: src/draft.py, notes.md, rel/x.py"
+    assert entry["files_in_progress"][0] == str(inside)  # the record keeps the full path
+
+
 def test_the_compaction_banner_leaves_out_what_the_mod_put_in_the_conversation(tmp_path: Path):
     import os as _os
 

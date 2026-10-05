@@ -90,8 +90,26 @@ test('session.start declares the six tools', async ($, on) => {
   expect(ops('checkpoint')).toEqual(['save', 'restore', 'list'])
   expect(ops('log')).toEqual(['mistake', 'decision'])
   expect(ops('deps')).toEqual(['map', 'impact'])
-  expect(ops('memory')).toContain('set_detector')
-  expect(ops('mine')).toContain('run_report')
+  expect(ops('memory')).toEqual([
+    'remember', 'recall', 'recent', 'search', 'archive_search', 'forget', 'add_rule', 'list_rules',
+    'modify', 'delete', 'promote', 'archive', 'restore', 'list_mistakes', 'acknowledge_mistake', 'set_detector',
+  ])
+  expect(ops('mine')).toEqual(['search', 'decisions', 'errors', 'struggles', 'replay', 'timeline', 'run_report', 'run_status', 'status', 'reindex'])
+  const mineMode = (schemas.mine as { properties: { mode: { enum: string[] } } }).properties.mode
+  expect(mineMode.enum).toEqual(['bootstrap', 'incremental'])
+})
+
+test('mine reindex passes its mode to the engine as given', async ($, on) => {
+  const t = engine(on, { daemon: { status: 200, body: { text: 'Reindex started (incremental).', isError: false, ms: 40 } } })
+  const out = await $.tool.call({ tool: 'mcp__windvane__mine', operation: 'reindex', mode: 'incremental' } as never)
+  expect(out.result).toBe('Reindex started (incremental).')
+  expect(t.fetched[0]?.body.arguments).toEqual({ operation: 'reindex', mode: 'incremental' })
+})
+
+test('memory archive_search sends its query and limit', async ($, on) => {
+  const t = engine(on, { daemon: 'none' })
+  await $.tool.call({ tool: 'mcp__windvane__memory', operation: 'archive_search', query: 'auth', limit: 5 } as never)
+  expect(JSON.parse(t.runs[0]?.init?.stdin ?? '{}').arguments).toEqual({ operation: 'archive_search', query: 'auth', limit: 5 })
 })
 
 test('the daemon answers first: one POST, no process', async ($, on) => {

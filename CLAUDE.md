@@ -9,7 +9,7 @@ This file is for people working on windvane itself. Users read README.md and doc
 - `.claude-plugin/plugin.json` is the manifest and holds the config rows. `marketplace.json` makes the repository its own marketplace.
 - `hooks/` is the mod, in TypeScript. `register.ts` loads the pieces: the band, the pane, `/remember`, the strict, export and import commands, the door, the ledger, the agent briefs, the compaction brief, the bridge and the tools. `hooks.json` declares the classic command hooks used headless and as the bridge's fallback. `*.test.ts` files sit beside their modules.
 - `engine/windvane/` is the Python engine. No dependencies. `hooks/` there holds the hook handlers, `mining/` the session miner, `semantic/` the optional encoder. `daemon.py` and `daemon_client.py` are the resident process and its thin client. `config.py` holds every setting in `KNOBS`.
-- `skills/windvane/SKILL.md` is the quick reference the model reads.
+- `skills/reference/SKILL.md` is the quick reference the model reads (`/windvane:reference`; the plain `/windvane` is the pane, so the skill cannot share that name).
 - `docs/` is the user documentation. `demo/` holds the demo tape and gif.
 - `tests/` holds the Python tests.
 - `types/` and `.claude-plugin/types/` are the type declarations for the mod. The second folder is written by Claude Code when the plugin loads and is not committed.

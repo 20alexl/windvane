@@ -1,5 +1,5 @@
 ---
-name: windvane
+name: reference
 description: Quick reference for the windvane tools (checkpoint, compact_now, memory, log, mine, deps) and what the hooks already do for you; use when banking state, storing a discovery, managing rules or searching past sessions.
 ---
 

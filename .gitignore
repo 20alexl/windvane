@@ -26,3 +26,4 @@ Thumbs.db
 # Demo renders are built from the tape; keep only the tape and the published gif
 demo/*.mp4
 demo/fixture/
+demo/screenshots/

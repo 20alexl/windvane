@@ -173,6 +173,61 @@ def test_memory_operations(warm, proj):
     assert warm.store.get_project(str(proj)) is None
 
 
+def test_memory_recent_lists_the_newest_first(warm, proj):
+    assert call(warm, "memory", proj, operation="recent")["text"] == "No recent memories"
+    for text in ("first: the cache is sqlite", "second: the parser drops the BOM", "third: " + "x" * 80):
+        warm.store.remember_discovery(str(proj), text, auto_embed=False)
+        time.sleep(0.01)
+    out = call(warm, "memory", proj, operation="recent", limit=2)["text"].splitlines()
+    assert out[0] == "Recent memories (newest first):" and len(out) == 4
+    assert "(0m ago) [discovery] third: xxx" in out[2] and out[2].endswith("...")
+    assert "second: the parser drops the BOM" in out[3]
+    mistakes = call(warm, "memory", proj, operation="recent", category="mistake")["text"]
+    assert mistakes == "No recent memories"
+
+
+def test_memory_archive_search_finds_what_aged_out(warm, proj):
+    assert call(warm, "memory", proj, operation="archive_search", query="redis")["text"] == "No archived memories found"
+    warm.store.remember_discovery(str(proj), "the old cache layout used redis keys", auto_embed=False)
+    p = warm.store.get_project(str(proj))
+    p.entries[0].last_accessed = time.time() - 40 * 86400
+    warm.store._dirty_projects.add(p.project_path)
+    warm.store._save()
+    warm.store.archive_old_memories(str(proj), dry_run=False)
+    out = call(warm, "memory", proj, operation="archive_search", query="redis cache")["text"]
+    lines = out.splitlines()
+    assert lines[0] == "Archived memories:" and "(0d archived) [discovery] the old cache layout used redis keys" in lines[2]
+    assert "memory(restore, memory_id=" in out
+    assert len([ln for ln in lines if "redis keys" in ln]) == 1  # each entry once
+
+
+def test_mine_reindex_starts_the_miner_and_reports(warm, proj, monkeypatch):
+    from windvane.mining import background
+
+    out = call(warm, "mine", proj, operation="reindex")
+    assert out["isError"] is False and "background processes are off" in out["text"]
+    assert "Unknown reindex mode" in call(warm, "mine", proj, operation="reindex", mode="everything")["text"]
+
+    started: list = []
+    monkeypatch.setattr(background, "start_mining_background",
+                        lambda project, mode="post_session", windvane_storage_dir="": started.append((project, mode)) or True)
+    monkeypatch.setattr(background, "get_mining_status", lambda: {
+        "status": "completed", "result": {"sessions": 3, "messages": 120, "extractions": 7, "embeddings": 40}})
+    monkeypatch.setattr("windvane.tools.REINDEX_POLL_SECS", 0.01)
+    out = call(warm, "mine", proj, operation="reindex", mode="bootstrap")["text"]
+    assert out.splitlines() == ["Mining completed (mode=bootstrap):", "  Sessions indexed: 3", "  Messages: 120",
+                                "  Extractions: 7 findings", "  Search chunks: 40"]
+    call(warm, "mine", proj, operation="reindex")
+    assert [m for _p, m in started] == ["bootstrap", "full"]  # incremental is the miner's full pass
+
+    monkeypatch.setattr(background, "get_mining_status", lambda: {"status": "running", "phase": "embed"})
+    monkeypatch.setattr("windvane.tools.REINDEX_WAIT_SECS", 0.05)
+    assert "currently in 'embed' phase" in call(warm, "mine", proj, operation="reindex")["text"]
+    monkeypatch.setattr(background, "start_mining_background", lambda *a, **k: False)
+    monkeypatch.setattr(background, "is_mining_running", lambda: True)
+    assert call(warm, "mine", proj, operation="reindex")["text"].startswith("Mining already running")
+
+
 def test_set_detector_validates_before_storing(warm, proj):
     pytest.importorskip("windvane.compliance", reason="detector validation is the hooks port's compliance module")
     call(warm, "memory", proj, operation="add_rule", content="Never push without the word")

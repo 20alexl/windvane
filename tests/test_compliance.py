@@ -239,3 +239,19 @@ def test_the_run_report_renders_the_compliance_section(tmp_path: Path, monkeypat
     md = rr.render_md(rep)
     assert "## Rules compliance (1 with a detector, 0 advisory, 0 broken)" in md
     assert "| unattended |" in md and "rm -rf build" in md
+
+
+def test_a_match_record_keeps_the_note_and_cuts_the_rule_at_a_word():
+    long_rule = "Prefer a targeted test command over the whole suite " * 5
+    pm = _pm([{"id": "r1", "category": "rule", "content": long_rule,
+               "detector": {"tools": ["Bash"], "command": r"\brm\s+-rf\b", "note": "recursive delete"}}])
+    rules = c.rules_with_detectors(pm)
+    state: dict = {}
+    new = c.record(state, rules, c.match_call(rules, "Bash", {"command": "rm -rf build"}), "Bash",
+                   {"command": "rm -rf build"}, tool_use_id="n1", turn=1, permission_mode="bypassPermissions")
+    rec = new[0]
+    assert rec["note"] == "recursive delete"
+    assert rec["rule"].endswith("...") and len(rec["rule"]) <= c.RULE_CHARS
+    assert long_rule.startswith(rec["rule"][:-3]) and long_rule[len(rec["rule"]) - 3] == " "
+    assert "(recursive delete)" in c.rule_text(new, "bypassPermissions")
+    assert c._cut_rule("short rule") == "short rule"

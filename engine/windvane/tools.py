@@ -9,12 +9,12 @@ int}``.
 
     checkpoint   save | restore | list
     compact_now  (no operation): bank the drafted checkpoint, then the plugin compacts
-    memory       remember | recall | search | forget | add_rule | list_rules | modify |
-                 delete | promote | archive | restore | list_mistakes |
-                 acknowledge_mistake | set_detector
+    memory       remember | recall | recent | search | forget | add_rule | list_rules |
+                 modify | delete | promote | archive | archive_search | restore |
+                 list_mistakes | acknowledge_mistake | set_detector
     log          mistake | decision
     mine         search | decisions | errors | struggles | replay | timeline |
-                 run_report | run_status | status
+                 run_report | run_status | status | reindex
     deps         map | impact
 
 ``project_path`` is mapped to its repository root (a worktree names its
@@ -43,11 +43,15 @@ OPERATIONS = {
     "checkpoint": ("save", "restore", "list"),
     "compact_now": (),
     "memory": (
-        "remember", "recall", "search", "forget", "add_rule", "list_rules", "modify",
-        "delete", "promote", "archive", "restore", "list_mistakes", "acknowledge_mistake", "set_detector",
+        "remember", "recall", "recent", "search", "forget", "add_rule", "list_rules", "modify",
+        "delete", "promote", "archive", "archive_search", "restore", "list_mistakes", "acknowledge_mistake",
+        "set_detector",
     ),
     "log": ("mistake", "decision"),
-    "mine": ("search", "decisions", "errors", "struggles", "replay", "timeline", "run_report", "run_status", "status"),
+    "mine": (
+        "search", "decisions", "errors", "struggles", "replay", "timeline", "run_report", "run_status", "status",
+        "reindex",
+    ),
     "deps": ("map", "impact"),
 }
 
@@ -451,6 +455,47 @@ def _memory(warm: Warm, op: str, args: dict, raw: dict) -> str:
         ok, msg = store.restore_from_archive(project_path=project_path, memory_id=args.get("memory_id") or "")
         return Response(status="success" if ok else "needs_clarification", confidence="high", reasoning=msg).to_formatted_string()
 
+    if op == "recent":
+        entries = store.get_recent_memories(
+            project_path=project_path, category=args.get("category"), limit=_int(args.get("limit"), 10)
+        )
+        if not entries:
+            return "No recent memories"
+        lines = ["Recent memories (newest first):", ""]
+        for e in entries:
+            age_mins = int((time.time() - e.created_at) / 60)
+            if age_mins < 60:
+                age_str = f"{age_mins}m ago"
+            elif age_mins < 1440:
+                age_str = f"{age_mins // 60}h ago"
+            else:
+                age_str = f"{age_mins // 1440}d ago"
+            shown = e.content[:57] + "..." if len(e.content) > 60 else e.content
+            lines.append(f"  [{e.id}] ({age_str}) [{e.category}] {shown}")
+        # The lines carry every entry; the entries are not repeated as data.
+        return Response(status="success", confidence="high", reasoning="\n".join(lines)).to_formatted_string()
+
+    if op == "archive_search":
+        entries = store.search_archive(
+            project_path=project_path,
+            query=args.get("query"),
+            tags=_coerce_list(args.get("tags")) or None,
+            limit=_int(args.get("limit"), 5),
+        )
+        if not entries:
+            return "No archived memories found"
+        lines = ["Archived memories:", ""]
+        for e in entries:
+            age_days = int((time.time() - (e.archived_at or e.created_at)) / 86400)
+            shown = e.content[:57] + "..." if len(e.content) > 60 else e.content
+            lines.append(f"  [{e.id}] ({age_days}d archived) [{e.category}] {shown}")
+        return Response(
+            status="success",
+            confidence="high",
+            reasoning="\n".join(lines),
+            suggestions=["Use memory(restore, memory_id='...') to bring one back to active"],
+        ).to_formatted_string()
+
     if op == "list_mistakes":
         entries = store.get_recent_memories(project_path=project_path, category="mistake", limit=_int(args.get("limit"), 20))
         if not entries:
@@ -636,6 +681,9 @@ def _mine(warm: Warm, op: str, args: dict, raw: dict) -> str:
             return "No timeline events."
         return "\n".join(["Project timeline:"] + [f"  [{e.timestamp[:10]}] {e.event_type}: {e.description[:120]}" for e in events[-20:]])
 
+    if op == "reindex":
+        return _reindex(project_path, str(args.get("mode") or "incremental"), storage)
+
     from windvane.checkpoints import _hook_attr, session_id
 
     sid = session_id()
@@ -660,6 +708,50 @@ def _mine(warm: Warm, op: str, args: dict, raw: dict) -> str:
     body = report.render_md(report.collect(sid, project_path))
     head = f"Run report written: {path}\n\n" if path else "Run report could not be written; rendering only.\n\n"
     return head + body
+
+
+# The tool's two modes, as the miner names them: bootstrap mines every past
+# session; incremental is the miner's "full" pass, which reads only what is
+# new since its watermarks and then refreshes the patterns.
+REINDEX_MODES = {"bootstrap": "bootstrap", "incremental": "full"}
+REINDEX_WAIT_SECS = 10.0
+REINDEX_POLL_SECS = 0.5
+
+
+def _reindex(project_path: str, mode: str, storage: str) -> str:
+    """Start the background miner and wait up to ``REINDEX_WAIT_SECS`` for
+    it to finish; answer the result, or the phase it is in."""
+    if mode not in REINDEX_MODES:
+        return _clarify(f"Unknown reindex mode {mode!r}", "Use mode bootstrap or incremental")
+    background = _module("windvane.mining.background")
+    miner_mode = REINDEX_MODES[mode]
+    started = background.start_mining_background(project_path, mode=miner_mode, windvane_storage_dir=storage)
+    if not started:
+        if background.is_mining_running():
+            return "Mining already running. Check mine(status) for results."
+        if os.environ.get("WINDVANE_NO_DAEMON", "").strip():
+            return "Mining did not start: background processes are off (WINDVANE_NO_DAEMON is set)."
+        return "Mining did not start. Check mine(status)."
+    deadline = time.monotonic() + REINDEX_WAIT_SECS
+    while time.monotonic() < deadline:
+        time.sleep(REINDEX_POLL_SECS)
+        status = background.get_mining_status()
+        if status.get("status") == "completed":
+            result = status.get("result", {})
+            if not isinstance(result, dict):
+                result = {}
+            lines = [f"Mining completed (mode={mode}):"]
+            if result.get("sessions"):
+                lines.append(f"  Sessions indexed: {result['sessions']}")
+            if result.get("messages"):
+                lines.append(f"  Messages: {result['messages']}")
+            if result.get("extractions"):
+                lines.append(f"  Extractions: {result['extractions']} findings")
+            if result.get("embeddings"):
+                lines.append(f"  Search chunks: {result['embeddings']}")
+            return "\n".join(lines)
+    phase = background.get_mining_status().get("phase", "unknown")
+    return f"Mining started (mode={mode}), currently in '{phase}' phase. Check mine(status) for results."
 
 
 # ---------------------------------------------------------------------------
