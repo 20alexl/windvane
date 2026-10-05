@@ -873,6 +873,18 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             self._dirty_projects.add(proj.project_path)
             self._save()
             return (False, f"Duplicate of existing memory (id={duplicate.id}), updated access count")
+        if category == "mistake":
+            # An acknowledged mistake lives in the archive. The same mistake
+            # logged again must not come back as a fresh hot entry and reappear
+            # in the pre-edit banners; it stays where the acknowledgement put it.
+            self._load_archive()
+            archived = self._archive_projects.get(proj.project_path)
+            shelved = self._is_duplicate(content, archived.entries) if archived else None
+            if shelved:
+                shelved.access_count += 1
+                shelved.last_accessed = time.time()
+                self._save_archive()
+                return (False, f"Duplicate of archived memory (id={shelved.id}), left in the archive")
 
         auto_tags = self._extract_tags(content)
         auto_files = self._extract_file_refs(content)
@@ -977,6 +989,11 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             del self._manifest["projects"][norm]
             self._manifest_dirty = True
             self._save_manifest()
+        # The archive keeps its own rows per project; forgetting a project
+        # forgets what was archived from it too.
+        self._load_archive()
+        if self._archive_projects.pop(norm, None) is not None:
+            self._save_archive()
 
     def clear_all(self):
         """Clear every loaded memory (use with caution)."""

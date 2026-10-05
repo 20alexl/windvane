@@ -181,3 +181,57 @@ def test_clusters_form_from_shared_tags(tmp_path):
     assert "Database Memories" in names and listing["total_memories"] == 3
     cid = next(c["id"] for c in listing["clusters"] if c["name"] == "Database Memories")
     assert s.get_clusters(proj, cid)["cluster"]["memory_count"] == 3
+
+
+# ── the archive is part of the record ───────────────────────────────────────
+
+
+def test_an_acknowledged_mistake_logged_again_stays_in_the_archive(tmp_path):
+    s = _ms()
+    proj = str(tmp_path / "p")
+    text = "MISTAKE: KeyError: missing column in parser.py - Fix: read the header row first"
+    added, msg = s.remember_discovery(proj, text, category="mistake", source="work_tracker", relevance=9, auto_embed=False)
+    assert added
+    mid = s.get_project(proj).entries[0].id
+    assert s.archive_memory(proj, mid)[0]  # what acknowledge_mistake does
+    assert s.get_project(proj).entries == []
+    norm = s._normalize_path(proj)
+    seen_before = s._archive_projects[norm].entries[0].access_count
+
+    # Logged again by a hook or the miner: a duplicate of the archived row.
+    added, msg = s.remember_discovery(proj, text, category="mistake", source="session_mining", relevance=8, auto_embed=False)
+    assert not added and "archived" in msg
+    assert s.get_project(proj).entries == [], "the acknowledged mistake must not come back hot"
+    s2 = _ms()  # a fresh process reads the same answer from disk
+    s2._load_archive()
+    rows = s2._archive_projects[norm].entries
+    assert [e.id for e in rows] == [mid] and rows[0].access_count == seen_before + 1
+
+    # A different mistake is still new.
+    added, _ = s.remember_discovery(proj, "MISTAKE: ValueError: the date column is text", category="mistake", auto_embed=False)
+    assert added
+
+
+def test_forget_drops_the_archived_rows_too(tmp_path):
+    s = _ms()
+    proj, other = str(tmp_path / "p"), str(tmp_path / "q")
+    for p in (proj, other):
+        s.remember_discovery(p, f"an old note about {Path(p).name} that is long enough to keep", auto_embed=False)
+        s.archive_memory(p, s.get_project(p).entries[0].id)
+    s.forget_project(proj)
+    data = json.loads((tmp_path / "store" / "archive.json").read_text(encoding="utf-8"))
+    kept = {s._normalize_path(k) for k in data["projects"]}
+    assert kept == {s._normalize_path(other)}
+    assert s.get_archive_stats(proj).get("archived_count", 0) == 0
+
+
+def test_cleanup_keeps_a_short_rule_and_a_short_mistake(tmp_path):
+    s = _ms()
+    proj = str(tmp_path / "p")
+    assert s.add_rule(proj, "Use pathlib.")[0]
+    s.remember_discovery(proj, "MISTAKE: bad glob", category="mistake", source="work_tracker", relevance=9, auto_embed=False)
+    s.remember_discovery(proj, "the parser notes are still a stub TODO:", auto_embed=False)  # a broken discovery still goes
+    rep = s.cleanup_memories(proj, dry_run=False, apply_decay=False)
+    assert [r["reason"] for r in rep["broken_found"]] == ["Placeholder content (TODO:)"]
+    left = {(e.category, e.content) for e in s.get_project(proj).entries}
+    assert left == {("rule", "Use pathlib."), ("mistake", "MISTAKE: bad glob")}

@@ -357,7 +357,9 @@ class ArchiveMixin:
         }
 
         for entry in proj.entries:
-            if entry.category == "lesson":
+            if entry.category in ("lesson", "rule", "mistake"):
+                # A rule or a mistake is a deliberate record, and a short one
+                # ("Use pathlib.") is a rule, not a broken memory.
                 continue
             reason = self._is_broken_memory(entry.content)
             if reason:

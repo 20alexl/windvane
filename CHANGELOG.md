@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Three more risks the Agent Memory Atlas review of claude-engram named, read against the code and fixed.
+
+- **An acknowledged mistake stays acknowledged.** The duplicate check on a new mistake read the hot entries only, so a mistake acknowledged into the archive came back as a fresh entry, and into the pre-edit banners, the next time a hook or the miner logged it. A new mistake is now matched against the project's archived mistakes too, and a match stays in the archive.
+- **Forgetting a project forgets its archive.** `memory(forget)` removed the project's directory and its manifest row and left its archived entries in the archive file. They go too.
+- **A short rule is a rule.** The post-session cleanup called any memory under 20 characters broken and deleted it, rules and mistakes included, so a rule such as "Use pathlib." did not survive the next session. The broken-memory pass now skips rules and mistakes, as the decay pass always did.
+
 ## 1.0.2 (2026-10-05)
 
 - **No memory by directory name.** A project with no store on its path or above it used to be lent the memory of any registered project that happened to share its directory name, and in one reader that lookup came before the ancestors, so two unrelated repositories both called `api` could show each other's mistakes. Both readers now take the path and its ancestors only. The Agent Memory Atlas review of claude-engram named this risk.
