@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Cut the long static stretches out of the live recording.
 
-    python3 demo/trim.py demo/windvane.mp4 demo/windvane.gif [--cap 3] [--fps 12]
+    python3 demo/trim.py demo/windvane.mp4 demo/windvane.gif [--cap 2] [--fps 10] [--colors 32]
+
+The defaults keep a 46-second take under 5 MiB, the largest file the plugin
+directory accepts anywhere in the repository; the palette is the lever,
+the frame rate and the cap do little. Check the size after a new take.
 
 A live take waits for the model and for the compaction, and those waits are
 most of the recording: a spinner and a token counter ticking for twenty
@@ -112,9 +116,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Cut the long static stretches out of the live recording.")
     ap.add_argument("mp4")
     ap.add_argument("gif")
-    ap.add_argument("--cap", type=float, default=3.0, help="seconds of a static stretch kept (default 3)")
-    ap.add_argument("--fps", type=int, default=12, help="the gif's frame rate (default 12)")
-    ap.add_argument("--colors", type=int, default=64, help="palette size (default 64)")
+    ap.add_argument("--cap", type=float, default=2.0, help="seconds of a static stretch kept (default 2)")
+    ap.add_argument("--fps", type=int, default=10, help="the gif's frame rate (default 10)")
+    ap.add_argument("--colors", type=int, default=32, help="palette size (default 32)")
+    ap.add_argument("--width", type=int, default=0,
+                    help="scale the gif to this width (default: the recording's own)")
     args = ap.parse_args()
 
     ffmpeg, ffprobe = tool("ffmpeg"), tool("ffprobe")
@@ -133,8 +139,9 @@ def main() -> int:
     ranges = keep_ranges(sizes, sw * sh, fps, args.cap)
     kept = sum(b - a + 1 for a, b in ranges)
     select = "+".join(f"between(n,{a},{b})" for a, b in ranges)
+    scale = f"scale={args.width}:-1:flags=lanczos," if args.width else ""
     vf = (
-        f"select='{select}',setpts=N/{fps}/TB,fps={args.fps},"
+        f"select='{select}',setpts=N/{fps}/TB,fps={args.fps},{scale}"
         f"split[s0][s1];[s0]palettegen=max_colors={args.colors}:stats_mode=diff[p];"
         f"[s1][p]paletteuse=dither=none:diff_mode=rectangle"
     )
