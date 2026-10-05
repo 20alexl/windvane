@@ -103,12 +103,14 @@ Sleep 2500ms
 Screenshot demo/screenshots-live/6-pane.png
 Escape
 
-# Leave the session unrecorded.
+# Leave the session unrecorded. /exit ends it from the prompt; two Ctrl+C
+# presses did not in the fullscreen renderer, and a take whose last wait
+# fails writes no gif at all.
 Hide
-Ctrl+C
 Sleep 500ms
-Ctrl+C
-Wait+Line@30s /\$\s*$/
+Type "/exit"
+Enter
+Wait+Line@60s /\$\s*$/
 Type "clear"
 Enter
 Sleep 300ms
