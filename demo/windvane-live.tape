@@ -56,10 +56,11 @@ Screenshot demo/screenshots-live/1-open.png
 
 # 2: one short prompt that edits the api file. The typed text must be on
 # screen before Enter (a dropped prompt fails here in seconds, not after
-# the long wait). The prompt names the file, so the wait after it is for
-# the edit tool's own row, not the file name.
+# the long wait). The prompt wraps inside the prompt box, so the check
+# allows a line break between the two words. The prompt names the file,
+# so the wait after it is for the edit tool's own row, not the file name.
 Type "Edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
-Wait+Screen@10s /cursor pagination/
+Wait+Screen@10s /cursor\s+pagination/
 Enter
 Wait+Screen@240s /(?i)(update|edit|write)\(items_api|Bash\(/
 Screenshot demo/screenshots-live/2-edit.png
