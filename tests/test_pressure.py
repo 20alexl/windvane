@@ -458,6 +458,10 @@ def test_checkpoint_text_and_cadence_say_the_recorder_drafted_the_record():
     assert cp.checkpoint_text(a).startswith(
         "<windvane-context>CHECKPOINT NOW: 19K tokens to the auto-compaction trigger (~168K; the 200K setting"
     )
+    # The save comes after the step, not before it: the record then describes
+    # the finished work, and the turn boundary after the save compacts.
+    assert "Finish the step in hand and start nothing new; then save and end the turn" in cp.checkpoint_text(a)
+    assert "Then continue" not in cp.checkpoint_text(a)
     assert "60 turns" in cp.cadence_text(60)
 
 

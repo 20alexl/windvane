@@ -375,6 +375,7 @@ def clip(p: Player) -> None:
     p.caption(cap)
     p.prompt("Now wire the cursor into the endpoint.")
     p.show("checkpoint-now", cap, hold=1.8, lead=1)
+    p.work("Edit(items_api/api.py)")
     p.work("windvane · checkpoint(operation: save)", gap=0.4)
     saved = fixture("checkpoint-saved").split("\n")
     shown = [saved[0]] + [s for s in saved if s.startswith("Drafted by the recorder")]

@@ -760,7 +760,9 @@ def checkpoint_text(a: dict) -> str:
         + f"{_k(left)} tokens to the auto-compaction trigger (~{_k(a['trigger_at'])}; "
         f"the {_k(a['point'])} setting minus the output reserve). "
         + _DRAFTED
-        + " Then continue; a compaction banks the draft as it stands.</windvane-context>"
+        + " Finish the step in hand and start nothing new; then save and end the turn, "
+        "so the record describes the finished work and the turn boundary compacts. "
+        "A compaction that comes first banks the draft as it stands.</windvane-context>"
     )
 
 

@@ -719,11 +719,30 @@ def scene(world: World) -> dict[str, str]:
     out["checkpoint-now"] = hook(world, "prompt_json", {"session_id": SID, "hook_event_name": "UserPromptSubmit",
                                                         "prompt": ask, "transcript_path": str(tpath)})
 
-    # The model answers with a bare checkpoint(save): the recorder's draft.
+    # The note says to finish the step first: the model does the edit, marks
+    # the task done, then answers with a bare checkpoint(save): the
+    # recorder's draft, which now holds the finished work.
+    live.tool("e2", "Edit", {"file_path": api, "old_string": "def paginate(page: int, size: int):",
+                             "new_string": "def paginate(page: int, size: int, cursor: str | None = None):"},
+              "ok", t + 5420)
+    hook(world, "post_edit_json", {"session_id": SID, "hook_event_name": "PostToolUse", "tool_name": "Edit",
+                                   "tool_input": {"file_path": api}, "tool_response": {"filePath": api}})
+    live.tool("tu6", "TaskUpdate", {"taskId": "2", "status": "completed"}, "Updated task #2 status", t + 5440)
+    live.write()
     saved = tool(world, SID, "checkpoint", {"operation": "save"})
     out["checkpoint-saved"] = saved
     live.tool("ck1", "mcp__windvane__checkpoint", {"operation": "save"}, saved, t + 5460)
+    hook(world, "post_batch_json", {"session_id": SID, "hook_event_name": "PostToolBatch", "tool_calls": [
+        {"tool_name": "mcp__windvane__checkpoint", "tool_input": {"operation": "save"}, "tool_use_id": "ck1",
+         "tool_response": saved}]})
+    # The turn ends on the closing lines; the turn-end hook brings the record
+    # just saved up to them, so the handoff carries this turn's own words.
+    closing = ("The cursor is wired into paginate() and page= still works for old clients. "
+               "Next is the docs note for page= in docs/API.md, then the cursor tests in tests/test_api.py.")
+    live.say(closing, t + 5470)
     live.write()
+    hook(world, "stop_json", {"session_id": SID, "hook_event_name": "Stop", "stop_hook_active": False,
+                              "last_assistant_message": closing, "transcript_path": str(tpath)})
 
     # The compaction: PreCompact, the mod's brief inside the compacted
     # conversation, PostCompact, then SessionStart(compact).

@@ -78,9 +78,10 @@ Wait+Screen@240s /(?i)checkpoint now/
 Sleep 1s
 Screenshot demo/screenshots-live/3-band.png
 
-# 4: the edit prompt. It carries the engine's CHECKPOINT NOW note, so the
-# model banks the checkpoint itself, a bare save through the plugin's tool,
-# and does the edit. Nothing is typed after this: a queued prompt would run
+# 4: the edit prompt. It carries the engine's CHECKPOINT NOW note, which
+# says to finish the step, then save and end the turn: the model does the
+# edit, banks the checkpoint itself (a bare save through the plugin's tool)
+# and ends the turn. Nothing is typed after this: a queued prompt would run
 # before the compaction and before windvane's own continue.
 Type "Edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
 Wait+Screen@10s /cursor\s+pagination/
