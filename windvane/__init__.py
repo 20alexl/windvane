@@ -8,4 +8,4 @@ the compaction brief (``windvane.brief``), the drafted checkpoint
 Standard library only; the semantic extra adds the encoder.
 """
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"

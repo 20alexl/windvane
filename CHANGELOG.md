@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4 (2026-10-05)
+
+Four defects from the first days in use, two of them around the moment of compaction.
+
+- **The compaction runs inside the turn-end hook.** It used to be scheduled on a short timer after the turn ended, and a prompt queued for the next turn could start that turn first; the engine then refused with "a turn is running", the transcript showed a failure line, and the band was dropped for the cycle. The hook now compacts in place, where the engine says it belongs, and a compaction the engine refuses anyway is asked for again at the next turn end, with nothing said in the transcript.
+- **Nothing is asked right after a compaction.** Claude Code reports the pre-compaction context size until the next request records the rewritten conversation's, so the mod's first mirror after a compaction carried the old fill under a fresh timestamp and the engine said CHECKPOINT NOW on the continue prompt, with the restored checkpoint seconds old. The mod now treats a reading equal to the one taken at the compaction as unknown (no fill in the mirror, no band, `?` in the segment) until it changes or a turn completes, and the engine's pressure nudges wait for the first turn of the new cycle to end.
+- **The banner knows the session's project without an edit of its own.** On a resume or a compaction at a workspace root, a session that had worked through subagents alone, with no edit of its own in the transcript, was taken for the root: the banner showed the newest session of any project under it and the root's rules. The session's own checkpoint now names the project it was filed under, the last-session block is scoped to it, and when the project is still unknown at a hub root no last-session block is shown.
+- **A checkpoint records the checkout it was saved from.** The repo's movement since the record was read in the project's own checkout even when the session worked in a worktree under it, so the restore said "no commits" while the worktree's branch had several. A record saved from a worktree names it (`repo_path`) and the branch, the restore reads git there while the worktree exists and in the project's checkout otherwise, the tree line names the branch HEAD is on, and a record saved on another branch than the current one says so.
+
 ## 1.0.3 (2026-10-05)
 
 Four more risks the Agent Memory Atlas review of claude-engram named, read against the code and fixed.
