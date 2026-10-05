@@ -53,6 +53,24 @@ mkdir -p "$ROOT/config"
 cp "$HOME/.claude/.credentials.json" "$ROOT/config/.credentials.json"
 chmod 600 "$ROOT/config/.credentials.json"
 
+# The copied login must still be valid: a take that starts on an expired
+# access token answers "Login expired" to its first prompt, and the refresh
+# attempted inside the scratch config dir does not reach the real file. A
+# real session (any `claude` run) refreshes it; the next take copies it.
+LOGIN_NOTE=""
+if ! python3 - "$ROOT/config/.credentials.json" <<'PY'
+import json, sys, time
+try:
+    exp = (json.load(open(sys.argv[1])).get("claudeAiOauth") or {}).get("expiresAt") or 0
+except (OSError, ValueError):
+    exp = 0
+sys.exit(0 if exp > time.time() * 1000 else 1)
+PY
+then
+  LOGIN_NOTE="windvane demo: the login in ~/.claude/.credentials.json has expired; run claude once to refresh it, then record again"
+  echo "$LOGIN_NOTE" >&2
+fi
+
 # Onboarding answered, the project trusted, the account details left out.
 python3 - "$HOME/.claude.json" "$ROOT/config/.claude.json" "$ROOT/proj" <<'PY'
 import json, sys
@@ -98,6 +116,9 @@ tar -C "$REPO" --exclude=.git --exclude=__pycache__ --exclude=.claude-plugin/typ
     -cf - . | tar -C "$ROOT/plugin" -xf -
 echo "seeded $ROOT (window $WINDOW), plugin snapshot at $ROOT/plugin" >&2
 
+if [ -n "$LOGIN_NOTE" ]; then
+  printf 'echo %q >&2\n' "$LOGIN_NOTE"
+fi
 cat <<EOF
 export PATH="\$HOME/.local/bin:\$PATH"
 export CLAUDE_CONFIG_DIR=$ROOT/config
