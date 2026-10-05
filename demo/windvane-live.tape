@@ -121,10 +121,12 @@ Type "/exit"
 Enter
 Wait+Line@60s /\$\s*$/
 
-# 7: the outro: the three install lines alone on the screen. The command
-# that prints them is typed unrecorded and clears the screen first, so the
-# shell's echo of the command itself is gone before the lines appear.
-Type "clear; echo 'git clone https://github.com/20alexl/windvane.git windvane'; echo 'claude plugin marketplace add ./windvane'; echo 'claude plugin install windvane@windvane'"
+# 7: the outro: the three install lines as one block in the middle of the
+# screen (demo/outro.sh, from the plugin snapshot). The command is typed
+# unrecorded and the script clears the screen first, so the shell's echo of
+# the command itself is gone before the lines appear; the script then holds
+# the screen past the end of the take, so no prompt shows under them.
+Type "bash /tmp/wv-demo/plugin/demo/outro.sh"
 Enter
 Wait+Screen@10s /install windvane@windvane\s*\n/
 Show
