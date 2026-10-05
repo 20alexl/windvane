@@ -74,7 +74,7 @@ windvane takes the point from Claude Code. In order: the `CLAUDE_CODE_AUTO_COMPA
 | `WINDVANE_PYTHON` | The interpreter for the engine. Wins over the `python` row. |
 | `WINDVANE_RESULT_BUDGET` | The tool-result budget in characters. Wins over the `result_budget` row. |
 | `WINDVANE_AUTONOMY` | Set to `1` for autonomy mode. |
-| `WINDVANE_SEMANTIC` | `1` turns the semantic tier on, `0` forces it off whatever the row says; unset, the row decides. |
+| `WINDVANE_SEMANTIC` | `1` turns the semantic tier on, `0` forces it off whatever the row says; unset, the row decides. Set either way, the first-run question is not asked. |
 | `WINDVANE_ALERT_COMMAND`, `WINDVANE_STRIKE_CAP`, `WINDVANE_GOAL_TURN_CAP`, `WINDVANE_LIVE_MINE` | The matching settings above. |
 | `WINDVANE_COMPLIANCE` | Turns the compliance check on or off. |
 | `WINDVANE_NON_PROJECT_DIRS` | The `non_project_dirs` setting. |

@@ -9,7 +9,9 @@
 #   config/  a scratch Claude Code config dir: the login copied from
 #            ~/.claude/.credentials.json, the onboarding answered, the
 #            project trusted, the compaction window set. No other plugin
-#            loads from it.
+#            loads from it. The semantic tier is switched off through the
+#            environment, which also keeps the first-run question from
+#            opening in the middle of a take.
 #   store/   the windvane store, seeded with yesterday's session (a past
 #            mistake for items_api/api.py, a remembered fact, a closing
 #            checkpoint) by demo/build_fixture.py. The rules are seeded by
@@ -88,6 +90,7 @@ export CLAUDE_CONFIG_DIR=$ROOT/config
 export WINDVANE_DIR=$ROOT/store
 export WINDVANE_PYTHON=python3
 export WINDVANE_NO_DAEMON=1
+export WINDVANE_SEMANTIC=0
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW=$WINDOW
 export DISABLE_AUTOUPDATER=1
 export PS1='\$ '

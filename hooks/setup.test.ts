@@ -64,7 +64,7 @@ function usage(): SessionUsage {
 }
 
 type Run = { argv: readonly string[]; init?: { env?: Record<string, string>; timeoutMs?: number } }
-type World = { row: boolean; installed: boolean; answer: string | Error; pipExit?: number; prior?: unknown }
+type World = { row: boolean; installed: boolean; answer: string | Error; pipExit?: number; prior?: unknown; env?: Record<string, string> }
 
 function ran(stdout: string, exitCode = 0, stderr = '') {
   return { value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } }
@@ -85,7 +85,7 @@ function world(on: Parameters<Parameters<typeof test>[1]>[1], w: World) {
   const stored: Record<string, unknown> = {}
   if (w.prior !== undefined) stored[SEMANTIC_OFFER_KEY] = w.prior
   const asked: string[] = []
-  mock.env(on, { WINDVANE_DIR: STORE, USERPROFILE: 'C:/Users/nobody', WINDVANE_PYTHON: 'E:/py/python.exe' })
+  mock.env(on, { WINDVANE_DIR: STORE, USERPROFILE: 'C:/Users/nobody', WINDVANE_PYTHON: 'E:/py/python.exe', ...(w.env ?? {}) })
   const clock = mock.clock(on)
   on('session.id', () => ({ value: SID }))
   on('session.model', () => ({ value: 'claude-test' }))
@@ -184,6 +184,25 @@ test('a prior never, or a not now within the week, is not asked again', async ($
   await new Promise(resolve => setTimeout(resolve, 50))
   expect(w.asked).toEqual([])
   expect(w.runs.some(r => r.argv[1] === '-c')).toBe(false) // not even the check runs
+})
+
+test('WINDVANE_SEMANTIC=0 in the environment means no question', async ($, on) => {
+  const w = world(on, { row: false, installed: false, answer: 'Install and turn on', env: { WINDVANE_SEMANTIC: '0' } })
+  await $.session.start(START)
+  await w.clock.advance(1)
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(w.asked).toEqual([])
+  expect(w.runs.some(r => r.argv[1] === '-c')).toBe(false)
+  expect(w.stored[SEMANTIC_OFFER_KEY]).toBeUndefined()
+})
+
+test('WINDVANE_SEMANTIC=1 in the environment means no question either', async ($, on) => {
+  const w = world(on, { row: false, installed: false, answer: 'Install and turn on', env: { WINDVANE_SEMANTIC: '1' } })
+  await $.session.start(START)
+  await w.clock.advance(1)
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(w.asked).toEqual([])
+  expect(w.stored[SEMANTIC_OFFER_KEY]).toBeUndefined()
 })
 
 test('a dismissed dialog records nothing, so the next session asks again', async ($, on) => {

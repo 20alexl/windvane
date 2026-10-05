@@ -193,6 +193,10 @@ function ioOf($: EngineInterface): Io {
 // dialog records nothing and the next session asks again.
 async function offerSemantic($: EngineInterface, e: { isInteractive: boolean }, settings: Settings): Promise<void> {
   if (!e.isInteractive || !offerDue(await $.store.get(SEMANTIC_OFFER_KEY), Date.now())) return
+  // WINDVANE_SEMANTIC in the environment, on or off, is the person's own
+  // decision about the tier: nothing to ask (and a scripted session, the
+  // demo take among them, is never interrupted by the dialog).
+  if (((await $.env.get('WINDVANE_SEMANTIC')) ?? '').trim() !== '') return
   const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), settings.python)
   const env = engineEnv($.plugin.root, storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME')))
   const on = rowOnFrom(await $.config.list())
