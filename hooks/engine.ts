@@ -15,7 +15,7 @@ import type { HttpResponse, ProcessRunInit, ProcessRunResult, SettingsSource, Ti
 import type { PluginOptions } from 'claude-code'
 
 export const PLUGIN = 'windvane'
-export const VERSION = '1.0.1'
+export const VERSION = '1.0.2'
 
 // What a module gets instead of `$`: the calls it needs, each spelled once in
 // register.ts (hostOf there), the one file that holds the engine interface.
