@@ -723,6 +723,30 @@ def test_hot_reader_reads_the_configured_store_with_inheritance(tmp_path):
     assert HotMemoryReader._score_entry({"category": "rule"}, {}) > 0.3
 
 
+def test_a_project_sharing_only_its_directory_name_is_another_project(tmp_path):
+    """Both readers: a path with no store of its own takes its ancestors and
+    never a registered project elsewhere that happens to have the same name."""
+    from windvane import storage
+    from windvane.hot_reader import HotMemoryReader
+
+    ws = tmp_path / "ws"
+    other_api = tmp_path / "elsewhere" / "api"
+    (ws / "api").mkdir(parents=True)
+    other_api.mkdir(parents=True)
+    _register(_store(tmp_path), {
+        ws: ("h_ws", [{"id": "w1", "category": "rule", "content": "workspace rule"}]),
+        other_api: ("h_other", [{"id": "o1", "category": "mistake", "content": "the other api's mistake"}]),
+    })
+    # Under a registered workspace: the ancestors only.
+    assert {e["id"] for e in storage.load_project_memory(str(ws / "api"))["entries"]} == {"w1"}
+    assert [e["id"] for e in HotMemoryReader().load_entries(str(ws / "api"))] == ["w1"]
+    # Nowhere registered, same name as a registered project: nothing.
+    lone = tmp_path / "lone" / "api"
+    lone.mkdir(parents=True)
+    assert storage.load_project_memory(str(lone)) == {}
+    assert HotMemoryReader().load_entries(str(lone)) == []
+
+
 def test_store_reexports_every_name_it_imports_from_hot_reader():
     from windvane import hot_reader, store
 

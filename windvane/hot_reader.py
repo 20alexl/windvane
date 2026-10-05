@@ -382,13 +382,9 @@ class HotMemoryReader:
                     break
                 check_path = parent
 
-            # Name-based fallback
-            if not all_entries:
-                project_name = Path(project_path).name
-                for path, info in manifest.get("projects", {}).items():
-                    if Path(path).name == project_name:
-                        all_entries.extend(self._load_project_entries(path))
-                        break
+            # No fallback by directory name: two unrelated projects called
+            # `api` must never lend each other their mistakes. A project
+            # with nothing on its path or above it gets nothing.
             return all_entries
 
         # Legacy fallback: read old memory.json
@@ -410,12 +406,6 @@ class HotMemoryReader:
                 break
             check_path = parent
 
-        if not all_entries:
-            project_name = Path(project_path).name
-            for path, p in projects.items():
-                if Path(path).name == project_name:
-                    all_entries.extend(p.get("entries", []))
-                    break
         return [e for e in all_entries if not e.get("archived_at")]
 
     def get_scored_memories(

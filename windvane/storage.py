@@ -140,14 +140,9 @@ def load_project_memory(project_dir: str) -> dict:
                         result.setdefault("entries", []).append(entry)
             return result
 
-        # Name-based fallback
-        project_name = Path(project_dir).name
-        for path, info in manifest_projects.items():
-            if Path(path).name == project_name:
-                hash_id = info["hash"]
-                pdir = storage / "projects" / hash_id
-                return _load_project_data_from_dir(pdir)
-
+        # No fallback by directory name: a project registered elsewhere
+        # under the same name is another project. The ancestors, when any,
+        # are what a path with no store of its own inherits.
         if ancestor_entries:
             return {"entries": ancestor_entries, "project_name": Path(project_dir).name}
 

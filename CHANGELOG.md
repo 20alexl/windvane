@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **No memory by directory name.** A project with no store on its path or above it used to be lent the memory of any registered project that happened to share its directory name, and in one reader that lookup came before the ancestors, so two unrelated repositories both called `api` could show each other's mistakes. Both readers now take the path and its ancestors only. The Agent Memory Atlas review of claude-engram named this risk.
+
 ## 1.0.1 (2026-10-05)
 
 The plugin directory's static reader and the first day in public.
