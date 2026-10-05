@@ -109,7 +109,8 @@ def _refresh_deliberate(state: dict, data: dict, project_dir: str, turn_saved: b
         from windvane import draft as _draft
 
         transcript = _transcript_of(state, data)
-        record, _ctx = _draft.draft_with_context(project_dir, c._session_id, transcript, state)
+        record, _ctx = _draft.draft_with_context(project_dir, c._session_id, transcript, state,
+                                                 last_text=str((data or {}).get("last_assistant_message") or ""))
         return _draft.refresh_deliberate(record, project_dir, c._session_id, transcript, state, turn_saved=turn_saved) is not None
     except Exception:
         return False
@@ -151,7 +152,8 @@ def _maybe_bank_draft(state: dict, data: dict, project_dir: str, deliberate: boo
         return False
     try:
         transcript = _transcript_of(state, data)
-        record, _ctx = _draft.draft_with_context(project_dir, c._session_id, transcript, state)
+        record, _ctx = _draft.draft_with_context(project_dir, c._session_id, transcript, state,
+                                                 last_text=str((data or {}).get("last_assistant_message") or ""))
         # An earlier deliberate save the session has edited past is refreshed
         # from the same draft before the automatic entry is banked.
         _draft.refresh_deliberate(record, project_dir, c._session_id, transcript, state)

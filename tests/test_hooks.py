@@ -906,7 +906,10 @@ def test_stop_refreshes_a_save_made_after_the_turns_edits_with_the_turns_own_rep
     _run("stop_json", stop)
     after = ck.read_latest(ck.candidate_dirs(str(proj))) or {}
     assert after["kind"] == "manual" and "handoff_summary" in after["metadata"]["refreshed"]["fields"]
-    assert after["summary"] != "Cursor paging is only planned."
+    # The reply is the Stop payload's, not the transcript's last text: at
+    # Stop the file can still lack the reply that ended the turn (the live
+    # demo's fourth take banked the line before the save that way).
+    assert after["summary"] == "Added cursor paging. Next: the tests."
     assert after["task_description"] == "Cursor pagination for GET /items"
     assert sum(1 for h in ck.read_history(ck.candidate_dirs(str(proj))) if h["kind"] == "manual") == 1
 

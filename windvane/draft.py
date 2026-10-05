@@ -699,10 +699,14 @@ def work_project_of(project_dir: str, state: Optional[dict] = None) -> str:
         return project_dir
 
 
-def draft_with_context(project_dir: str, session_id: str, transcript_path: str, state: dict) -> tuple:
+def draft_with_context(project_dir: str, session_id: str, transcript_path: str, state: dict,
+                       last_text: str = "") -> tuple:
     """(record, session context): the context is what
     ``_get_session_context_for_handoff`` returned, so the PreCompact hook
-    reuses its mistakes without a second read."""
+    reuses its mistakes without a second read. ``last_text`` is the reply
+    that ended the turn when the caller has it (the Stop payload's
+    ``last_assistant_message``): at Stop the transcript file can still lack
+    that reply, and the draft would read the text before it."""
     st = state if isinstance(state, dict) else {}
     rec: dict = {f: ("" if f in STRING_FIELDS else []) for f in FIELDS}
     src: dict = {}
@@ -717,6 +721,8 @@ def draft_with_context(project_dir: str, session_id: str, transcript_path: str, 
         if prev_src == "previous checkpoint":
             since = float(prev.get("created") or prev.get("created_at") or prev.get("timestamp") or 0.0)
         tr = read_transcript(transcript_path, since)
+        if str(last_text or "").strip():
+            tr["last_text"] = str(last_text)
         ctx = _session_context(work_project)
         sentences = _closing_sentences(tr["last_text"])
         reply_done, reply_next = reply_lists(tr["last_text"])
