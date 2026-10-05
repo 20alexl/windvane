@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.3 (2026-10-05)
 
 Four more risks the Agent Memory Atlas review of claude-engram named, read against the code and fixed.
 
