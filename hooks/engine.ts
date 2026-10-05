@@ -14,7 +14,7 @@
 import type { PluginOptions } from 'claude-code'
 
 export const PLUGIN = 'windvane'
-export const VERSION = '0.1.0'
+export const VERSION = '1.0.0'
 
 // The plugin's userConfig rows the mod itself reads. `semantic`,
 // `alert_command`, `strict_pack` and `autonomy` are read by the engine from

@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 1.0.0 (2026-10-05)
 
-The first build. windvane supersedes claude-engram: the same engine, rewritten as a Claude Code plugin with a hooks module and no dependencies, in place of settings hooks and an MCP server.
+The first release. windvane supersedes claude-engram: the same engine, rewritten as a Claude Code plugin with a hooks module and no dependencies, in place of settings hooks and an MCP server.
 
 New relative to its predecessor:
 
