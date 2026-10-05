@@ -6,6 +6,8 @@ Session state that survives the context window.
 
 windvane is a Claude Code plugin that keeps the state of a session and steers it. A recorder drafts the checkpoint from what the session already did. Compaction happens at a chosen point with that state banked. The project rules and the checkpoint ride inside the compacted conversation and at the head of every subagent's prompt. Tool results are trimmed and secrets in them are redacted. Project memory and rules are a tool call away, and a token ledger, a pane and a status segment show where the session stands.
 
+Without it, keeping a long session on track is a watch: the context fill, the moment to ask for a checkpoint, the moment to compact, whether the work was picked back up. windvane keeps that watch. The fill is read on a timer, the checkpoint is drafted when it is needed, the compaction comes at a turn boundary once the state is banked, and one prompt of windvane's resumes the work, so the model carries on without a hand on it and without stalling near a full window.
+
 The principle: never ask the model to write what the machine can record.
 
 ![windvane demo](demo/windvane.gif)
