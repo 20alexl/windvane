@@ -108,6 +108,10 @@ printf '{\n  "autoCompactWindow": %s,\n  "skipDangerousModePermissionPrompt": tr
 
 (cd "$REPO" && python3 demo/build_fixture.py --seed-live "$ROOT" "$ROOT/config") >&2
 
+# The folder the tape's screenshots land in: ffmpeg does not create it, and
+# a missing folder fails the take after the gif is rendered.
+mkdir -p "$REPO/demo/screenshots-live"
+
 # The plugin snapshot the tape loads, so an edit to the repository during
 # the take reloads nothing.
 mkdir -p "$ROOT/plugin"
@@ -130,6 +134,7 @@ export WINDVANE_SEMANTIC=0
 # needs the whole read in the context to reach the band.
 export WINDVANE_RESULT_BUDGET=120000
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW=$WINDOW
+export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
 export DISABLE_AUTOUPDATER=1
 export PS1='\$ '
 EOF

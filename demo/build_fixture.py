@@ -132,13 +132,16 @@ def decode_cursor(cursor: str) -> int:
 
 # The API document the live take reads before its edit. It is sized so one
 # read of it carries the session's fill into the checkpoint band of a 100K
-# compaction window (demo/live_setup.sh): about 80,000 characters, some
-# 20,000 tokens, on top of a session's own 30-odd thousand, in fewer than
-# the 2,000 lines the Read tool returns at once, so the model reads it whole
-# and has no remainder to remark on. The door's budget is raised for the
-# take so the read reaches the context whole.
-API_DOC_MIN_CHARS = 78_000
-API_DOC_MAX_LINES = 1_900
+# compaction window (demo/live_setup.sh): some 20,000 tokens on top of a
+# session's own 30-odd thousand, and small enough that the Read tool
+# returns it whole, so the model has no remainder to remark on. The tool
+# stopped a take's read at about 64,000 characters counting its line
+# prefixes (1,201 of 1,714 lines), so the document stays under 56,000
+# characters and 1,150 lines. The door's budget is raised for the take so
+# the read reaches the context whole.
+API_DOC_MIN_CHARS = 48_000
+API_DOC_MAX_CHARS = 56_000
+API_DOC_MAX_LINES = 1_150
 
 # plural, singular, what it is, two fields of its own (name, type, rule).
 _RESOURCES = (
@@ -163,27 +166,12 @@ _RESOURCES = (
     ("orders", "order", "a customer's purchase of one or more items",
      ("customer_id", "integer", "The account that placed the order."),
      ("total_cents", "integer", "The sum of the lines at the prices of the moment. Read-only.")),
-    ("shipments", "shipment", "a parcel that carries part of an order",
-     ("carrier", "string", "The carrier's code, one of the codes `/carriers` lists."),
-     ("tracking", "string", "The carrier's tracking number, up to 64 characters.")),
     ("invoices", "invoice", "the billing record for an order",
      ("due_at", "string", "When payment is due; 30 days after issue by default."),
      ("paid", "boolean", "Whether the invoice was settled in full.")),
     ("customers", "customer", "an account that places orders",
      ("email", "string", "The login and the address receipts go to; unique."),
      ("country", "string", "An ISO 3166-1 alpha-2 code, used for tax and shipping rates.")),
-    ("reviews", "review", "a customer's rating and text for an item",
-     ("rating", "integer", "From 1 to 5."),
-     ("body", "string", "The review text, up to 2,000 characters; shown after moderation.")),
-    ("webhooks", "webhook", "a URL the API calls when a record changes",
-     ("url", "string", "An HTTPS address; the API refuses plain HTTP and private ranges."),
-     ("events", "array of strings", "The event names to deliver, such as `order.created`.")),
-    ("exports", "export", "a requested file of records, built in the background",
-     ("resource", "string", "Which resource to export, by its plural name."),
-     ("format", "string", "`csv` or `jsonl`.")),
-    ("audit", "audit entry", "one recorded change to any other record",
-     ("record_type", "string", "The resource the change touched."),
-     ("diff", "object", "The fields before and after, as `{field: [old, new]}`.")),
 )
 
 _FIELDS = (
@@ -427,6 +415,7 @@ def api_doc() -> str:
     text = "\n".join(out)
     lines = text.count("\n")
     assert len(text) >= API_DOC_MIN_CHARS, f"the API document is {len(text)} characters, under {API_DOC_MIN_CHARS}"
+    assert len(text) <= API_DOC_MAX_CHARS, f"the API document is {len(text)} characters, over {API_DOC_MAX_CHARS}"
     assert lines <= API_DOC_MAX_LINES, f"the API document has {lines} lines, over {API_DOC_MAX_LINES}"
     return text
 

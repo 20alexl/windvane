@@ -9,9 +9,13 @@
 # store seeded with yesterday's session, the fixture project) in the hidden
 # block below, so every take starts the same.
 #
-# NOT YET RENDERED: the wait patterns below follow the plugin's source (the
-# status segment and band in hooks/register.ts and hooks/band.tsx, the pane
-# in hooks/pane.tsx) and have not been checked against a take.
+# After a take, the long waits (the model thinking, the compaction) are
+# cut out of the gif from the mp4 rendered beside it:
+#
+#   python3 demo/trim.py demo/windvane.mp4 demo/windvane.gif
+#
+# The wait patterns below were checked against takes on Claude Code 2.1.289
+# with the fullscreen renderer (demo/live_setup.sh selects it).
 
 Output demo/windvane.gif
 Output demo/windvane.mp4
@@ -23,11 +27,11 @@ Set Shell "bash"
 Set FontFamily "DejaVu Sans Mono"
 Set FontSize 20
 Set LineHeight 1.0
-Set Width 1000
-Set Height 620
+Set Width 1240
+Set Height 780
 Set Padding 28
 Set Framerate 20
-Set TypingSpeed 35ms
+Set TypingSpeed 25ms
 Set CursorBlink false
 Set Theme { "name": "windvane-dark", "background": "#121417", "foreground": "#d8dadf", "cursor": "#121417", "selection": "#2a2e36", "black": "#121417", "red": "#e06c75", "green": "#98c379", "yellow": "#e5c07b", "blue": "#61afef", "magenta": "#c678dd", "cyan": "#56b6c2", "white": "#d8dadf", "brightBlack": "#5c6370", "brightRed": "#e06c75", "brightGreen": "#98c379", "brightYellow": "#e5c07b", "brightBlue": "#61afef", "brightMagenta": "#c678dd", "brightCyan": "#56b6c2", "brightWhite": "#ffffff" }
 
@@ -111,15 +115,14 @@ Sleep 500ms
 Type "/exit"
 Enter
 Wait+Line@60s /\$\s*$/
-Type "clear"
-Enter
-Sleep 300ms
-Show
 
-# 7: the outro.
-Type "echo 'git clone <url> windvane'; echo 'claude plugin marketplace add ./windvane'; echo 'claude plugin install windvane@windvane'"
+# 7: the outro: the three install lines alone on the screen. The command
+# that prints them is typed unrecorded and clears the screen first, so the
+# shell's echo of the command itself is gone before the lines appear.
+Type "clear; echo 'git clone <url> windvane'; echo 'claude plugin marketplace add ./windvane'; echo 'claude plugin install windvane@windvane'"
 Enter
 Wait+Screen@10s /install windvane@windvane\s*\n/
+Show
 Sleep 500ms
 Screenshot demo/screenshots-live/7-outro.png
 Sleep 2500ms
