@@ -77,8 +77,13 @@ PY
 
 # The compaction window, in the settings too, beside the bypass-permissions
 # acceptance: answering that dialog makes Claude Code rewrite this file, so
-# the answer is given here and the window survives.
-printf '{\n  "autoCompactWindow": %s,\n  "skipDangerousModePermissionPrompt": true\n}\n' "$WINDOW" > "$ROOT/config/settings.json"
+# the answer is given here and the window survives. The fullscreen renderer
+# is for the recorder: vhs matches a Screen wait against the first rows of
+# the terminal buffer, which stop changing once the transcript scrolls, so
+# the classic renderer leaves every wait staring at a frozen first page.
+# The fullscreen layout draws on the alternate screen, which has no
+# scrollback, so its rows are the viewport.
+printf '{\n  "autoCompactWindow": %s,\n  "skipDangerousModePermissionPrompt": true,\n  "tui": "fullscreen"\n}\n' "$WINDOW" > "$ROOT/config/settings.json"
 
 (cd "$REPO" && python3 demo/build_fixture.py --seed-live "$ROOT" "$ROOT/config") >&2
 

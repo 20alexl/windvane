@@ -133,138 +133,302 @@ def decode_cursor(cursor: str) -> int:
 # The API document the live take reads before its edit. It is sized so one
 # read of it carries the session's fill into the checkpoint band of a 100K
 # compaction window (demo/live_setup.sh): about 80,000 characters, some
-# 20,000 tokens, on top of a session's own 30-odd thousand. The door's budget
-# is raised for the take so the read reaches the context whole.
-API_DOC_CHARS = 80_000
+# 20,000 tokens, on top of a session's own 30-odd thousand, in fewer than
+# the 2,000 lines the Read tool returns at once, so the model reads it whole
+# and has no remainder to remark on. The door's budget is raised for the
+# take so the read reaches the context whole.
+API_DOC_MIN_CHARS = 78_000
+API_DOC_MAX_LINES = 1_900
 
+# plural, singular, what it is, two fields of its own (name, type, rule).
 _RESOURCES = (
-    ("items", "item", "A thing the shop sells: a name, a price in cents, the stock on hand."),
-    ("tags", "tag", "A label an item carries; many items share one tag."),
-    ("collections", "collection", "A curated set of items shown together on the storefront."),
-    ("prices", "price", "A dated price for one item in one currency."),
-    ("stock", "stock level", "The quantity of one item in one warehouse."),
-    ("suppliers", "supplier", "A company that restocks items."),
-    ("orders", "order", "A customer's purchase of one or more items."),
-    ("shipments", "shipment", "A parcel that carries part of an order."),
-    ("invoices", "invoice", "The billing record for an order."),
-    ("customers", "customer", "An account that places orders."),
-    ("reviews", "review", "A customer's rating and text for an item."),
-    ("webhooks", "webhook", "A URL the API calls when a record changes."),
-    ("exports", "export", "A requested file of records, built in the background."),
-    ("audit", "audit entry", "One recorded change to any other record."),
+    ("items", "item", "a thing the shop sells, with a name, a price and the stock on hand",
+     ("sku", "string", "The stock-keeping unit, unique per shop, up to 40 characters."),
+     ("price_cents", "integer", "The current price in cents; `/prices` keeps the history.")),
+    ("tags", "tag", "a label an item carries; many items share one tag",
+     ("color", "string", "A six-digit hex color the storefront shows behind the label."),
+     ("item_count", "integer", "How many active items carry the tag. Read-only.")),
+    ("collections", "collection", "a curated set of items shown together on the storefront",
+     ("position", "integer", "Where the collection sits on the home page; lower is higher."),
+     ("item_ids", "array of integers", "The items in display order; an archived item is skipped.")),
+    ("prices", "price", "a dated price for one item in one currency",
+     ("currency", "string", "An ISO 4217 code such as `EUR`."),
+     ("valid_from", "string", "The moment the price takes effect; the newest past price wins.")),
+    ("stock", "stock level", "the quantity of one item in one warehouse",
+     ("warehouse_id", "integer", "The warehouse that holds the stock."),
+     ("quantity", "integer", "Units on hand; a negative value is refused.")),
+    ("suppliers", "supplier", "a company that restocks items",
+     ("lead_days", "integer", "Working days from order to delivery, as agreed."),
+     ("contact_email", "string", "Where purchase orders are sent; validated as an address.")),
+    ("orders", "order", "a customer's purchase of one or more items",
+     ("customer_id", "integer", "The account that placed the order."),
+     ("total_cents", "integer", "The sum of the lines at the prices of the moment. Read-only.")),
+    ("shipments", "shipment", "a parcel that carries part of an order",
+     ("carrier", "string", "The carrier's code, one of the codes `/carriers` lists."),
+     ("tracking", "string", "The carrier's tracking number, up to 64 characters.")),
+    ("invoices", "invoice", "the billing record for an order",
+     ("due_at", "string", "When payment is due; 30 days after issue by default."),
+     ("paid", "boolean", "Whether the invoice was settled in full.")),
+    ("customers", "customer", "an account that places orders",
+     ("email", "string", "The login and the address receipts go to; unique."),
+     ("country", "string", "An ISO 3166-1 alpha-2 code, used for tax and shipping rates.")),
+    ("reviews", "review", "a customer's rating and text for an item",
+     ("rating", "integer", "From 1 to 5."),
+     ("body", "string", "The review text, up to 2,000 characters; shown after moderation.")),
+    ("webhooks", "webhook", "a URL the API calls when a record changes",
+     ("url", "string", "An HTTPS address; the API refuses plain HTTP and private ranges."),
+     ("events", "array of strings", "The event names to deliver, such as `order.created`.")),
+    ("exports", "export", "a requested file of records, built in the background",
+     ("resource", "string", "Which resource to export, by its plural name."),
+     ("format", "string", "`csv` or `jsonl`.")),
+    ("audit", "audit entry", "one recorded change to any other record",
+     ("record_type", "string", "The resource the change touched."),
+     ("diff", "object", "The fields before and after, as `{field: [old, new]}`.")),
 )
 
 _FIELDS = (
-    ("id", "integer", "Assigned by the server. Never reused."),
-    ("name", "string", "Up to 120 characters. Leading and trailing spaces are removed."),
-    ("slug", "string", "Lowercase letters, digits and hyphens; unique within the resource."),
-    ("status", "string", "One of `draft`, `active`, `archived`."),
-    ("created_at", "string", "RFC 3339 timestamp in UTC, set by the server."),
-    ("updated_at", "string", "RFC 3339 timestamp in UTC, moved by every write."),
-    ("owner_id", "integer", "The customer or staff account that created the record."),
-    ("notes", "string", "Free text, up to 4,000 characters, not searched."),
+    ("id", "integer", "Assigned by the server and never reused."),
+    ("name", "string", "Up to 120 characters; leading and trailing spaces are removed."),
+    ("slug", "string", "Lowercase letters, digits and hyphens, unique within the resource."),
+    ("status", "string", "One of `draft`, `active` or `archived`."),
+    ("created_at", "string", "An RFC 3339 timestamp in UTC, set by the server."),
+    ("updated_at", "string", "An RFC 3339 timestamp in UTC, moved by every write."),
+    ("owner_id", "integer", "The account that created the record."),
+    ("notes", "string", "Free text up to 4,000 characters, kept but not searched."),
 )
+
+_INTRO = """# items-api reference
+
+Every endpoint is under `/v1`. Requests and responses are JSON, encoded as
+UTF-8. Times are UTC in RFC 3339 form. Ids are integers. A request body larger
+than one megabyte is refused with 413 before it is read.
+
+## Paging
+
+List endpoints take `page=` (from 1) and `per_page=` (1 to 100, default 20) and
+answer with `items`, `page` and `pages`. Clients must keep `page=` working: the
+storefront and the back office both send it, and the back office links to a
+page number in its own URLs. Cursor paging is planned for GET /items so that a
+list does not skip or repeat rows while items are being added or archived
+between two requests; the plan is an opaque `cursor=` parameter that encodes
+the last id seen, answered with `next_cursor`, with `page=` kept as it is.
+
+## Authentication
+
+Send `Authorization: Bearer <token>`. A token is scoped to one account and one
+of the roles `read`, `write` or `admin`. A missing or expired token answers
+401, a token without the needed role 403. Tokens are issued in the back office
+and can be revoked there; a revoked token fails within a minute.
+
+## Errors
+
+An error answer has `error.code`, `error.message` and, for a refused write,
+`error.fields`, a map from field name to the reason it was refused. The
+message is for a developer reading a log, not for showing to a customer.
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `bad_request` | A field is missing, or of the wrong type, or the body is not JSON |
+| 401 | `unauthenticated` | No token, or an expired or revoked one |
+| 403 | `forbidden` | The token's role does not allow the request |
+| 404 | `not_found` | No record with that id, or none the token may see |
+| 409 | `conflict` | The write would duplicate a unique field |
+| 413 | `too_large` | The body is over one megabyte |
+| 422 | `invalid` | The fields parse but the record would not be valid |
+| 429 | `rate_limited` | Over the limit; `Retry-After` says how many seconds to wait |
+
+## Rate limits
+
+Each token may make 600 requests a minute, counted over a sliding window.
+Every answer carries `X-RateLimit-Remaining`. A list request with `per_page=100`
+counts once, so a client that reads in large pages stays well inside the
+limit. Exports are not counted against it.
+
+## Idempotency
+
+A POST may carry `Idempotency-Key`, any string up to 128 characters. The first
+request with a key is executed; a repeat with the same key and the same body
+within 24 hours answers with the stored result and does nothing again. A repeat
+with the same key and a different body answers 409.
+
+## Webhooks
+
+A webhook is called with a POST whose body is `{"event": "<name>", "data":
+<record>, "at": "<time>"}`. The call is signed: `X-Signature` is the HMAC-SHA256
+of the body with the webhook's secret. A delivery that does not answer 2xx
+within ten seconds is retried after one minute, ten minutes and one hour, then
+dropped and recorded in `/audit`.
+"""
+
+_CHANGELOG = """## Changelog
+
+### 1.4.0
+
+- Idempotency keys on every POST.
+- `updated_since` on every list, so a client can poll for changes without
+  reading every page.
+
+### 1.3.0
+
+- Webhook deliveries are signed, and failed deliveries are retried three times.
+- `/exports` builds files in the background and answers 202 with the job.
+
+### 1.2.0
+
+- `/audit` records every write with the token's account and the diff.
+- Archiving replaces deletion everywhere; an archived record stays readable.
+
+### 1.1.0
+
+- `sort` with a leading `-` for descending order.
+- Rate limits are per token, not per account.
+
+### 1.0.0
+
+- The first stable version: items, tags, collections, prices, stock, suppliers,
+  orders, shipments, invoices, customers and reviews.
+"""
+
+
+def _record(singular: str, extras: list, n: int) -> str:
+    fields = {
+        "id": n,
+        "name": f"{singular} {n}",
+        "slug": f"{singular}-{n}",
+        "status": "active" if n % 3 else "draft",
+        "created_at": f"2026-09-{(n % 28) + 1:02d}T09:{n % 60:02d}:00Z",
+        "updated_at": f"2026-10-{(n % 4) + 1:02d}T15:{(n * 7) % 60:02d}:00Z",
+        "owner_id": 100 + n % 7,
+        "notes": "",
+    }
+    for field, kind, _rule in extras:
+        if kind == "integer":
+            fields[field] = 10 * n + 4
+        elif kind == "boolean":
+            fields[field] = n % 2 == 0
+        elif kind.startswith("array"):
+            fields[field] = [n, n + 1] if "integers" in kind else [f"{singular}.created", f"{singular}.updated"]
+        elif kind == "object":
+            fields[field] = {"status": ["draft", "active"]}
+        else:
+            fields[field] = f"{field}-{n}"
+    return json.dumps(fields)
 
 
 def api_doc() -> str:
     """The items-api reference as the fixture project documents it."""
-    out = [
-        "# items-api reference",
-        "",
-        "Every endpoint is under `/v1`. Requests and responses are JSON. Times are UTC.",
-        "",
-        "## Paging",
-        "",
-        "List endpoints take `page=` (from 1) and `per_page=` (1 to 100, default 20) and",
-        "answer with `items`, `page` and `pages`. Clients must keep `page=` working: the",
-        "storefront and the back office both send it. Cursor paging is planned for GET",
-        "/items so that a list does not skip or repeat rows while items are being added.",
-        "",
-        "## Authentication",
-        "",
-        "Send `Authorization: Bearer <token>`. A token is scoped to one account and one",
-        "of the roles `read`, `write` or `admin`. A missing or expired token answers 401,",
-        "a token without the needed role 403.",
-        "",
-        "## Errors",
-        "",
-        "An error answer has `error.code`, `error.message` and, for a bad request,",
-        "`error.fields`, a map from field name to the reason it was refused.",
-        "",
-        "| Status | Code | When |",
-        "|---|---|---|",
-        "| 400 | `bad_request` | A field is missing or of the wrong type |",
-        "| 404 | `not_found` | No record with that id, or none the token may see |",
-        "| 409 | `conflict` | The write would duplicate a unique field |",
-        "| 422 | `invalid` | The fields parse but the record would not be valid |",
-        "| 429 | `rate_limited` | Over the limit; `Retry-After` says how long to wait |",
-        "",
-    ]
-    for plural, singular, blurb in _RESOURCES:
+    out = [_INTRO]
+    for plural, singular, blurb, *extras in _RESOURCES:
+        a_singular = ("an " if singular[0] in "aeiou" else "a ") + singular
         out += [
             f"## {plural}",
             "",
-            blurb,
+            f"{a_singular[0].upper()}{a_singular[1:]} is {blurb}. Records are never deleted: archiving",
+            f"{a_singular} takes it out of every list and keeps it readable by id, and every write to",
+            f"{a_singular} is recorded in `/audit` with the account that made it. The fields every {singular}",
+            f"carries are listed under Fields; `{extras[0][0]}` and `{extras[1][0]}` are its own.",
             "",
             f"### GET /{plural}",
             "",
-            f"Lists {plural}, newest first.",
+            f"Lists {plural}, newest first unless `sort` says otherwise. Without `status`, only",
+            f"`draft` and `active` records are listed.",
             "",
             "| Parameter | Type | Meaning |",
             "|---|---|---|",
             "| `page` | integer | The page, from 1 |",
             "| `per_page` | integer | Rows per page, 1 to 100 |",
-            "| `status` | string | Only records in this status |",
+            "| `status` | string | Only records in this status, `archived` included when asked |",
             "| `updated_since` | string | Only records changed after this time |",
-            "| `sort` | string | `created_at`, `updated_at` or `name`, with `-` for descending |",
+            "| `q` | string | Only records whose name or slug starts with this, per word |",
+            "| `sort` | string | `created_at`, `updated_at` or `name`, with a leading `-` for descending |",
             "",
             "```json",
-            f'{{"items": [{{"id": 1, "name": "first {singular}", "status": "active"}}], "page": 1, "pages": 1}}',
+            "{",
+            f'  "items": [{_record(singular, extras, 1)}],',
+            '  "page": 1,',
+            '  "pages": 4',
+            "}",
             "```",
             "",
             f"### GET /{plural}/{{id}}",
             "",
-            f"One {singular} with every field below. 404 when the id is unknown.",
+            f"One {singular} with every field. 404 when there is no such id or the token's",
+            f"account may not see it; the two cases are not told apart.",
             "",
             f"### POST /{plural}",
             "",
-            f"Creates a {singular}. `name` is required; `slug` is derived from it when absent.",
-            "Answers 201 with the record.",
+            f"Creates {a_singular}. `name` is required and `slug` is derived from it when absent.",
+            f"Answers 201 with the record as stored, so a client reads back the fields the server",
+            f"set. A `slug` that another {singular} already has answers 409.",
+            "",
+            "| Field | Type | Rule |",
+            "|---|---|---|",
+            *(f"| `{field}` | {kind} | {rule} |" for field, kind, rule in _FIELDS[1:4]),
+            *(f"| `{field}` | {kind} | {rule} |" for field, kind, rule in extras),
+            f"| `notes` | string | {_FIELDS[7][2]} |",
             "",
             "```json",
-            f'{{"name": "new {singular}", "status": "draft", "notes": ""}}',
+            _record(singular, extras, 2),
             "```",
             "",
             f"### PATCH /{plural}/{{id}}",
             "",
-            "Changes the fields sent and leaves the rest. A field set to `null` is cleared",
-            "when it is optional and refused with 422 when it is not.",
+            "Changes the fields sent and leaves the rest. A field set to `null` is cleared when",
+            "it is optional and refused with 422 when it is not. `id`, `created_at`,",
+            "`updated_at` and `owner_id` cannot be sent. The answer is the whole record.",
             "",
             f"### DELETE /{plural}/{{id}}",
             "",
-            "Archives the record (`status` becomes `archived`) and answers 204. An archived",
-            "record stays readable by id and leaves every list unless `status=archived` is asked.",
+            f"Archives the {singular}: `status` becomes `archived` and the answer is 204. The",
+            f"record stays readable by id and leaves every list unless `status=archived` is",
+            f"asked for. There is no way to remove a {singular} for good through the API.",
+            "",
+            f"### Events",
+            "",
+            f"`{singular}.created`, `{singular}.updated` and `{singular}.archived` are delivered to",
+            f"every webhook subscribed to them, with the {singular} as `data`.",
             "",
             "### Fields",
             "",
-        ]
-        for field, kind, rule in _FIELDS:
-            out += [f"#### {plural}.{field}", "", f"Type: {kind}. {rule}", "", f"Example: `{field}` of a {singular} as a client would send or read it.", ""]
-    out += ["## Changelog", ""]
-    version = 0
-    while sum(len(line) + 1 for line in out) < API_DOC_CHARS:
-        version += 1
-        plural = _RESOURCES[version % len(_RESOURCES)][0]
-        field = _FIELDS[version % len(_FIELDS)][0]
-        out += [
-            f"### 0.{version}.0",
+            "| Field | Type | Rule |",
+            "|---|---|---|",
+            *(f"| `{field}` | {kind} | {rule} |" for field, kind, rule in _FIELDS),
+            *(f"| `{field}` | {kind} | {rule} |" for field, kind, rule in extras),
             "",
-            f"- `{plural}.{field}` is validated on write; a value the rule above refuses answers 422.",
-            f"- GET /{plural} accepts `updated_since`, so a client can poll for changes without reading every page.",
-            f"- The `{plural}` export includes `{field}`.",
+            "### Refusals by field",
+            "",
+            *(f"- `{field}`: {rule.rstrip('.')}; anything else answers 422 with the field named." for field, _kind, rule in (*_FIELDS[1:4], *extras)),
+            "",
+            "### Permissions",
+            "",
+            f"A `read` token lists and reads {plural}. A `write` token also creates and changes",
+            f"them. Archiving a {singular} needs `admin`, as does reading one that another account",
+            f"owns; a `read` or `write` token sees its own account's {plural} only.",
+            "",
+            "### Common questions",
+            "",
+            f"- Why does a {singular} I just created not appear in the list? The list is read from a",
+            f"  replica that can lag by a second or two; read it by id, which is always current.",
+            f"- Can I change `{extras[0][0]}` after creation? Yes, with PATCH, under the rule above;",
+            f"  the change is recorded in `/audit` like any other.",
+            f"- How do I find {plural} changed since my last poll? Pass `updated_since` with the",
+            f"  `updated_at` of the newest record you hold, and page through the answer.",
+            "",
+            "### Examples",
+            "",
+            "```bash",
+            f'curl -H "Authorization: Bearer $TOKEN" "https://api.example.test/v1/{plural}?per_page=50&sort=-updated_at"',
+            f'curl -H "Authorization: Bearer $TOKEN" -X POST -d \'{{"name": "new {singular}"}}\' https://api.example.test/v1/{plural}',
+            f'curl -H "Authorization: Bearer $TOKEN" -X PATCH -d \'{{"status": "active"}}\' https://api.example.test/v1/{plural}/2',
+            "```",
             "",
         ]
-    return "\n".join(out) + "\n"
+    out.append(_CHANGELOG)
+    text = "\n".join(out)
+    lines = text.count("\n")
+    assert len(text) >= API_DOC_MIN_CHARS, f"the API document is {len(text)} characters, under {API_DOC_MIN_CHARS}"
+    assert lines <= API_DOC_MAX_LINES, f"the API document has {lines} lines, over {API_DOC_MAX_LINES}"
+    return text
 
 
 # --------------------------------------------------------------------------
