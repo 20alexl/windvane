@@ -262,12 +262,63 @@ def test_the_closing_skips_a_bulleted_list_when_prose_stands_within_the_lookback
     assert _closing(reply) == "Two files changed and the suite is green."
     numbered = "The export landed.\n\n1. rules.md\n2. mistakes.md"
     assert _closing(numbered) == "The export landed."
-    # every paragraph in the lookback a list: the last one stands
+    # every paragraph a list: the last one stands
     only_lists = "- a done\n- b done\n\n- c next"
     assert _closing(only_lists) == "- c next"
-    # a prose paragraph beyond the lookback does not count
+    # lists do not count toward the lookback: the prose before them stands
     far = "Prose far back.\n\n- one\n\n- two\n\n- three"
-    assert _closing(far) == "- three"
+    assert _closing(far) == "Prose far back."
+    # a label and its items are one list; a line about the save itself is
+    # not the handoff when another prose line stands
+    reply = ("I added cursor paging to paginate() with the Edit tool.\n\n"
+             "Not done:\n- **Cursor tests:** none yet.\n- **Docs:** API.md still says planned.\n\n"
+             "I also banked a windvane checkpoint, since a hook asked for one. It recorded 0 steps done.")
+    assert _closing(reply) == "I added cursor paging to paginate() with the Edit tool."
+    assert _closing("I banked the checkpoint as asked.") == "I banked the checkpoint as asked."
+
+
+def test_the_replys_done_and_next_lists_are_steps():
+    from windvane.draft import reply_lists
+
+    reply = ("I added cursor paging.\n\n"
+             "- **`cursor=`:** an opaque base64 string.\n- **`page=`:** unchanged.\n\n"
+             "Not done:\n- **Cursor tests:** `test_api.py` has none yet.\n- **Docs:** `docs/API.md` still says planned.\n\n"
+             "I also banked a checkpoint.")
+    done, nxt = reply_lists(reply)
+    assert done == []
+    assert nxt == ["Cursor tests: `test_api.py` has none yet.", "Docs: `docs/API.md` still says planned."]
+    # a label as its own paragraph, bold or a heading, then the list; numbered items
+    reply = ("**Done**\n\n- `paginate()` takes `cursor=`.\n- `page=` is unchanged.\n\n"
+             "## Next, each needing your go-ahead\n\n1. **Tests:** add cursor tests.\n2. **Docs:** update API.md.\n\n"
+             "I won't commit unless you ask.")
+    done, nxt = reply_lists(reply)
+    assert done == ["`paginate()` takes `cursor=`.", "`page=` is unchanged."]
+    assert nxt == ["Tests: add cursor tests.", "Docs: update API.md."]
+    # an unlabelled list, or a label that is not one of the two, is not a step list
+    assert reply_lists("Files:\n- a.py\n- b.py\n\n- c\n- d") == ([], [])
+    assert reply_lists("") == ([], [])
+
+
+def test_the_draft_takes_pending_steps_from_the_replys_next_list_when_the_task_list_is_empty(tmp_path, monkeypatch):
+    from windvane import draft as d
+
+    sid = "aaaaaaaa-0000-4000-8000-0000000000d8"
+    proj, _ring, _entry = _project_with_ring(tmp_path, sid)
+    closing = ("I added cursor paging.\n\nDone:\n- cursor= on GET /items\n\nNot done:\n- cursor tests\n- the docs\n\n"
+               "I also banked a windvane checkpoint, as the hook asked.")
+    tp = _session_transcript(tmp_path, proj, closing=closing)
+    _context(monkeypatch)
+    monkeypatch.setattr(d, "_previous", lambda *a, **k: ({}, ""))
+    monkeypatch.setattr(d, "work_project_of", lambda project_dir, state=None: project_dir)
+    monkeypatch.setattr(d, "read_transcript", lambda path, since=0.0: {
+        "files": [], "open_tasks": [], "done_tasks": [], "current_task": "", "commits": [], "completed": [],
+        "first_prompt": "Add cursor paging", "last_text": closing, "compacted": False, "earliest": 0.0})
+    rec = d.draft(str(proj), sid, str(tp), {})
+    assert rec["pending_steps"] == ["cursor tests", "the docs"]
+    assert rec["completed_steps"] == ["cursor= on GET /items"]
+    assert rec["handoff_summary"] == "I added cursor paging."
+    assert rec["metadata"]["draft_sources"]["pending_steps"] == "closing reply"
+    assert rec["metadata"]["draft_sources"]["completed_steps"] == "closing reply"
 
 
 # ── fix (c): a title carried across a compaction from before the session ───

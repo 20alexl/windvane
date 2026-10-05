@@ -67,7 +67,14 @@ _NEXT_CUE = re.compile(r"\b(?:next|then|waiting|on your word|pending|remaining|b
 # A paragraph that addresses the person ("when you have a moment, reconnect
 # the server") is a request, not the handoff; the closing walk skips it.
 _SECOND_PERSON = re.compile(r"\b(?:you|your|yours|you'?re|you'?ll|you'?ve)\b", re.IGNORECASE)
+# A closing line about the record itself, not the work.
+_ABOUT_RECORD = re.compile(r"\b(?:banked|saved|save|savi?ng|banking)\b[^.]*\bcheckpoint\b|\bcheckpoint\b[^.]*\b(?:banked|saved)\b", re.IGNORECASE)
 _CLOSING_LOOKBACK = 3
+# The labels of a reply's closing lists, and how long a label line can be.
+_DONE_LABEL = re.compile(r"^(?:done|completed|finished|shipped|landed|what (?:is|was|got) done|changes(?: made)?)\b")
+_NEXT_LABEL = re.compile(r"^(?:next|not done|not yet done|to ?do|pending|remaining|left|open|still to do|waiting|follow[- ]?ups?|what(?:'s| is) next)\b")
+_LABEL_CHARS = 60
+STEP_CHARS = 160
 _TASK_NUM = re.compile(r"Task #(\w+)")
 _GIT_COMMIT = re.compile(r"\bgit((?:\s+-[cC]\s+\S+)*)\s+commit(?![\w-])")
 _HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
@@ -177,27 +184,86 @@ def _paragraphs(text: str) -> list:
     return [p for p in re.split(r"\n\s*\n", str(text or "")) if p.strip()]
 
 
+def _label_of(line: str) -> str:
+    """A short line that heads a list ("Next:", "**Not done**", "## Done",
+    "Next, waiting on you"), as plain lower-cased words; '' otherwise."""
+    s = _strip_emphasis(line).strip()
+    s = re.sub(r"^#{1,6}\s*", "", s).rstrip(":").strip()
+    if not s or len(s) > _LABEL_CHARS or _LIST_LINE.match(line):
+        return ""
+    return " ".join(s.lower().split())
+
+
 def _is_list(paragraph: str) -> bool:
-    """Every non-empty line is a bullet or a numbered item."""
+    """Every non-empty line is a bullet or a numbered item, after a label
+    line at most ("Not done:" and its items are one list)."""
     lines = [ln for ln in paragraph.splitlines() if ln.strip()]
-    return bool(lines) and all(_LIST_LINE.match(ln) for ln in lines)
+    if not lines:
+        return False
+    if len(lines) > 1 and not _LIST_LINE.match(lines[0]) and _label_of(lines[0]):
+        lines = lines[1:]
+    return all(_LIST_LINE.match(ln) for ln in lines)
+
+
+def _list_items(lines: list) -> list:
+    out = []
+    for ln in lines:
+        item = " ".join(_strip_emphasis(_LIST_LINE.sub("", ln, count=1)).split())
+        if item:
+            out.append(_cut(item, STEP_CHARS))
+    return out
+
+
+def reply_lists(text: str) -> tuple:
+    """(done, next): the items of the reply's lists headed "Done" and
+    "Next" (or "Not done", "Pending", "Remaining", "To do"), in order. The
+    label is the list's own first line or the short paragraph before it.
+    The model is asked to end a reply with what is done and what is next;
+    when it answers as lists, the recorder reads them as steps."""
+    done: list = []
+    nxt: list = []
+    paras = _paragraphs(text)
+    pending_label = ""
+    for p in paras:
+        lines = [ln for ln in p.splitlines() if ln.strip()]
+        label = pending_label
+        pending_label = ""
+        if not _LIST_LINE.match(lines[0]):
+            own = _label_of(lines[0])
+            if own and len(lines) > 1 and all(_LIST_LINE.match(ln) for ln in lines[1:]):
+                label, lines = own, lines[1:]
+            elif own and len(lines) == 1:
+                pending_label = own  # the list may be the next paragraph
+                continue
+            else:
+                continue
+        if not label or not all(_LIST_LINE.match(ln) for ln in lines):
+            continue
+        if _NEXT_LABEL.match(label):
+            nxt.extend(_list_items(lines))
+        elif _DONE_LABEL.match(label):
+            done.extend(_list_items(lines))
+    return _dedupe(done), _dedupe(nxt)
 
 
 def _closing(text: str) -> str:
     """The closing paragraph of a reply, emphasis stripped, on one line: the
-    last one that does not address the person (a request to them is not the
-    handoff), looking back three paragraphs at most; the last one when every
-    one of them does. A bulleted list is passed over when a prose paragraph
-    stands within the lookback (a list is the body of a reply, not the line
-    that hands it over)."""
+    last prose paragraph that is about the work, looking back three prose
+    paragraphs at most. A list is the body of a reply, not the line that
+    hands it over, so lists do not count toward the lookback. A paragraph
+    that addresses the person (a request to them) or one about the save
+    itself ("I banked a checkpoint, it recorded nothing") stands only when
+    nothing else does."""
     paras = _paragraphs(text)
     if not paras:
         return ""
-    window = paras[-_CLOSING_LOOKBACK:]
-    prose = [p for p in window if not _is_list(p)]
-    candidates = prose if prose else window
+    prose = [p for p in paras if not _is_list(p)]
+    candidates = prose[-_CLOSING_LOOKBACK:] if prose else paras[-_CLOSING_LOOKBACK:]
     for p in reversed(candidates):
-        if not _SECOND_PERSON.search(p):
+        if not _SECOND_PERSON.search(p) and not _ABOUT_RECORD.search(p):
+            return _cut(_strip_emphasis(p), SUMMARY_CHARS)
+    for p in reversed(candidates):
+        if not _ABOUT_RECORD.search(p):
             return _cut(_strip_emphasis(p), SUMMARY_CHARS)
     return _cut(_strip_emphasis(candidates[-1]), SUMMARY_CHARS)
 
@@ -653,6 +719,7 @@ def draft_with_context(project_dir: str, session_id: str, transcript_path: str, 
         tr = read_transcript(transcript_path, since)
         ctx = _session_context(work_project)
         sentences = _closing_sentences(tr["last_text"])
+        reply_done, reply_next = reply_lists(tr["last_text"])
 
         # Another session's record (the project fallback) lends only what is
         # true of the project: its warnings and context needed.
@@ -668,8 +735,8 @@ def draft_with_context(project_dir: str, session_id: str, transcript_path: str, 
         carried_all = [s for s in (_pick(prev, "next_steps", "pending_steps") if own else [])
                        if _norm(s) not in _TRIVIAL and not _closes(s, done_norm)]
         said = [s for s in carried_all if _said_done(s, sentences)]
-        if said:
-            completed = _dedupe(completed + said)
+        if said or reply_done:
+            completed = _dedupe(completed + said + reply_done)
         # The previous own record's completed steps stay: a record is the
         # unit's state, not one turn's news (a restore after a compaction
         # read "Completed (1)" against six closed tasks, 2026-10-04). The
@@ -683,7 +750,7 @@ def draft_with_context(project_dir: str, session_id: str, transcript_path: str, 
             rec["completed_steps"] = completed
             names = (["previous checkpoint"] if earlier else [])
             names += [n for n, v in (("task list", tr["done_tasks"]), ("commits", tr["commits"])) if v]
-            names += (["hook state"] if extra else []) + (["closing reply"] if said else [])
+            names += (["hook state"] if extra else []) + (["closing reply"] if said or reply_done else [])
             src["completed_steps"] = "+".join(names)
 
         # The task: the session's own previous record, unless a compaction
@@ -712,11 +779,16 @@ def draft_with_context(project_dir: str, session_id: str, transcript_path: str, 
                 rec[fld] = got
                 src[fld] = prev_src
 
+        # pending: the open tasks and the carried steps; the reply's own
+        # "next" list when the task list names nothing (a session that keeps
+        # no task list still ends its reply with what is next).
         carried = [s for s in carried_all if s not in said]
-        pending = _dedupe(list(tr["open_tasks"]) + carried)
+        from_reply = reply_next if not tr["open_tasks"] else []
+        pending = _dedupe(list(tr["open_tasks"]) + from_reply + carried)
         if pending:
             rec["pending_steps"] = pending
-            src["pending_steps"] = "+".join(n for n, v in (("task list", tr["open_tasks"]), (prev_src, carried)) if v)
+            src["pending_steps"] = "+".join(
+                n for n, v in (("task list", tr["open_tasks"]), ("closing reply", from_reply), (prev_src, carried)) if v)
 
         if tr["files"]:
             rec["files_involved"] = list(tr["files"])
