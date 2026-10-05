@@ -461,6 +461,66 @@ def _rewound_ring(tmp_path: Path) -> Path:
     return ring
 
 
+def test_a_resume_with_no_edits_takes_the_project_from_the_sessions_own_checkpoint(tmp_path: Path, monkeypatch):
+    """A session at a workspace root that worked through subagents alone has
+    no edits of its own; it used to be taken for the root, and its banner
+    read the newest session of any project under it (the clocked-in report,
+    2026-10-05). Its own checkpoint names the project it was filed under."""
+    pytest.importorskip("windvane.checkpoints")
+    from windvane import checkpoints as ck
+    from windvane.events import session_start
+    from windvane.store import MemoryStore
+
+    ws = tmp_path / "ws"
+    game = ws / "game"
+    (game / ".git").mkdir(parents=True)
+    (ws / ".git").mkdir()
+    norm = common._normalize_path
+    store = MemoryStore()
+    store.remember_project(str(ws))
+    store.remember_project(str(game))
+    monkeypatch.setattr(common, "_session_id", "mine")
+    monkeypatch.setattr(common, "_stdin_cache", None)
+    ring = ck.register_project_ring(str(game))
+    assert ring is not None
+    now = time.time()
+    own = {"task_id": "task_5", "kind": "manual", "created": now - 5, "session_id": "mine",
+           "project_path": norm(str(game)), "summary": "wire the lobby", "task_description": "wire the lobby"}
+    (ring / "handoff_history.json").write_text(json.dumps({"handoffs": [own]}), encoding="utf-8")
+
+    # No transcript, no state lists: the cwd is the root, and it is a hub.
+    work_project, resume_files = common._banner_work_project(str(ws), "compact", "")
+    assert norm(work_project) == norm(str(ws)) and resume_files == []
+    assert common._is_hub(str(ws)) and not common._is_hub(str(game))
+    restored, _skipped = common._banner_checkpoint(str(ws), work_project, "compact", False, "")
+    assert restored and restored["task_id"] == "task_5"
+    assert common._banner_project_from_checkpoint(str(ws), work_project, "mine", restored) == norm(str(game))
+    # Another session's record, or a record of the root itself, names nothing.
+    other = dict(own, session_id="theirs")
+    assert common._banner_project_from_checkpoint(str(ws), work_project, "mine", other) == work_project
+    assert common._banner_project_from_checkpoint(str(ws), work_project, "mine", dict(own, project_path=norm(str(ws)))) == work_project
+    # The edits named the project already: the record changes nothing.
+    assert common._banner_project_from_checkpoint(str(ws), norm(str(game)), "mine", own) == norm(str(game))
+
+    # The last-session block reads the index at the root. With the project
+    # unknown on a compaction it prints nothing; with the project known it
+    # shows that project's newest session; on a fresh start the root's
+    # newest is shown as before.
+    root_dir = common.get_project_memory_dir(str(ws))
+    root_dir.mkdir(parents=True, exist_ok=True)
+    (root_dir / "session_index.json").write_text(json.dumps({"version": 1, "sessions": {
+        "s-other": {"session_id": "s-other", "last_timestamp": "2026-10-05T10:00:00Z", "git_branch": "main",
+                    "files_edited": [str(ws / "tools" / "map.py")], "error_count": 0, "prompt_count": 4},
+        "s-game": {"session_id": "s-game", "last_timestamp": "2026-10-05T09:00:00Z", "git_branch": "lane",
+                   "files_edited": [str(game / "src" / "lobby.luau")], "error_count": 1, "prompt_count": 7},
+    }}), encoding="utf-8")
+    assert session_start._last_session_lines(str(ws), work_project, [], "compact") == []
+    known = "\n".join(session_start._last_session_lines(str(ws), norm(str(game)), [], "compact"))
+    assert "Last session" in known and "lobby.luau" in known and "map.py" not in known
+    fresh = "\n".join(session_start._last_session_lines(str(ws), work_project, [], "startup"))
+    assert "Last session" in fresh and "map.py" in fresh
+
+
 def test_after_a_compaction_the_banner_shows_this_sessions_own_full_checkpoint(tmp_path: Path):
     pytest.importorskip("windvane.checkpoints")
     p = _rewound_transcript(tmp_path)

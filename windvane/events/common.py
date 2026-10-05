@@ -863,13 +863,9 @@ def _format_restored_full(entry: dict, skipped: "list | None" = None) -> list[st
         from windvane import repo_state as _rs
 
         _pp = entry.get("project_path") or (entry.get("metadata") or {}).get("project_path", "")
-        try:
-            _saved = float(entry.get("created") or entry.get("timestamp") or 0.0)
-        except (TypeError, ValueError):
-            _saved = 0.0
-        _line = _rs.since_text(_rs.since(str(entry.get("commit") or ""), str(_pp), files, saved_at=_saved))
+        _line = _rs.since_text(_rs.since_for(entry, str(_pp), files))
         if not _line:
-            _now = _rs.tree_text(_rs.tree(str(_pp)))
+            _now = _rs.tree_text(_rs.tree(_rs.where_of(entry, str(_pp))))
             if _now:
                 _line = f"Tree: {_now}"
         if _line:
@@ -952,11 +948,7 @@ def _format_restored_context(entry: dict) -> list[str]:
     try:
         from windvane import repo_state as _rs
 
-        try:
-            _saved = float(entry.get("created") or entry.get("timestamp") or 0.0)
-        except (TypeError, ValueError):
-            _saved = 0.0
-        _since = _rs.since_text(_rs.since(str(entry.get("commit") or ""), str(_pp), files, saved_at=_saved))
+        _since = _rs.since_text(_rs.since_for(entry, str(_pp), files))
         if _since:
             out.append("  " + _since)
     except Exception:
@@ -1741,12 +1733,56 @@ def _banner_work_project(project_dir: str, source: str, transcript: str) -> tupl
         except Exception:
             resume_files = []
     work_project = project_dir
-    if resume_files:
+    if source in ("resume", "compact"):
+        # The one loader every hook uses: the session's edits, its state
+        # lists, else the cwd mapped to its repository (a worktree to its
+        # main checkout). It used to be asked only when the transcript named
+        # edited files, so a session that worked through subagents alone
+        # was taken for the workspace root (2026-10-05).
         try:
             work_project = session_project(project_dir)
         except Exception:
             work_project = project_dir
+    else:
+        try:
+            from windvane.paths import canonical_project_root
+
+            work_project = canonical_project_root(project_dir) or project_dir
+        except Exception:
+            work_project = project_dir
     return work_project, resume_files
+
+
+def _banner_project_from_checkpoint(project_dir: str, work_project: str, session_id: str, restored: "dict | None") -> str:
+    """The banner's project once the checkpoint is known. When nothing the
+    session did named a project (``work_project`` is still the cwd) and the
+    restored record is this session's own, saved for a project under the
+    cwd, that project is the one: the record was filed where the session
+    worked. A record from another session says nothing about this one."""
+    if not isinstance(restored, dict) or not restored:
+        return work_project
+    root = _normalize_path(project_dir)
+    if _normalize_path(work_project).lower() != root.lower():
+        return work_project
+    if not session_id or str(restored.get("session_id") or "") != session_id:
+        return work_project
+    pp = str(restored.get("project_path") or (restored.get("metadata") or {}).get("project_path") or "")
+    if not pp:
+        return work_project
+    npp = _normalize_path(pp)
+    if npp.lower() == root.lower() or not npp.lower().startswith(root.lower().rstrip("/") + "/"):
+        return work_project
+    return npp
+
+
+def _is_hub(project_dir: str) -> bool:
+    """Does the store know projects under ``project_dir``? Then it is a
+    workspace root, and a session started there may be about any of them."""
+    try:
+        root = _normalize_path(project_dir).lower().rstrip("/") + "/"
+        return any(str(p).lower().startswith(root) for p in _get_manifest().get("projects", {}))
+    except Exception:
+        return False
 
 
 def _rules_block(work_project: str, project_memory: "dict | None" = None) -> list:

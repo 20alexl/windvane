@@ -15,8 +15,10 @@ from pathlib import Path
 from windvane.events import common as c
 from windvane.events.common import (
     _banner_checkpoint,
+    _banner_project_from_checkpoint,
     _banner_work_project,
     _compaction_briefed,
+    _is_hub,
     _format_restored_context,
     _format_restored_full,
     _normalize_path,
@@ -64,11 +66,15 @@ def _autonomy_line(project_dir: str) -> str:
         return ""
 
 
-def _last_session_lines(project_dir: str, work_project: str, resume_files: list) -> list:
+def _last_session_lines(project_dir: str, work_project: str, resume_files: list, source: str = "startup") -> list:
     """Session mining: the last session's context (read-only, no building),
     the bootstrap of a project with history but no index, and the schema
-    canary."""
+    canary. On a resume or a compaction at a workspace root where nothing
+    named the session's project, no last session is shown: the index would
+    answer with the newest session of any project under the root, and the
+    session's own record is the checkpoint above."""
     lines: list = []
+    known = _normalize_path(work_project) != _normalize_path(project_dir)
     try:
         from windvane.mining.session_index import get_or_create_index
 
@@ -109,11 +115,13 @@ def _last_session_lines(project_dir: str, work_project: str, resume_files: list)
                 except Exception:
                     pass
 
-        if index and index.get_session_count() > 0:
+        if index and index.get_session_count() > 0 and not known and source in ("resume", "compact") and _is_hub(project_dir):
+            pass
+        elif index and index.get_session_count() > 0:
             # An ancestor's index holds every sub-project's sessions:
             # ask for the latest one that touched THIS project.
             summary = index.get_latest_session_summary(
-                work_project if _normalize_path(work_project) != _normalize_path(project_dir) else "",
+                work_project if known else "",
                 workspace_root=project_dir,
             )
             # A root-cwd start knows no sub-project yet, and the latest
@@ -155,7 +163,7 @@ def _last_session_lines(project_dir: str, work_project: str, resume_files: list)
             # so the block waits for the pre-edit hook
             # (state["patterns_deferred"]) instead of printing the cwd's
             # (the root's) errors.
-            if resume_files:
+            if resume_files or (known and source in ("resume", "compact")):
                 lines.extend(_recurring_lines(work_project, (summary or {}).get("files_edited_full", [])))
             else:
                 try:
@@ -247,6 +255,26 @@ def _hook_session_start(project_dir: str) -> None:
         if source == "startup":
             lines.extend(_pack_lines(project_dir))
 
+        # Restored context: checkpoint + handoff are one ring construct;
+        # show it once. WHICH ring to read depends on how the session began:
+        #   resume  -> this session's own files name its sub-project; read
+        #              that ring (walk-up) so its manual handoff wins over
+        #              the workspace root's per-turn autos.
+        #   fresh   -> unknowable which sub-project comes next; prefer the
+        #              newest MANUAL across the workspace subtree (a labeled
+        #              breadcrumb), else the plain walk-up result.
+        #   compact -> same as resume. PostCompact's plain stdout never
+        #              reaches the model, so this banner is where the
+        #              checkpoint the model just banked is shown to it.
+        # On resume and compact THIS SESSION's own newest deliberate
+        # checkpoint comes first (session_id on the ring record), skipping
+        # one the user rewound past, and the record is shown whole. The
+        # project's newest is the fallback for a session that has banked
+        # nothing yet. Read before the rules: when the session's own edits
+        # named no project, its own record names the one it was filed under.
+        restored, skipped = _banner_checkpoint(project_dir, work_project, source, bool(resume_files), _transcript)
+        work_project = _banner_project_from_checkpoint(project_dir, work_project, c._session_id, restored)
+
         # Load and show key context (CLAUDE.md-covered rules skipped). The
         # store is the session's project, the same one the prompt hook
         # counts.
@@ -271,30 +299,13 @@ def _hook_session_start(project_dir: str) -> None:
                 _line = f"Past mistakes: none of {_label}'s own, {_pooled} pooled from ancestors"
             lines.append(_line + " (shown before an edit when the file matches)")
 
-        # Restored context: checkpoint + handoff are one ring construct;
-        # show it once. WHICH ring to read depends on how the session began:
-        #   resume  -> this session's own files name its sub-project; read
-        #              that ring (walk-up) so its manual handoff wins over
-        #              the workspace root's per-turn autos.
-        #   fresh   -> unknowable which sub-project comes next; prefer the
-        #              newest MANUAL across the workspace subtree (a labeled
-        #              breadcrumb), else the plain walk-up result.
-        #   compact -> same as resume. PostCompact's plain stdout never
-        #              reaches the model, so this banner is where the
-        #              checkpoint the model just banked is shown to it.
-        # On resume and compact THIS SESSION's own newest deliberate
-        # checkpoint comes first (session_id on the ring record), skipping
-        # one the user rewound past, and the record is shown whole. The
-        # project's newest is the fallback for a session that has banked
-        # nothing yet.
-        restored, skipped = _banner_checkpoint(project_dir, work_project, source, bool(resume_files), _transcript)
         if restored and not _briefed:
             if source in ("resume", "compact"):
                 lines.extend(_format_restored_full(restored, skipped))
             else:
                 lines.extend(_format_restored_context(restored))
 
-        lines.extend(_last_session_lines(project_dir, work_project, resume_files))
+        lines.extend(_last_session_lines(project_dir, work_project, resume_files, str(source or "startup")))
 
         # Never set hookSpecificOutput.sessionTitle here. The session name
         # belongs to Claude Code and the user's /rename; this hook also fires

@@ -57,6 +57,14 @@ def build(project: str, session: str = "", files: "list[str] | None" = None, che
         except Exception:
             work_project = project_dir
 
+    restored: dict = {}
+    skipped: list = []
+    if checkpoint:
+        # Read before the rules, as the banner does: the session's own record
+        # names its project when its edits did not.
+        restored, skipped = common._banner_checkpoint(project_dir, work_project, source, bool(resume_files), transcript)
+        work_project = common._banner_project_from_checkpoint(project_dir, work_project, session, restored)
+
     out: dict = {"rules": common._rules_block(work_project), "files": {}, "checkpoint": []}
 
     seen: set = set()
@@ -77,10 +85,8 @@ def build(project: str, session: str = "", files: "list[str] | None" = None, che
         if mistakes:
             out["files"][f] = common._file_mistake_lines(mistakes, f)
 
-    if checkpoint:
-        restored, skipped = common._banner_checkpoint(project_dir, work_project, source, bool(resume_files), transcript)
-        if restored:
-            out["checkpoint"] = common._format_restored_full(restored, skipped)
+    if restored:
+        out["checkpoint"] = common._format_restored_full(restored, skipped)
     return out
 
 
