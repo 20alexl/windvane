@@ -490,14 +490,18 @@ async function post($: EngineInterface, at: number, type: string, stdin: Json, e
 
 export function registerBridge(on: On): void {
   on('classic.*', async ($, e, next) => {
-    const event = next.event.slice('classic.'.length)
+    // The event is named by its input: every classic hook's stdin carries
+    // hook_event_name, except PreToolUse, whose e is the tool call's envelope.
     const input = e as unknown as Json
-    const pre = next.is('classic.PreToolUse', e)
+    const named = typeof input.hook_event_name === 'string' ? input.hook_event_name : undefined
+    const pre = named === undefined && typeof input.tool === 'string'
+    if (named === undefined && !pre) return next(e)
+    const event = pre ? 'PreToolUse' : String(named)
 
-    const fallBack = (reason: string) => {
+    // The settings hooks run this one: the reason goes to the debug log.
+    const noteFallBack = (reason: string) => {
       counts.fellBack += 1
       $.ui.log(`${PLUGIN}: bridge: ${event} -> settings hooks (${reason})`, { to: 'debug' })
-      return next(e)
     }
 
     // The main loop's transcript and mode, for the PreToolUse envelope.
@@ -514,23 +518,37 @@ export function registerBridge(on: On): void {
     try {
       found = await currentCensus($)
     } catch (err) {
-      return fallBack(`hook census failed: ${String(err).slice(0, 120)}`)
+      noteFallBack(`hook census failed: ${String(err).slice(0, 120)}`)
+      return next(e)
     }
     const { types, foreign } = plan(event, subjectOf(event, input), found.sources)
     if (types.length === 0) return next(e) // windvane has no hook here
     if (found.disabled) return next(e) // hooks are off: nothing of windvane's would run
-    if (foreign.length > 0) return fallBack(`other hooks fire here: ${[...new Set(foreign)].join(', ')}`)
+    if (foreign.length > 0) {
+      noteFallBack(`other hooks fire here: ${[...new Set(foreign)].join(', ')}`)
+      return next(e)
+    }
     const unserved = types.filter(t => !SERVED.has(t))
-    if (unserved.length > 0) return fallBack(`not daemon-served: ${unserved.join(', ')}`)
-    if (Date.now() < downUntil) return fallBack('cooling down after a timeout')
+    if (unserved.length > 0) {
+      noteFallBack(`not daemon-served: ${unserved.join(', ')}`)
+      return next(e)
+    }
+    if (Date.now() < downUntil) {
+      noteFallBack('cooling down after a timeout')
+      return next(e)
+    }
 
     let at: number | undefined
     try {
       at = await daemonPort($, found.store)
     } catch (err) {
-      return fallBack(`port file unreadable: ${String(err).slice(0, 80)}`)
+      noteFallBack(`port file unreadable: ${String(err).slice(0, 80)}`)
+      return next(e)
     }
-    if (at === undefined) return fallBack('no daemon port file')
+    if (at === undefined) {
+      noteFallBack('no daemon port file')
+      return next(e)
+    }
 
     let stdin: Json
     if (pre) {
@@ -559,7 +577,10 @@ export function registerBridge(on: On): void {
         break
       }
       if ('reason' in got) {
-        if (outputs.length === 0) return fallBack(`${type}: ${got.reason}`)
+        if (outputs.length === 0) {
+          noteFallBack(`${type}: ${got.reason}`)
+          return next(e)
+        }
         // An earlier type already ran here: running the settings hooks now
         // would run it twice. Keep what ran; this type is lost this once.
         counts.partial += 1

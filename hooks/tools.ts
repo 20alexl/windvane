@@ -306,12 +306,31 @@ async function serve($: EngineInterface, name: ToolShort, e: Record<string, unkn
 }
 
 // One matched hook per tool; each matcher names its tool literally.
+// Each hook answers for itself: a failure is a deny, else the reply is the result.
 export function registerTools(on: On, settings: Settings): void {
   const args = (e: unknown) => e as Record<string, unknown>
-  on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e) => serve($, 'checkpoint', args(e), settings))
-  on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e) => serve($, 'compact_now', args(e), settings))
-  on('tool.call', { tool: 'mcp__windvane__memory' }, async ($, e) => serve($, 'memory', args(e), settings))
-  on('tool.call', { tool: 'mcp__windvane__log' }, async ($, e) => serve($, 'log', args(e), settings))
-  on('tool.call', { tool: 'mcp__windvane__mine' }, async ($, e) => serve($, 'mine', args(e), settings))
-  on('tool.call', { tool: 'mcp__windvane__deps' }, async ($, e) => serve($, 'deps', args(e), settings))
+  on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e) => {
+    const got = await serve($, 'checkpoint', args(e), settings)
+    return 'deny' in got ? { deny: got.deny } : { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e) => {
+    const got = await serve($, 'compact_now', args(e), settings)
+    return 'deny' in got ? { deny: got.deny } : { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__memory' }, async ($, e) => {
+    const got = await serve($, 'memory', args(e), settings)
+    return 'deny' in got ? { deny: got.deny } : { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__log' }, async ($, e) => {
+    const got = await serve($, 'log', args(e), settings)
+    return 'deny' in got ? { deny: got.deny } : { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__mine' }, async ($, e) => {
+    const got = await serve($, 'mine', args(e), settings)
+    return 'deny' in got ? { deny: got.deny } : { result: got.result }
+  })
+  on('tool.call', { tool: 'mcp__windvane__deps' }, async ($, e) => {
+    const got = await serve($, 'deps', args(e), settings)
+    return 'deny' in got ? { deny: got.deny } : { result: got.result }
+  })
 }

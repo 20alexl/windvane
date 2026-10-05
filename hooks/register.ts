@@ -342,20 +342,21 @@ export const register: Register = (on, options) => {
   // turn boundary. tools.ts serves both and answers a failure with a deny;
   // these hooks are registered ahead of it so they sit above it and see its
   // answer. The engine carries the arguments at the top level of the event.
-  const noteSave = (e: ToolCallInput, ran: ToolCallResult, compactNow: boolean, at: number): ToolCallResult => {
+  const noteSave = (e: ToolCallInput, ran: ToolCallResult, compactNow: boolean, at: number): void => {
     const op = (e as unknown as { operation?: string }).operation
     const ok = ran.deny === undefined && ran.isError !== true
     if (ok && (compactNow || op === 'save')) lastSaveAt = at
     if (ok && compactNow && (e as unknown as { agentId?: string }).agentId === undefined) compactAsked = true
-    return ran
   }
   on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e, next) => {
     const ran = await next(e)
-    return noteSave(e, ran, false, await $.clock.now())
+    noteSave(e, ran, false, await $.clock.now())
+    return ran
   })
   on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e, next) => {
     const ran = await next(e)
-    return noteSave(e, ran, true, await $.clock.now())
+    noteSave(e, ran, true, await $.clock.now())
+    return ran
   })
 
   // Inside the band with a save made since the band was entered.

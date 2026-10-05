@@ -141,7 +141,12 @@ export function registerPane(on: On): void {
   // which fires beneath this hook, names none (bridge.ts).
   on('tool.call', async ($, e, next) => {
     noteCallLoop(e.tool_use_id, e.agentId)
-    const ran = await next(e).finally(() => forgetCall(e.tool_use_id))
+    let ran
+    try {
+      ran = await next(e)
+    } finally {
+      forgetCall(e.tool_use_id)
+    }
     const path = (e as unknown as { file_path?: unknown; notebook_path?: unknown }).file_path
       ?? (e as unknown as { notebook_path?: unknown }).notebook_path
     if (e.agentId === undefined && TOUCH_TOOLS.has(String(e.tool)) && typeof path === 'string' && path && ran.deny === undefined) {

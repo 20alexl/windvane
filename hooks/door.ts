@@ -97,10 +97,10 @@ export function rewrite(content: readonly Block[], budget: number): Block[] | un
         return { ...block, content: text }
       }
       if (Array.isArray(inner)) {
-        const next = rewrite(inner as Block[], budget)
-        if (next === undefined) return block
+        const rewritten = rewrite(inner as Block[], budget)
+        if (rewritten === undefined) return block
         changed = true
-        return { ...block, content: next }
+        return { ...block, content: rewritten }
       }
     }
     return block
