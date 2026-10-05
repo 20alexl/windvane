@@ -124,7 +124,7 @@ Wait+Line@60s /\$\s*$/
 # 7: the outro: the three install lines alone on the screen. The command
 # that prints them is typed unrecorded and clears the screen first, so the
 # shell's echo of the command itself is gone before the lines appear.
-Type "clear; echo 'git clone <url> windvane'; echo 'claude plugin marketplace add ./windvane'; echo 'claude plugin install windvane@windvane'"
+Type "clear; echo 'git clone https://github.com/20alexl/windvane.git windvane'; echo 'claude plugin marketplace add ./windvane'; echo 'claude plugin install windvane@windvane'"
 Enter
 Wait+Screen@10s /install windvane@windvane\s*\n/
 Show

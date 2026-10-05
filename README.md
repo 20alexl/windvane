@@ -1,4 +1,3 @@
-<!-- The repository URL is not known yet: <url> in the install lines below is a placeholder to replace before publishing. -->
 <p align="center"><img src="docs/assets/logo.png" width="88" alt=""></p>
 
 # windvane
@@ -14,7 +13,7 @@ The principle: never ask the model to write what the machine can record.
 ## Install
 
 ```bash
-git clone <url> windvane
+git clone https://github.com/20alexl/windvane.git windvane
 claude plugin marketplace add ./windvane
 claude plugin install windvane@windvane
 ```

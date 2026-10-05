@@ -9,12 +9,12 @@
 ## Install
 
 ```bash
-git clone <url> windvane
+git clone https://github.com/20alexl/windvane.git windvane
 claude plugin marketplace add ./windvane
 claude plugin install windvane@windvane
 ```
 
-`<url>` is the address of the repository. The marketplace is the cloned folder itself, and the plugin in it is named `windvane`.
+The marketplace is the cloned folder itself, and the plugin in it is named `windvane`.
 
 ## Configure
 

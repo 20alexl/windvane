@@ -30,7 +30,7 @@ from pathlib import Path
 
 FIXTURE = Path(__file__).resolve().parent / "fixture"
 # README.md > Install: the three commands a new user types.
-CLONE_URL = "<url>"
+CLONE_URL = "https://github.com/20alexl/windvane.git"
 INSTALL = (
     f"git clone {CLONE_URL} windvane",
     "claude plugin marketplace add ./windvane",
