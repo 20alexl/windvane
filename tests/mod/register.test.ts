@@ -286,6 +286,26 @@ test('a prompt the person typed while the compaction ran means no continue promp
   expect(counters.prompts).toEqual(['and also rename the module'])
 })
 
+test('a prompt typed over the running turn was delivered into it: the continue prompt still comes', async ($, on) => {
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0 }
+  const clock = mock.clock(on)
+  inBand(on, counters)
+
+  await $.session.start(START)
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  // Typed while the turn ran (`turnId` names it): the engine delivered it
+  // into that turn, which answered it before the compaction. A session that
+  // read such a prompt as the person continuing skipped the resume and sat
+  // idle after the compaction (2026-10-05).
+  await clock.advance(200)
+  await $.prompt.submit({ text: 'that idea needs ironing out', wait: false, origin: { kind: 'composer' }, turnId: 't-running' } as never)
+  await $.turn.complete({ ...turnEnd(), durationMs: 5_000 })
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  expect(counters.prompts?.length).toBe(2)
+  expect(counters.prompts?.[0]).toBe('that idea needs ironing out')
+})
+
 test('a compaction the engine refuses is asked for again at the next turn end, with nothing said', async ($, on) => {
   const counters: Counters = { compactions: 0, statuses: [], briefs: 0, refuse: true, logs: [] }
   const clock = mock.clock(on)

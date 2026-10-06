@@ -419,11 +419,15 @@ export const register: Register = (on, options) => {
   // changes or a turn completes.
   let staleTokens: number | undefined
   // When the turn that asked for the compaction began, and when the person
-  // last submitted a prompt of their own. A prompt the person types while a
-  // compaction runs is queued and runs before anything a plugin submits; the
-  // continue prompt would then arrive a turn late and stale, so it is
-  // skipped when such a prompt has landed since that turn began (its own
-  // prompt was submitted before it).
+  // last submitted a prompt of their own while no turn ran. A prompt the
+  // person types while a compaction runs is queued and runs before anything
+  // a plugin submits; the continue prompt would then arrive a turn late and
+  // stale, so it is skipped when such a prompt has landed since that turn
+  // began (its own prompt was submitted before it). A prompt typed over the
+  // running turn is another matter: the engine delivers it into that turn
+  // (the person saw it answered before the compaction), and one it did not
+  // deliver starts the next turn on its own, where the continue prompt's
+  // text tells the model to stop in one line.
   let turnBeganAt: number | undefined
   let personPromptAt: number | undefined
   const continueStale = () => turnBeganAt !== undefined && personPromptAt !== undefined && personPromptAt > turnBeganAt + 100
@@ -445,16 +449,19 @@ export const register: Register = (on, options) => {
 
   // The person's own prompts are noted for the continue prompt's sake: the
   // ones typed at the terminal (composer) or sent from the Remote Control
-  // bridge. A delivery into the running turn (a peer session's message, a
-  // task notification, a subagent's prompt) is not the person continuing
-  // the session and leaves the note alone. A continue of windvane's that is
-  // already stale is dropped (a second net under the check made before it
-  // is submitted).
+  // bridge while no turn ran (`turnId` names the turn a prompt was typed
+  // over; the compaction runs between turns, so a prompt typed during it has
+  // none). A prompt typed over a running turn was delivered into it, or
+  // starts the next turn by itself, and leaves the note alone; so does a
+  // delivery into the running turn (a peer session's message, a task
+  // notification, a subagent's prompt), which is not the person continuing
+  // the session. A continue of windvane's that is already stale is dropped
+  // (a second net under the check made before it is submitted).
   on('prompt.submit', async ($, e, next) => {
     const origin = e.origin as { kind?: string; name?: string } | undefined
     const ours = origin?.kind === 'plugin' && origin.name === PLUGIN
     if (!ours) {
-      if (origin?.kind === 'composer' || origin?.kind === 'bridge') personPromptAt = await $.clock.now()
+      if ((origin?.kind === 'composer' || origin?.kind === 'bridge') && e.turnId === undefined) personPromptAt = await $.clock.now()
       return next(e)
     }
     if (e.text === CONTINUE_TEXT && continueStale()) return { drop: `${PLUGIN}: the session already continued, so the resume prompt was dropped` }
