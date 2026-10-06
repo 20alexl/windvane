@@ -424,13 +424,17 @@ def recommended_point(window: int) -> int:
     return (int(window) * 3 // 4) // 1000 * 1000
 
 
-def _knob_fraction(key: str, default: float, project_dir: str = "") -> float:
-    """A knob that must be a fraction in (0, 1); anything else is the default."""
+def _knob_percent(key: str, project_dir: str = "") -> Optional[float]:
+    """A knob that is a percentage in (0, 100); unset or anything else is
+    None, which means the computed default."""
+    v = config.knob(key, project_dir)
+    if v is None:
+        return None
     try:
-        v = float(config.knob(key, project_dir))
+        p = float(v)
     except (TypeError, ValueError):
-        return default
-    return v if 0 < v < 1 else default
+        return None
+    return p if 0 < p < 100 else None
 
 
 def _knob_positive(key: str, default: int, project_dir: str = "") -> int:
@@ -446,27 +450,35 @@ def _knob_positive(key: str, default: int, project_dir: str = "") -> int:
 
 
 def thresholds(window: int, point: int, project_dir: str = "") -> dict:
-    """Token counts at which each nudge fires.
+    """Where each mark sits: a token count, and the same as a percent of the
+    compaction point (the figure the status segment shows).
 
     ``trigger_at`` is where auto-compaction actually fires: the configured
-    point minus the output reserve (see OUTPUT_RESERVE). The checkpoint band
-    sits a fixed margin above that trigger; the heads-up sits a fraction of
-    the window below the point and is pulled under the checkpoint band when
-    a small window would otherwise put it above."""
+    point minus the output reserve (see OUTPUT_RESERVE). The last call
+    (``checkpoint_at``, the CHECKPOINT NOW note) and the heads-up are set as
+    percentages of the point, the last_call_percent and headsup_percent
+    knobs. Unset, each is computed: the last call a fixed margin under the
+    trigger (20K, or 10K on a 200K window), the heads-up a tenth of the
+    window under the point. A mark set at or above the one over it is
+    pulled under it, so the order always holds."""
     reserve = _knob_positive("output_reserve", OUTPUT_RESERVE, project_dir)
-    # checkpoint_margin's default is computed: 20K, or 10K on a 200K window.
-    margin_default = CHECKPOINT_MARGIN_SMALL if window <= SMALL_WINDOW else CHECKPOINT_MARGIN
-    margin = _knob_positive("checkpoint_margin", margin_default, project_dir)
-    hu = _knob_fraction("headsup_fraction", HEADSUP_FRACTION, project_dir)
+    margin = CHECKPOINT_MARGIN_SMALL if window <= SMALL_WINDOW else CHECKPOINT_MARGIN
     trigger_at = int(point - reserve)
-    checkpoint_at = int(trigger_at - margin)
-    headsup_at = int(point - hu * window)
+    last = _knob_percent("last_call_percent", project_dir)
+    checkpoint_at = int(point * last / 100) if last is not None else int(trigger_at - margin)
+    if checkpoint_at >= trigger_at:
+        checkpoint_at = int(trigger_at - margin)
+    hu = _knob_percent("headsup_percent", project_dir)
+    headsup_at = int(point * hu / 100) if hu is not None else int(point - HEADSUP_FRACTION * window)
     if headsup_at >= checkpoint_at:
-        headsup_at = int(checkpoint_at - hu * window / 2)
+        headsup_at = int(checkpoint_at - HEADSUP_FRACTION * window / 2)
     return {
         "headsup_at": headsup_at,
         "checkpoint_at": checkpoint_at,
         "trigger_at": trigger_at,
+        "headsup_pct": _pct(headsup_at, point),
+        "checkpoint_pct": _pct(checkpoint_at, point),
+        "trigger_pct": _pct(trigger_at, point),
     }
 
 
@@ -474,7 +486,8 @@ def assess(mirror: Optional[dict], project_dir: str = "") -> dict:
     """Distance to the compaction point from a mirror record.
 
     ``band`` is one of ``nodata`` (no mirror, or no tokens counted yet),
-    ``clear``, ``headsup``, ``checkpoint``.
+    ``clear``, ``early`` (the mod's early_compaction mark, below the
+    heads-up), ``headsup``, ``checkpoint`` (the last call).
     """
     out: dict = {"band": "nodata", "reason": ""}
     if not mirror:
@@ -492,18 +505,22 @@ def assess(mirror: Optional[dict], project_dir: str = "") -> dict:
     point, source = d["point"], d["source"]
     th = thresholds(window, point, project_dir)
     band = "clear"
-    # The mod's early_compaction row opens the band below the margin; the
-    # mirror says so with the row's value, which the nudge names.
+    # The mod's early_compaction row marks a fill below the heads-up; the
+    # mirror says so with the row's value, which the nudge names. The three
+    # marks are their own bands, each said once per cycle, in order.
     early = str(mirror.get("early_band") or "").strip()
-    if used >= th["checkpoint_at"] or early:
+    if used >= th["checkpoint_at"]:
         band = "checkpoint"
     elif used >= th["headsup_at"]:
         band = "headsup"
+    elif early:
+        band = "early"
     if early:
         out["early"] = early
     out.update(
         band=band,
         used=used,
+        fill_pct=_pct(used, point),
         window=window,
         point=point,
         source=source,
@@ -538,6 +555,7 @@ def pressure_state(state: dict) -> dict:
         ps = {}
         state["pressure"] = ps
     ps.setdefault("cycle", 0)  # compactions seen this session
+    ps.setdefault("early_done", False)
     ps.setdefault("headsup_done", False)
     ps.setdefault("checkpoint_done", False)
     ps.setdefault("compacted_at", 0.0)
@@ -686,6 +704,7 @@ def note_compaction(state: dict) -> None:
     if time.time() - float(ps.get("compacted_at") or 0) < 120:
         return
     ps["cycle"] = int(ps.get("cycle", 0)) + 1
+    ps["early_done"] = False
     ps["headsup_done"] = False
     ps["checkpoint_done"] = False
     ps["compacted_at"] = time.time()
@@ -721,14 +740,32 @@ def current_assessment(state: dict, session_id: str, project_dir: str = "") -> d
     return assess(mirror, project_dir)
 
 
+def early_text(a: dict) -> str:
+    """The person's early_compaction mark: the first of the three marks,
+    far below the trigger. The model is told, and decides. A note that said
+    NOW here was obeyed as "save now", mid-step (seen 2026-10-06)."""
+    return (
+        "<windvane-context>COMPACT AT A STEP END: the fill is "
+        f"{a['fill_pct']} of the {_k(a['point'])} compaction point, the early_compaction "
+        f"setting ({a['early']}); auto-compaction fires at {a['trigger_pct']}, so there is no "
+        "hurry, and nothing compacts before it unless you call compact_now. Finish the "
+        "step in hand. When it is done, save a checkpoint, and call compact_now if the "
+        "phase has closed and the work ahead does not need what is in the context; "
+        "otherwise carry on and compact at a later step end. A heads-up comes at "
+        f"{a['headsup_pct']} and a last call at {a['checkpoint_pct']}. "
+        + _DRAFTED
+        + "</windvane-context>"
+    )
+
+
 def headsup_text(a: dict, cycle: int) -> str:
     return (
-        "<windvane-context>Context pressure: "
-        f"{_k(a['used'])} used of a {_k(a['point'])} compaction point "
-        f"({_k(a['distance'])} left, {_pct(a['distance'], a['window'])} of the window; "
-        f"point source: {a['source']}). Compaction #{cycle + 1} is coming. "
-        "Finish the current step and start nothing long. "
-        f"The checkpoint call comes at ~{_k(a['checkpoint_at'])}."
+        "<windvane-context>Context pressure: the fill is "
+        f"{a['fill_pct']} of the {_k(a['point'])} compaction point ({a['source']}); "
+        f"auto-compaction fires at {a['trigger_pct']}. Compaction #{cycle + 1} is coming. "
+        "Finish the current step and start nothing long; at its end save a checkpoint "
+        "and call compact_now, so the compaction comes at a step boundary. "
+        f"The last call comes at {a['checkpoint_pct']}."
         "</windvane-context>"
     )
 
@@ -746,36 +783,17 @@ _DRAFTED = (
 
 
 def checkpoint_text(a: dict) -> str:
-    left = max(0, int(a["trigger_at"]) - int(a["used"]))
-    early = a.get("early")
-    distance = (
-        f"{_k(left)} tokens to the auto-compaction trigger (~{_k(a['trigger_at'])}; "
-        f"the {_k(a['point'])} setting minus the output reserve)"
-    )
-    if early:
-        # The band opened on the person's early_compaction row, far below the
-        # trigger: the save is asked for at the end of the step, not now. A
-        # note that said NOW here was obeyed as "save now", mid-step, and the
-        # turn boundary compacted with the step half done (seen 2026-10-06).
-        return (
-            "<windvane-context>CHECKPOINT AT THE END OF THIS STEP: "
-            f"the early_compaction setting ({early}) opens the checkpoint band here, "
-            f"with {distance}, so there is no hurry. "
-            "Finish the step in hand and start nothing new; when it is done, save and "
-            "end the turn, and the turn boundary after the save compacts with a record "
-            "that describes the finished work. A save made before the step is done "
-            "compacts the session at that turn's end wherever the step then stands. "
-            + _DRAFTED
-            + "</windvane-context>"
-        )
+    """The last call: the fixed margin under the trigger, where a compaction
+    the model does not start comes by itself."""
     return (
-        "<windvane-context>CHECKPOINT NOW: "
-        + distance
-        + ". "
+        "<windvane-context>CHECKPOINT NOW: the fill is "
+        f"{a['fill_pct']} of the {_k(a['point'])} compaction point and auto-compaction "
+        f"fires at {a['trigger_pct']} (the {_k(a['point'])} setting minus the output reserve). "
         + _DRAFTED
-        + " Finish the step in hand and start nothing new; then save and end the turn, "
-        "so the record describes the finished work and the turn boundary compacts. "
-        "A compaction that comes first banks the draft as it stands.</windvane-context>"
+        + " Finish the step in hand and start nothing new; then save, call compact_now "
+        "and end the turn, so the record describes the finished work and the turn "
+        "boundary compacts. Left alone, the auto-compaction banks the draft as it "
+        "stands.</windvane-context>"
     )
 
 
@@ -1003,15 +1021,25 @@ def nudge(state: dict, session_id: str, project_dir: str = "") -> tuple[str, boo
     # (a CHECKPOINT NOW landed on the continue prompt, 2026-10-05).
     settled = not ps.get("compacted_at") or float(ps.get("last_stop_at") or 0.0) > float(ps["compacted_at"])
 
+    # Three marks, each said once per cycle, in order; a mark passed without
+    # a word (the fill jumped) is latched with the one that is said. The
+    # compaction itself is the model's call (compact_now) at every one of
+    # them; the auto-compaction at the trigger is the floor.
     if a["band"] == "checkpoint" and not ps["checkpoint_done"] and settled:
         ps["checkpoint_done"] = True
         ps["headsup_done"] = True
+        ps["early_done"] = True
         changed = True
         texts.append(checkpoint_text(a))
     elif a["band"] == "headsup" and not ps["headsup_done"] and settled:
         ps["headsup_done"] = True
+        ps["early_done"] = True
         changed = True
         texts.append(headsup_text(a, int(ps["cycle"])))
+    elif a["band"] == "early" and not ps["early_done"] and settled:
+        ps["early_done"] = True
+        changed = True
+        texts.append(early_text(a))
     elif a["band"] == "nodata" and a.get("reason") == "no mirror":
         started = state.get("last_session_start") or 0
         if (
@@ -1107,12 +1135,15 @@ def rhythm_text(state: dict, session_id: str, project_dir: str = "") -> str:
             f"; the configured {_k(d['configured'])} is capped at the "
             f"{_k(window)} window -- `/autocompact {d['recommended'] // 1000}k` fits this model"
         )
+    # The person's early mark, when set: the plugin row, read raw.
+    early = str(config.knob("early_compaction", project_dir) or "").strip()
+    early_mark = f"early mark at {early}, " if early.endswith("%") else ""
     return (
-        f"Compaction #{cycle}. Rhythm: heads-up at ~{_k(th['headsup_at'])} "
-        f"({_pct(th['headsup_at'], window)}), checkpoint at ~{_k(th['checkpoint_at'])}, "
-        f"auto-compaction at ~{_k(th['trigger_at'])} (the {_k(point)} {source} setting "
-        f"minus the output reserve{capped}). Plan work in units that finish "
-        "before the checkpoint call."
+        f"Compaction #{cycle}. Rhythm, as percent of the compaction point (the {_k(point)} "
+        f"{source} setting{capped}): {early_mark}heads-up at {th['headsup_pct']}, last call at "
+        f"{th['checkpoint_pct']}, auto-compaction at {th['trigger_pct']} (the point minus "
+        "the output reserve). Compaction is your call (compact_now) at a step end; "
+        "plan work in units that finish before the last call."
     )
 
 

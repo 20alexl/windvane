@@ -1,7 +1,7 @@
-// windvane: the mirror is written from the session's own figures, and a turn
-// boundary inside the checkpoint band compacts once a deliberate
-// checkpoint save has landed, never before; compact_now compacts once; the
-// status_segment option hides the status line segment.
+// windvane: the mirror is written from the session's own figures; the
+// compaction is the model's call alone (compact_now compacts once, at the
+// turn boundary) and a checkpoint save never compacts, in the band or out
+// of it; the status_segment option hides the status line segment.
 //
 // The test's hooks are the engine's bottom: an op event (session.id, fs.read,
 // env.get ...) answers with { value }, a core event with its result object.
@@ -36,7 +36,7 @@ function turnEnd() {
   return { answer: '', durationMs: 1, isAborted: false, turnId: `t${turns}`, reason: 'answer' as const }
 }
 
-test('writes the mirror from usage and compacts in the band only after a save', async ($, on) => {
+test('writes the mirror from usage; a save never compacts, compact_now does once', async ($, on) => {
   const written: Record<string, string> = {}
   let tokens = 100_000
   let compactions = 0
@@ -120,10 +120,12 @@ test('writes the mirror from usage and compacts in the band only after a save', 
   expect(mirror.compaction_point).toBe(750_000)
   expect(written[`${STORE}/sessions/${SID}.mod`]).toContain('windvane')
 
-  // Inside the band (750K point: trigger 718K, band from 698K) with no
-  // save, a turn boundary does not compact.
+  // Inside the band (750K point: trigger 718K, last call from 698K) a turn
+  // boundary does not compact: the segment says "checkpoint now", the
+  // decision is the model's.
   tokens = 700_000
   await clock.advance(10_000)
+  expect(trace.at(-1)?.includes('checkpoint now') || trace.some(t => t.includes('checkpoint now'))).toBe(true)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(compactions).toBe(0)
@@ -135,16 +137,25 @@ test('writes the mirror from usage and compacts in the band only after a save', 
   await clock.advance(1_000)
   expect(compactions).toBe(0)
 
-  // A deliberate save lands; the next turn boundary compacts.
+  // A deliberate save in the band lands, and the next turn boundary still
+  // does not compact: a save is a save (the model keeps the plain
+  // checkpoint at every step end), never a request to compact.
   await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save', task_description: 'x' } as never)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
-  expect(compactions).toBe(1)
+  expect(compactions).toBe(0)
+  expect(prompts.length).toBe(0)
+
+  // compact_now is the one request: the turn boundary compacts, and
   // windvane's own prompt resumes the work after the compaction it started.
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  expect(compactions).toBe(1)
   expect(prompts.length).toBe(1)
 
   // The compaction opened a new cycle: still in the band, no second
-  // compaction until another save.
+  // compaction until another compact_now.
   await clock.advance(10_000)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
@@ -272,7 +283,7 @@ test('a prompt the person typed while the compaction ran means no continue promp
   inBand(on, counters)
 
   await $.session.start(START)
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
   // The turn ends and the compaction runs inside the turn-end hook. Typed
   // while it runs: the engine queues the prompt, and it runs before anything
   // a plugin submits, so a continue would be stale.
@@ -292,7 +303,7 @@ test('a prompt typed over the running turn was delivered into it: the continue p
   inBand(on, counters)
 
   await $.session.start(START)
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
   // Typed while the turn ran (`turnId` names it): the engine delivered it
   // into that turn, which answered it before the compaction. A session that
   // read such a prompt as the person continuing skipped the resume and sat
@@ -312,7 +323,7 @@ test('a compaction the engine refuses is asked for again at the next turn end, w
   inBand(on, counters)
 
   await $.session.start(START)
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(counters.compactions).toBe(0)
@@ -320,7 +331,7 @@ test('a compaction the engine refuses is asked for again at the next turn end, w
   const said = counters.logs!.filter(l => l.includes('compaction'))
   expect(said.length).toBe(1)
   expect(said[0]).toContain('"to":"debug"')
-  // The save still stands in the band: the next turn end compacts.
+  // The request still stands: the next turn end compacts.
   counters.refuse = false
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
@@ -336,7 +347,7 @@ test('after a compaction the fill reads stale until it changes: no band, no fill
 
   await $.session.start(START)
   expect(mirror().total_input_tokens).toBe(700_000)
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(counters.compactions).toBe(1)
@@ -364,7 +375,7 @@ test('a delivery into the running turn is not the person continuing: the continu
   inBand(on, counters)
 
   await $.session.start(START)
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
   // Another session's message lands in the turn after it began; the turn
   // ends later and reports its length, so the delivery falls inside it.
   await clock.advance(2_500)
@@ -452,7 +463,8 @@ test('status_segment on (the default): the segment names the fill', async ($, on
 })
 
 // The early_compaction row: a fill or a turn cost opens the band below the
-// engine's margin; the save is still what compacts.
+// engine's last call; the segment and the mirror say so, and the compaction
+// stays the model's call.
 test('the early_compaction row reads a fill or a turn cost, nothing else', async () => {
   expect(earlyCompactionOf('40%')).toEqual({ label: '40%', percent: 40 })
   expect(earlyCompactionOf(' 62.5 % ')).toEqual({ label: '62.5%', percent: 62.5 })
@@ -463,30 +475,40 @@ test('the early_compaction row reads a fill or a turn cost, nothing else', async
   }
 })
 
-test('early_compaction at a fill: the band opens there, the engine is told, the save compacts', { options: { early_compaction: '40%' } }, async ($, on) => {
+test('early_compaction at a fill: the band opens there and the engine is told; only compact_now compacts', { options: { early_compaction: '45%' } }, async ($, on) => {
   const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, toasts: [] }
   const clock = mock.clock(on)
-  // 45% of the window: far below the engine's band (698K), above the row.
+  // 60% of the point: far below the engine's last call (698K), above the row.
   inBand(on, counters, 450_000)
 
   await $.session.start(START)
-  // The band is open for the row's reason: the segment asks for the save and
-  // the mirror carries the row's value for the engine's nudge.
-  expect(counters.statuses.join('\n')).toContain('checkpoint now')
+  // The band is open for the row's reason: the segment names the mark in its
+  // own words (never "now") and the mirror carries the row's value for the
+  // engine's note.
+  expect(counters.statuses.join('\n')).toContain('compact at step end')
+  expect(counters.statuses.join('\n')).not.toContain('checkpoint now')
   const mirror = JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}')
-  expect(mirror.early_band).toBe('40%')
+  expect(mirror.early_band).toBe('45%')
 
-  // No save yet: a turn boundary does not compact.
+  // A turn boundary does not compact, with or without a save.
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(counters.compactions).toBe(0)
 
-  // The save lands; the next turn boundary compacts and the toast says why.
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  // compact_now does, and the toast names the fill as a percent of the point.
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
   await $.turn.complete(turnEnd())
   await clock.advance(1_000)
   expect(counters.compactions).toBe(1)
-  expect(counters.toasts?.join('\n')).toContain('early_compaction 40%')
+  expect(counters.toasts?.join('\n')).toContain('compact_now: draft banked, compacting at 60%')
+
+  // Past the last call the mark changes with the fill.
+  counters.tokens = 700_000
+  await clock.advance(10_000)
+  expect(counters.statuses.at(-1)).toContain('checkpoint now')
 })
 
 test('early_compaction at a turn cost: the band opens after a turn that cost that much', { options: { early_compaction: '$0.50' } }, async ($, on) => {
@@ -507,28 +529,26 @@ test('early_compaction at a turn cost: the band opens after a turn that cost tha
   await $.session.start(START)
   expect(JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}').early_band).toBe(undefined)
 
-  // A cheap turn: the band stays shut, and a save after it compacts nothing.
+  // A cheap turn: the band stays shut.
   counters.cost = 0.3
   await $.turn.complete(counted())
   await clock.advance(10_000)
-  expect(counters.statuses.join('\n')).not.toContain('checkpoint now')
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
-  await $.turn.complete(counted())
-  await clock.advance(1_000)
-  expect(counters.compactions).toBe(0)
+  expect(counters.statuses.join('\n')).not.toContain('compact at step end')
+  expect(JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}').early_band).toBe(undefined)
 
-  // A turn that cost 0.60: the band opens at its end, before any tick.
+  // A turn that cost 0.60: the band opens at its end, before any tick, and
+  // the mirror carries the row's value at the next tick. Nothing compacts.
   counters.cost = 0.9
   await $.turn.complete(counted())
-  await clock.advance(1_000)
+  await clock.advance(10_000)
   expect(counters.compactions).toBe(0)
-  // The next turn saves; its boundary compacts.
-  await $.tool.call({ tool: 'mcp__windvane__checkpoint', operation: 'save' } as never)
+  expect(counters.statuses.at(-1)).toContain('compact at step end')
+  expect(JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}').early_band).toBe('$0.5')
+
+  // The next turn cost nothing more, so the dollar reason is gone again:
+  // the row re-arms per turn, and the mirror says so.
   await $.turn.complete(counted())
-  await clock.advance(1_000)
-  expect(counters.compactions).toBe(1)
-  // The saving turn itself cost nothing more, so the dollar reason is gone
-  // again: the row re-arms per turn, and the mirror says so.
   await clock.advance(10_000)
   expect(JSON.parse(counters.written?.[`${STORE}/sessions/${SID}.ctx.json`] ?? '{}').early_band).toBe(undefined)
+  expect(counters.compactions).toBe(0)
 })

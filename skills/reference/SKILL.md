@@ -16,11 +16,11 @@ The recorder drafts the whole checkpoint: the task, the current step, completed 
 - `checkpoint(operation="restore")` reads one back. `index` picks an older record, 0 is the newest.
 - `checkpoint(operation="list")` shows the ring, newest first.
 
-Save when a unit of work has closed. When a `CHECKPOINT NOW` note arrives, finish the step in hand, start nothing new, then save and end the turn: the record then describes the finished work, and the turn boundary compacts. A compaction keeps only what was banked.
+Save when a unit of work has closed. A save never compacts, so save at every step end. The context notes say where the fill stands, as a percent of the compaction point, three times per cycle: `COMPACT AT A STEP END` (the person's early mark: no hurry; finish the step, save, and call `compact_now` if the phase has closed, else carry on), `Context pressure` (the heads-up: finish the step, start nothing long, compact at its end) and `CHECKPOINT NOW` (the last call: finish the step in hand, save, call `compact_now` and end the turn, since auto-compaction is next). A compaction keeps only what was banked.
 
 ## Compacting
 
-`compact_now` banks the draft and compacts as soon as the turn ends. Call it when a phase is done and the context is filling, then end your turn at once. After the compaction windvane sends one prompt that resumes the work; the rules and the checkpoint arrive with it in the session-start brief. The windvane mod also compacts by itself once the fill is in the checkpoint band and a save has landed. The person's `early_compaction` setting can open that band sooner, at a fill or a turn cost; a `CHECKPOINT AT THE END OF THIS STEP` note names it when it did. There is no hurry then: finish the step, and only when it is done save and end the turn, so the turn boundary compacts with a record of the finished work. A save made mid-step compacts at that turn's end wherever the step stands. When a `heads-up` note arrives, finish the step and start nothing long.
+`compact_now` banks the draft and compacts as soon as the turn ends. It is the only way a compaction starts before Claude Code's own trigger: nothing compacts on a save, and windvane never compacts on its own. Call it when a phase is done and the context is filling, then end your turn at once. After the compaction windvane sends one prompt that resumes the work; the rules and the checkpoint arrive with it in the session-start brief. Left alone, the session runs to the trigger, where Claude Code compacts and the draft is banked as it stands.
 
 ## Memory
 

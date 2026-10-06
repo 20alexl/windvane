@@ -31,7 +31,7 @@ To print every setting as resolved for a project: `python -m windvane.config <pr
 | `strict_pack` | boolean | false | Seed the strict pack (style and workflow rules) beside the default pack in every new project. |
 | `autonomy` | boolean | false | Stall nudges and the halt brake for unattended runs. Off for an attended session. |
 | `continue_after_compact` | boolean | true | After a compaction windvane started, one prompt of windvane's resumes the work from the checkpoint. Off, the session waits for the person. |
-| `early_compaction` | string | empty | Open the checkpoint band early: at a fill such as `40%` of the compaction window (the `autoCompactWindow` setting, or the model's window without one), or once one turn has cost as much as `$0.40` (the session's own priced cost across the turn). The band asks for a save at the end of the step in hand, and the turn boundary after the save compacts. Empty keeps the band at its margin above the trigger. Any other spelling is ignored. |
+| `early_compaction` | string | empty | The first of the three context notes, set early: at a fill such as `45%` of the compaction point (the `autoCompactWindow` setting, or the model's window without one), or once one turn has cost as much as `$0.40` (the session's own priced cost across the turn). The note asks for a checkpoint at the end of the step in hand and leaves the compaction to the model (`compact_now`). Empty means the heads-up is the first note. Any other spelling is ignored. |
 
 `python`, `status_segment`, `result_budget`, `semantic`, `continue_after_compact` and `early_compaction` are plugin rows only, with `WINDVANE_PYTHON`, `WINDVANE_RESULT_BUDGET` and `WINDVANE_SEMANTIC` as the environment switches of the first three. They are not config-file keys. `alert_command`, `strict_pack` and `autonomy` are also engine settings and follow the layers above.
 
@@ -50,8 +50,8 @@ To print every setting as resolved for a project: `python -m windvane.config <pr
 | `stall_decay` | 5 | stall | Consecutive good turns that remove one strike |
 | `strike_cap` | 3 | stall | Strikes before the halt (autonomy mode only) |
 | `output_reserve` | 32000 | pressure | Tokens between the configured compaction point and where it fires |
-| `checkpoint_margin` | computed | pressure | Tokens above the trigger for the checkpoint band: 20000, or 10000 on a 200K window |
-| `headsup_fraction` | 0.10 | pressure | Fraction of the window before the point for the heads-up. Must be between 0 and 1 |
+| `headsup_percent` | computed | pressure | Percent of the compaction point for the heads-up: a tenth of the window under the point, about 87 on a 750K point. Pulled under the last call when set above it |
+| `last_call_percent` | computed | pressure | Percent of the compaction point for the last call (CHECKPOINT NOW): 20000 tokens under the trigger, 10000 on a 200K window, about 93 on a 750K point. Pulled under the trigger when set above it |
 | `checkpoint_cadence` | 60 | pressure | Turns with no checkpoint or finished step before the fallback reminder |
 | `budget_five_hour_pct` | 90 | pressure | Usage percent of the 5-hour window that nudges |
 | `budget_seven_day_pct` | 95 | pressure | Usage percent of the 7-day window that nudges |

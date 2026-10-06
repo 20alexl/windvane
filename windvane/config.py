@@ -47,8 +47,8 @@ KNOBS: dict[str, tuple[Any, str, str]] = {
     "strike_cap": (3, "stall", "strikes before the halt (autonomy mode only)"),
     # Context pressure and the usage budget
     "output_reserve": (32_000, "pressure", "tokens between the configured compaction point and where it fires"),
-    "checkpoint_margin": (None, "pressure", "tokens above the trigger for CHECKPOINT NOW (20000, or 10000 on a 200K window)"),
-    "headsup_fraction": (0.10, "pressure", "fraction of the window before the point for the heads-up"),
+    "headsup_percent": (None, "pressure", "percent of the compaction point for the heads-up (computed: a tenth of the window under the point, about 87 on a 750K point)"),
+    "last_call_percent": (None, "pressure", "percent of the compaction point for the last call, CHECKPOINT NOW (computed: 20000 tokens under the trigger, 10000 on a 200K window; about 93 on a 750K point)"),
     "checkpoint_cadence": (60, "pressure", "turns with no checkpoint or completed step before the fallback reminder"),
     "budget_five_hour_pct": (90, "pressure", "usage percent of the 5-hour window that nudges"),
     "budget_seven_day_pct": (95, "pressure", "usage percent of the 7-day window that nudges"),
@@ -67,6 +67,8 @@ DEFAULTS: dict[str, Any] = {k: v[0] for k, v in KNOBS.items()}
 
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
+# Marks given as a percent of the compaction point, computed (None) when unset.
+_PERCENT_KEYS = ("headsup_percent", "last_call_percent")
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +172,12 @@ def _coerce(key: str, raw: Any) -> Any:
         if s in _FALSE:
             return False
         return default
-    if isinstance(default, int) or (default is None and key == "checkpoint_margin"):
+    if default is None and key in _PERCENT_KEYS:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(default, int):
         if str(raw).strip().lower() in _FALSE:
             return 0  # "off" disables a counted knob (live_mine)
         try:

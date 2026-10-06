@@ -157,15 +157,16 @@ def test_int_float_and_str_coercion(tmp_path, monkeypatch):
     monkeypatch.setenv("WINDVANE_GOAL_TURN_CAP", "lots")
     assert config.knob("goal_turn_cap") == 150  # will not coerce: the default
 
-    monkeypatch.setenv("WINDVANE_HEADSUP_FRACTION", "0.25")
-    assert config.knob("headsup_fraction") == 0.25
-    monkeypatch.setenv("WINDVANE_HEADSUP_FRACTION", "x")
-    assert config.knob("headsup_fraction") == 0.10
+    # The two marks with a computed default (None) read as percentages.
+    monkeypatch.setenv("WINDVANE_HEADSUP_PERCENT", "80")
+    assert config.knob("headsup_percent") == 80.0
+    monkeypatch.setenv("WINDVANE_HEADSUP_PERCENT", "x")
+    assert config.knob("headsup_percent") is None
 
-    monkeypatch.setenv("WINDVANE_CHECKPOINT_MARGIN", "15000")  # computed default (None), read as an int
-    assert config.knob("checkpoint_margin") == 15000
-    monkeypatch.delenv("WINDVANE_CHECKPOINT_MARGIN")
-    assert config.knob("checkpoint_margin") is None
+    monkeypatch.setenv("WINDVANE_LAST_CALL_PERCENT", "92.5")
+    assert config.knob("last_call_percent") == 92.5
+    monkeypatch.delenv("WINDVANE_LAST_CALL_PERCENT")
+    assert config.knob("last_call_percent") is None
 
     _write_json(_store(tmp_path) / "config.json", {"non_project_dirs": [".scratch", "tmp"], "alert_command": 42})
     assert config.knob("non_project_dirs") == ".scratch,tmp"  # a list joins into the comma string
@@ -184,7 +185,7 @@ def test_knob_int_and_knob_float_fall_back(monkeypatch):
     assert config.knob_int("strike_cap") == 3
     assert config.knob_int("no_such_key", default=9) == 9
     assert config.knob_int("no_such_key") == 0
-    assert config.knob_float("headsup_fraction") == 0.10
+    assert config.knob_float("last_call_percent", default=93.0) == 93.0  # computed: the caller's default
     assert config.knob_float("no_such_key", default=0.5) == 0.5
 
 
@@ -284,7 +285,7 @@ def test_knobs_table_lists_every_key():
     table = config.knobs_table()
     for key in config.KNOBS:
         assert f"`{key}`" in table
-    assert "| `checkpoint_margin` | computed |" in table
+    assert "| `last_call_percent` | computed |" in table and "| `headsup_percent` | computed |" in table
 
 
 # ── paths ───────────────────────────────────────────────────────────────────

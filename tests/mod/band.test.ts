@@ -75,7 +75,7 @@ const RULE_AND_CHECKPOINT = [
   '<windvane-context>CHECKPOINT NOW: 18K tokens to the auto-compaction trigger (~718K).</windvane-context>',
 ].join('\n')
 const EARLY_BAND =
-  '<windvane-context>CHECKPOINT AT THE END OF THIS STEP: the early_compaction setting (45%) opens the checkpoint band here, with 395K tokens to the auto-compaction trigger (~718K), so there is no hurry.</windvane-context>'
+  '<windvane-context>COMPACT AT A STEP END: the fill is 47% of the 750K compaction point, the early_compaction setting (45%); auto-compaction fires at 96%, so there is no hurry.</windvane-context>'
 
 test('the band counts what windvane injected and hides on request', async ($, on) => {
   const stored: Record<string, unknown> = {}

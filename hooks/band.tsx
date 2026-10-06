@@ -67,7 +67,7 @@ export function parseWindvane(text: string, at: number): WindvaneRead | null {
     rules,
     mistakes,
     checkpointNow: text.includes('<windvane-context>CHECKPOINT NOW'),
-    checkpointAtStepEnd: text.includes('<windvane-context>CHECKPOINT AT THE END OF THIS STEP'),
+    checkpointAtStepEnd: text.includes('<windvane-context>COMPACT AT A STEP END'),
     headsUp: text.includes('<windvane-context>Context pressure:'),
     stall: tags.includes('stall'),
   }

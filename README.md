@@ -78,15 +78,15 @@ The recorder drafts the whole checkpoint. It takes the task, warnings and contex
 
 A checkpoint keeps the last 20 deliberate saves per project in a ring. Restore reads this session's newest deliberate checkpoint, skipping one saved on a branch of the conversation that was rewound, and falls back to the project's newest. The answer says how far the repository moved since the save.
 
-Compaction happens at windvane's point, not at whatever state happened to be saved. The mod mirrors the engine's pressure bands. When the fill is inside the checkpoint band and a deliberate save has landed since the band was entered, the next turn boundary compacts. `compact_now` does the same on request. The `early_compaction` row opens the band sooner, at a fill such as `40%` of the compaction window or once one turn has cost as much as `$0.40`, for a session that would rather compact a few more times than pay for a large context on every turn; the save is still required, so nothing is lost. After a compaction windvane started, the session does not wait for a person: windvane sends one prompt that resumes the work from the checkpoint, with the rules and the checkpoint arriving in the session-start brief (the `continue_after_compact` option turns this off). If neither happens, Claude Code compacts at its own trigger and the before-compaction hook banks the draft as the floor.
+Compaction is the model's call, made at a step end rather than at whatever state happened to be saved. The mod mirrors the engine's pressure marks and never compacts on its own: `compact_now` banks the draft and compacts at the next turn boundary, and a checkpoint save is only a save, inside the band or out of it. The engine tells the model where the fill stands three times per cycle, each once: at the `early_compaction` row when set (a fill such as `45%` of the compaction point, or once one turn has cost as much as `$0.40`), at the heads-up, and at the last call just above the trigger. After a compaction windvane started, the session does not wait for a person: windvane sends one prompt that resumes the work from the checkpoint, with the rules and the checkpoint arriving in the session-start brief (the `continue_after_compact` option turns this off). If the model never calls `compact_now`, Claude Code compacts at its own trigger and the before-compaction hook banks the draft as the floor.
 
 When the compaction finishes, one message after the summary carries the rules and the checkpoint. The session-start banner then leaves them out, so they appear once.
 
-![One compaction cycle: the brief, the recorded work, the save in the band, the compaction, the next brief](docs/assets/checkpoint-flow.svg)
+![One compaction cycle: the brief, the recorded work, the model's save and compact_now at a step end, the compaction, the next brief](docs/assets/checkpoint-flow.svg)
 
 ### Context pressure
 
-Everything is a distance to the compaction point, not a percentage of the window. The point is the window Claude Code is configured to compact at. Auto-compaction fires 32,000 tokens under it. The checkpoint band starts 20,000 tokens above that trigger (10,000 on a 200K window), and the heads-up comes about a tenth of the window before the point. Each nudge is said once per compaction cycle. A fallback reminder comes after 60 turns with no checkpoint and no finished step.
+The marks are percentages of the compaction point, the figure the status segment shows. The point is the window Claude Code is configured to compact at; auto-compaction fires 32,000 tokens under it (96% of a 750K point). The last call sits 20,000 tokens above that trigger (10,000 on a 200K window; about 93% of a 750K point), the heads-up about a tenth of the window before the point (about 87%), and the optional early mark wherever the `early_compaction` row puts it. The two computed marks can be set as percentages (`headsup_percent`, `last_call_percent`). Each note is said once per compaction cycle. A fallback reminder comes after 60 turns with no checkpoint and no finished step.
 
 ## Memory and rules
 
@@ -115,8 +115,8 @@ Nine rows are set in the plugin config: `python`, `status_segment`, `result_budg
 | `stall_decay` | 5 | Consecutive good turns that remove one strike |
 | `strike_cap` | 3 | Strikes before the halt (autonomy mode only) |
 | `output_reserve` | 32000 | Tokens between the compaction point and where it fires |
-| `checkpoint_margin` | computed | Tokens above the trigger for the checkpoint band: 20000, or 10000 on a 200K window |
-| `headsup_fraction` | 0.10 | Fraction of the window before the point for the heads-up |
+| `headsup_percent` | computed | Percent of the compaction point for the heads-up: a tenth of the window under the point, about 87 on a 750K point |
+| `last_call_percent` | computed | Percent of the compaction point for the last call (CHECKPOINT NOW): 20000 tokens under the trigger, 10000 on a 200K window, about 93 on a 750K point |
 | `checkpoint_cadence` | 60 | Turns with no checkpoint or finished step before the fallback reminder |
 | `budget_five_hour_pct` | 90 | Usage percent of the 5-hour window that nudges |
 | `budget_seven_day_pct` | 95 | Usage percent of the 7-day window that nudges |

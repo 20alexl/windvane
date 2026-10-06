@@ -18,7 +18,7 @@ from windvane import alerts, milestones as ms, pressure as cp, procs, repo_state
 ROOT = Path(__file__).resolve().parent.parent
 
 _KNOB_ENV = (
-    "WINDVANE_OUTPUT_RESERVE", "WINDVANE_CHECKPOINT_MARGIN", "WINDVANE_HEADSUP_FRACTION",
+    "WINDVANE_OUTPUT_RESERVE", "WINDVANE_LAST_CALL_PERCENT", "WINDVANE_HEADSUP_PERCENT",
     "WINDVANE_CHECKPOINT_CADENCE", "WINDVANE_BUDGET_FIVE_HOUR_PCT", "WINDVANE_BUDGET_SEVEN_DAY_PCT",
     "WINDVANE_BUDGET_PCT", "WINDVANE_ALERT_COMMAND", "WINDVANE_GIT_TRACE",
 )
@@ -60,6 +60,21 @@ def _payload(sid, used, window=1_000_000, model="Claude Fable 5.1"):
     }
 
 
+def _mod_mirror(sid, used, early=None, window=1_000_000) -> Path:
+    """The mirror as the windvane mod writes it, with the early_compaction
+    mark when the row's fill is reached."""
+    rec = {
+        "session_id": sid, "ts": time.time(), "source": "mod",
+        "total_input_tokens": used, "context_window_size": window, "model_name": "Claude Fable 5.1",
+    }
+    if early:
+        rec["early_band"] = early
+    p = cp.mirror_path(sid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(json.dumps(rec).encode("utf-8"))
+    return p
+
+
 # ---------------------------------------------------------------------------
 # Where compaction fires, and the bands
 # ---------------------------------------------------------------------------
@@ -72,6 +87,8 @@ def test_checkpoint_band_sits_above_the_measured_compaction():
     assert th["checkpoint_at"] == 698_000
     assert th["checkpoint_at"] < 717_578 < th["trigger_at"] + 1_000
     assert th["headsup_at"] == 650_000
+    # The same marks as the model and the person read them: percent of the point.
+    assert (th["headsup_pct"], th["checkpoint_pct"], th["trigger_pct"]) == ("87%", "93%", "96%")
 
 
 def test_small_window_bands_stay_ordered():
@@ -177,16 +194,25 @@ def test_thresholds_and_their_knobs(tmp_path: Path, monkeypatch):
     assert th["headsup_at"] == 148_000 and th["headsup_at"] < th["checkpoint_at"]
     monkeypatch.setenv("WINDVANE_OUTPUT_RESERVE", "40000")
     assert cp.thresholds(1_000_000, 750_000)["trigger_at"] == 710_000
-    monkeypatch.setenv("WINDVANE_CHECKPOINT_MARGIN", "30000")
-    assert cp.thresholds(1_000_000, 750_000)["checkpoint_at"] == 680_000
+    # The two marks are percentages of the point.
+    monkeypatch.setenv("WINDVANE_LAST_CALL_PERCENT", "90")
+    assert cp.thresholds(1_000_000, 750_000)["checkpoint_at"] == 675_000
     monkeypatch.setenv("WINDVANE_OUTPUT_RESERVE", "junk")  # nonsense -> default
-    monkeypatch.setenv("WINDVANE_CHECKPOINT_MARGIN", "-5")
+    monkeypatch.setenv("WINDVANE_LAST_CALL_PERCENT", "-5")
     assert cp.thresholds(1_000_000, 750_000)["checkpoint_at"] == 698_000
-    monkeypatch.setenv("WINDVANE_HEADSUP_FRACTION", "0.2")
-    assert cp.thresholds(1_000_000, 750_000)["headsup_at"] == 550_000
-    monkeypatch.setenv("WINDVANE_HEADSUP_FRACTION", "2")  # not a fraction -> default
+    # A last call set above the trigger is pulled under it.
+    monkeypatch.setenv("WINDVANE_LAST_CALL_PERCENT", "99")
+    assert cp.thresholds(1_000_000, 750_000)["checkpoint_at"] == 698_000
+    monkeypatch.delenv("WINDVANE_LAST_CALL_PERCENT")
+    monkeypatch.setenv("WINDVANE_HEADSUP_PERCENT", "80")
+    assert cp.thresholds(1_000_000, 750_000)["headsup_at"] == 600_000
+    monkeypatch.setenv("WINDVANE_HEADSUP_PERCENT", "200")  # not a percentage -> default
     assert cp.thresholds(1_000_000, 750_000)["headsup_at"] == 650_000
-    for k in ("WINDVANE_OUTPUT_RESERVE", "WINDVANE_CHECKPOINT_MARGIN", "WINDVANE_HEADSUP_FRACTION"):
+    # A heads-up set above the last call is pulled under it.
+    monkeypatch.setenv("WINDVANE_HEADSUP_PERCENT", "95")
+    th = cp.thresholds(1_000_000, 750_000)
+    assert th["headsup_at"] < th["checkpoint_at"] == 698_000
+    for k in ("WINDVANE_OUTPUT_RESERVE", "WINDVANE_HEADSUP_PERCENT"):
         monkeypatch.delenv(k)
     # The project's own config file is a layer too.
     proj = tmp_path / "proj"
@@ -216,28 +242,60 @@ def test_assessment_bands(monkeypatch):
     assert cp.assess(None)["band"] == "nodata"
 
 
-def test_a_mirror_the_mod_marked_early_opens_the_checkpoint_band(monkeypatch):
-    """The mod's early_compaction row opens its band below the margin and
-    says so in the mirror; the engine's nudge fires there and names the
-    row. Without the mark the same fill is clear."""
+def test_a_mirror_the_mod_marked_early_is_the_first_of_three_marks(monkeypatch):
+    """The mod's early_compaction row marks a fill below the heads-up and
+    says so in the mirror; the engine's note there names the row, speaks in
+    percent of the point, and leaves the compaction to the model. Without
+    the mark the same fill is clear; above the heads-up the mark changes
+    nothing."""
     monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
     plain = {"total_input_tokens": 400_000, "context_window_size": 1_000_000}
     assert cp.assess(plain)["band"] == "clear"
-    a = cp.assess({**plain, "early_band": "40%"})
-    assert a["band"] == "checkpoint" and a["early"] == "40%"
-    text = cp.checkpoint_text(a)
-    # Far below the trigger the save is asked for at the end of the step, never
-    # now: a NOW here was obeyed mid-step and the boundary compacted half a step.
-    assert text.startswith(
-        "<windvane-context>CHECKPOINT AT THE END OF THIS STEP: the early_compaction setting (40%)"
-    )
-    assert "NOW" not in text and "no hurry" in text
-    assert "when it is done, save and end the turn, and the turn boundary after the save compacts" in text
-    assert "318K tokens to the auto-compaction trigger" in text
-    assert "A save made before the step is done compacts the session at that turn's end" in text
+    a = cp.assess({**plain, "early_band": "45%"})
+    assert a["band"] == "early" and a["early"] == "45%" and a["fill_pct"] == "53%"
+    text = cp.early_text(a)
+    # Far below the trigger nothing says NOW: a NOW here was obeyed mid-step.
+    assert text.startswith("<windvane-context>COMPACT AT A STEP END: the fill is 53% of the 750K compaction point")
+    assert "the early_compaction setting (45%)" in text and "NOW" not in text and "no hurry" in text
+    assert "nothing compacts before it unless you call compact_now" in text
+    assert "A heads-up comes at 87% and a last call at 93%" in text
     assert "the checkpoint tool with operation save and no other argument accepts it" in text
-    late = cp.checkpoint_text(cp.assess({**plain, "total_input_tokens": 725_000}))
-    assert late.startswith("<windvane-context>CHECKPOINT NOW: ") and "early_compaction" not in late
+    assert "K tokens" not in text  # the marks are percentages, never token counts
+    assert cp.assess({**plain, "total_input_tokens": 660_000, "early_band": "45%"})["band"] == "headsup"
+    late = cp.assess({**plain, "total_input_tokens": 725_000, "early_band": "45%"})
+    assert late["band"] == "checkpoint"
+    assert cp.checkpoint_text(late).startswith("<windvane-context>CHECKPOINT NOW: the fill is 97% of the 750K compaction point")
+
+
+def test_the_three_marks_are_each_said_once_in_order_and_reset_by_a_compaction(monkeypatch):
+    """The early mark, the heads-up and the last call each have a latch: the
+    model hears the fill three times, with the compaction its own call at
+    each. A compaction clears all three."""
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
+    sid = "s-marks"
+    state: dict = {"last_session_start": time.time()}
+
+    _mod_mirror(sid, 350_000, "45%")
+    t, ch = cp.nudge(state, sid)
+    assert t.startswith("<windvane-context>COMPACT AT A STEP END") and ch
+    assert cp.nudge(state, sid) == ("", False)
+
+    _mod_mirror(sid, 660_000, "45%")
+    t, ch = cp.nudge(state, sid)
+    assert "Context pressure: the fill is 88% of the 750K compaction point" in t and ch
+    assert "call compact_now" in t and "The last call comes at 93%" in t
+    assert cp.nudge(state, sid) == ("", False)
+
+    _mod_mirror(sid, 700_000, "45%")
+    t, ch = cp.nudge(state, sid)
+    assert t.startswith("<windvane-context>CHECKPOINT NOW: the fill is 93%") and ch
+    assert "then save, call compact_now and end the turn" in t
+    assert cp.nudge(state, sid) == ("", False)
+
+    time.sleep(0.02)
+    cp.note_compaction(state)
+    ps = cp.pressure_state(state)
+    assert not ps["early_done"] and not ps["headsup_done"] and not ps["checkpoint_done"]
 
 
 def test_nudges_latch_once_per_band_per_compaction_cycle(monkeypatch):
@@ -252,13 +310,13 @@ def test_nudges_latch_once_per_band_per_compaction_cycle(monkeypatch):
     cp.record_statusline(_payload(sid, 660_000))
     t, ch = cp.nudge(state, sid)
     assert "Context pressure" in t and "Compaction #1 is coming" in t and ch
-    assert "~698K" in t
+    assert "The last call comes at 93%" in t
     assert cp.nudge(state, sid) == ("", False)
 
     cp.record_statusline(_payload(sid, 700_000))
     t, ch = cp.nudge(state, sid)
     assert t.startswith("<windvane-context>CHECKPOINT NOW") and ch
-    assert "18K tokens to the auto-compaction trigger (~718K; the 750K setting minus the output reserve)" in t
+    assert "auto-compaction fires at 96% (the 750K setting minus the output reserve)" in t
     assert "checkpoint tool" in t and "operation save" in t
     assert cp.nudge(state, sid)[0] == ""
 
@@ -269,8 +327,8 @@ def test_nudges_latch_once_per_band_per_compaction_cycle(monkeypatch):
     assert a["band"] == "nodata" and "predates" in a["reason"]
     assert cp.nudge(state, sid)[0] == ""
     r = cp.rhythm_text(state, sid)
-    assert r.startswith("Compaction #1.") and "checkpoint at ~698K" in r
-    assert "auto-compaction at ~718K (the 750K env setting minus the output reserve)" in r
+    assert r.startswith("Compaction #1. Rhythm, as percent of the compaction point (the 750K env setting): heads-up at 87%, last call at 93%, auto-compaction at 96%")
+    assert "Compaction is your call (compact_now)" in r and "early mark" not in r
 
     # A fresh mirror still carrying the pre-compaction size (Claude Code
     # reports it until the next request): no nudge before a turn has ended,
@@ -467,17 +525,17 @@ def test_the_brief_marker_is_fresh_for_two_minutes(tmp_path: Path):
 
 
 def test_checkpoint_text_and_cadence_say_the_recorder_drafted_the_record():
-    a = {"trigger_at": 168_000, "used": 149_000, "point": 200_000}
+    a = {"trigger_at": 168_000, "used": 149_000, "point": 200_000, "fill_pct": "75%", "trigger_pct": "84%"}
     for text in (cp.checkpoint_text(a), cp.cadence_text(60)):
         assert "the checkpoint tool with operation save and no other argument accepts it" in text
         assert "one field amends that field" in text and "TaskUpdate" in text and "what is next" in text
         assert "task_description," not in text and "handoff_summary" not in text
     assert cp.checkpoint_text(a).startswith(
-        "<windvane-context>CHECKPOINT NOW: 19K tokens to the auto-compaction trigger (~168K; the 200K setting"
+        "<windvane-context>CHECKPOINT NOW: the fill is 75% of the 200K compaction point and auto-compaction fires at 84% (the 200K setting"
     )
-    # The save comes after the step, not before it: the record then describes
-    # the finished work, and the turn boundary after the save compacts.
-    assert "Finish the step in hand and start nothing new; then save and end the turn" in cp.checkpoint_text(a)
+    # The save comes after the step, not before it, and the compaction is the
+    # model's own call: save, compact_now, end the turn.
+    assert "Finish the step in hand and start nothing new; then save, call compact_now and end the turn" in cp.checkpoint_text(a)
     assert "Then continue" not in cp.checkpoint_text(a)
     assert "60 turns" in cp.cadence_text(60)
 

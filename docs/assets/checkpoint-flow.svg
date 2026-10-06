@@ -14,7 +14,7 @@
   <rect x="130" y="138" width="700" height="18" rx="4" fill="#7d8590" fill-opacity="0.12" stroke="#7d8590"/>
   <!-- the filled part, up to the band -->
   <rect x="130" y="138" width="560" height="18" rx="4" fill="#406b61" fill-opacity="0.35"/>
-  <!-- the checkpoint band -->
+  <!-- the last call, up to the trigger -->
   <rect x="690" y="138" width="60" height="18" fill="#406b61" fill-opacity="0.7"/>
   <!-- the room between the trigger and the point -->
   <rect x="750" y="138" width="80" height="18" rx="4" fill="#7d8590" fill-opacity="0.08"/>
@@ -23,18 +23,18 @@
   <line x1="130" y1="156" x2="130" y2="176" stroke="#7d8590"/>
   <text x="130" y="192" fill="#7d8590" font-size="11" text-anchor="middle">session start</text>
 
-  <!-- the optional early_compaction row: the band opens here instead -->
+  <!-- the optional early_compaction row: the first note comes here -->
   <line x1="400" y1="138" x2="400" y2="176" stroke="#4f8577" stroke-dasharray="3 3"/>
   <text x="400" y="192" fill="#4f8577" font-size="11" text-anchor="middle">early_compaction (optional)</text>
-  <text x="400" y="206" fill="#7d8590" font-size="11" text-anchor="middle">a fill or a turn's cost opens the band here</text>
+  <text x="400" y="206" fill="#7d8590" font-size="11" text-anchor="middle">a fill or a turn's cost: the first note</text>
 
   <line x1="560" y1="156" x2="560" y2="176" stroke="#7d8590"/>
   <text x="560" y="192" fill="#7d8590" font-size="11" text-anchor="middle">heads-up</text>
-  <text x="560" y="220" fill="#7d8590" font-size="11" text-anchor="middle">a tenth of the window before the point</text>
+  <text x="560" y="220" fill="#7d8590" font-size="11" text-anchor="middle">about 87% of the point: the second note</text>
 
   <line x1="690" y1="156" x2="690" y2="176" stroke="#4f8577"/>
-  <text x="690" y="192" fill="#4f8577" font-size="11" text-anchor="middle" font-weight="600">checkpoint band</text>
-  <text x="690" y="206" fill="#7d8590" font-size="11" text-anchor="middle">20,000 tokens above the trigger</text>
+  <text x="690" y="192" fill="#4f8577" font-size="11" text-anchor="middle" font-weight="600">last call</text>
+  <text x="690" y="206" fill="#7d8590" font-size="11" text-anchor="middle">about 93% of the point: the last note</text>
 
   <line x1="750" y1="156" x2="750" y2="176" stroke="#7d8590"/>
   <text x="750" y="222" fill="#7d8590" font-size="11" text-anchor="middle">trigger: Claude Code's own</text>
@@ -58,9 +58,9 @@
   <path d="M 415 76 L 415 136" fill="none" stroke="#7d8590" stroke-dasharray="3 3"/>
 
   <rect x="580" y="20" width="250" height="56" rx="6" fill="#406b61" fill-opacity="0.12" stroke="#4f8577"/>
-  <text x="590" y="40" fill="#4f8577" font-weight="600" font-size="12">one deliberate save inside the band</text>
-  <text x="590" y="56" fill="#7d8590" font-size="11">checkpoint(save) accepts the draft, or</text>
-  <text x="590" y="70" fill="#7d8590" font-size="11">compact_now banks it and asks to compact</text>
+  <text x="590" y="40" fill="#4f8577" font-weight="600" font-size="12">the model's own call, at a step end</text>
+  <text x="590" y="56" fill="#7d8590" font-size="11">checkpoint(save) banks the draft, then</text>
+  <text x="590" y="70" fill="#7d8590" font-size="11">compact_now asks for the compaction</text>
   <line x1="720" y1="76" x2="720" y2="136" stroke="#4f8577" stroke-dasharray="3 3"/>
 
   <!-- the compaction and the loop back -->
@@ -73,5 +73,5 @@
   <text x="310" y="276" fill="#7d8590" font-size="11">a new cycle, with nothing lost</text>
 
   <!-- the floor -->
-  <text x="40" y="320" fill="#7d8590" font-size="11">If no save lands in the band, Claude Code compacts at its trigger and the before-compaction hook banks the draft as the floor.</text>
+  <text x="40" y="320" fill="#7d8590" font-size="11">If compact_now is never called, Claude Code compacts at its trigger and the before-compaction hook banks the draft as the floor.</text>
 </svg>

@@ -7,12 +7,13 @@
 // The status line: "windvane ctx 51% · ckpt 12m", the checkpoint age read
 //   from the project's ring (latest_handoff.json). The status_segment
 //   option set to false hides it; the band and the pane stay.
-// Compaction at windvane's point, after the save. The engine's pressure
-//   bands are mirrored here: once the fill is inside the checkpoint band
-//   AND a deliberate checkpoint save has landed since the band was entered,
-//   the next turn boundary compacts. Compaction then happens with the state
-//   banked, at windvane's number, instead of at Claude Code's trigger with
-//   whatever happened to be saved. After a compaction windvane started, one
+// Compaction at the model's call. The engine's pressure marks are mirrored
+//   here (the segment and the pane name the one the fill stands at, the
+//   mirror carries the early_compaction mark for the engine's notes), and
+//   nothing here compacts on its own: compact_now, called by the model at a
+//   step end, compacts at the next turn boundary with the state banked;
+//   a checkpoint save is only a save; Claude Code's own trigger is the
+//   floor. After a compaction windvane started, one
 //   prompt of windvane's resumes the work from the checkpoint
 //   (continue_after_compact); the SessionStart(compact) banner carries the
 //   rules and the checkpoint for that one, since a plugin's own
@@ -113,10 +114,9 @@ type Mirror = {
   // seven_day, a model-specific weekly window, ...); the flat keys above
   // stay for older readers.
   rate_limits: Record<string, { pct?: number; resets_at?: number }>
-  // The early_compaction row opened the checkpoint band below the engine's
-  // own margin: the engine's nudge asks for the checkpoint at the end of the
-  // step from this (not NOW, the trigger being far), with the row's value as
-  // the reason.
+  // The early_compaction row's fill is reached, below the engine's own
+  // marks: the engine's first note comes from this, with the row's value as
+  // the reason. The compaction stays the model's call.
   early_band?: string
   // The compaction window the mod measured against (the session's
   // rawMaxTokens, or the default point), so a store can be read when the band
@@ -148,16 +148,19 @@ function defaultPoint(window: number): number {
 }
 
 // The checkpoint band's state: when it was entered ($.clock's ms; undefined
-// outside it), whether it is open below the engine's margin for the
-// early_compaction row alone, what the last counted main turn cost, and the
-// compaction point the last judgement measured against.
+// outside it), whether the fill is still under the engine's last call and
+// the band is open for the early_compaction row alone, what the last counted
+// main turn cost, and the compaction point the last judgement measured
+// against. The band informs (the segment, the pane, the engine's notes
+// through the mirror); it never compacts. The compaction is the model's
+// call, compact_now.
 type BandState = { enteredAt?: number; early: boolean; lastTurnCostUsd?: number; point?: number }
 
 // The band bookkeeping, against Claude Code's own compaction window: the
-// band opens at the engine's margin above the trigger, or earlier when the
-// early_compaction row's fill (a share of that window, as /context counts
-// it) or turn cost is reached. A top-level function because $ is followed
-// only into one.
+// band opens at the engine's last call above the trigger, or earlier when
+// the early_compaction row's fill (a share of that window, as /context
+// counts it) or turn cost is reached. A top-level function because $ is
+// followed only into one.
 async function updateBand($: EngineInterface, usage: { context: Context }, early: EarlyCompaction | undefined, band: BandState): Promise<void> {
   const tokens = tokensOf(usage.context)
   const point = (await $.session.usage({ breakdown: 'summary' })).context.breakdown?.rawMaxTokens
@@ -168,10 +171,10 @@ async function updateBand($: EngineInterface, usage: { context: Context }, early
     (early.percent !== undefined && tokens * 100 >= point * early.percent)
     || (early.usd !== undefined && band.lastTurnCostUsd !== undefined && band.lastTurnCostUsd >= early.usd))
   if (tokens !== undefined && (tokens >= th.checkpointAt || earlyHit)) {
-    if (band.enteredAt === undefined) {
-      band.enteredAt = await $.clock.now()
-      band.early = tokens < th.checkpointAt
-    }
+    if (band.enteredAt === undefined) band.enteredAt = await $.clock.now()
+    // Judged every time: the row's mark gives way to the last call once the
+    // fill reaches it.
+    band.early = tokens < th.checkpointAt
   } else {
     band.enteredAt = undefined
     band.early = false
@@ -410,7 +413,6 @@ export const register: Register = (on, options) => {
   let rings: string[] = []
   // Times are $.clock's (ms since the epoch).
   const bandState: BandState = { early: false } // the checkpoint band (updateBand)
-  let lastSaveAt: number | undefined // a deliberate checkpoint save that succeeded
   let compactAsked = false // compact_now succeeded this turn
   let compactRequested = false // a compaction is under way
   // The fill as read right after a compaction. Claude Code's usage figures
@@ -435,18 +437,17 @@ export const register: Register = (on, options) => {
   const early = settings.earlyCompaction
   let doorBudget: number | undefined // the door's budget, read once per load
 
-  // A deliberate save that succeeded: checkpoint(save), or compact_now,
-  // which banks the draft and asks for the compaction at the turn boundary.
-  // The serving hooks below call this once the engine has answered without
-  // an error. The engine carries the arguments at the top level of the event.
-  const noteSave = (call: unknown, compactNow: boolean, at: number): void => {
-    const { operation, agentId } = call as { operation?: string; agentId?: string }
-    if (compactNow || operation === 'save') lastSaveAt = at
+  // compact_now succeeded in the main conversation: it banked the draft and
+  // asked for the compaction at the turn boundary. A checkpoint save asks
+  // for nothing: the model saves at every step end and compacts when it
+  // judges the moment right (a save in the band used to compact, and the
+  // model then lost the plain save; 2026-10-06). The serving hooks below
+  // call this once the engine has answered without an error; the engine
+  // carries the arguments at the top level of the event.
+  const noteSave = (call: unknown, compactNow: boolean): void => {
+    const { agentId } = call as { agentId?: string }
     if (compactNow && agentId === undefined) compactAsked = true
   }
-
-  // Inside the band with a save made since the band was entered.
-  const savedInBand = () => bandState.enteredAt !== undefined && lastSaveAt !== undefined && lastSaveAt >= bandState.enteredAt
 
   // The person's own prompts are noted for the continue prompt's sake: the
   // ones typed at the terminal (composer) or sent from the Remote Control
@@ -639,18 +640,17 @@ export const register: Register = (on, options) => {
 
   // The tools the model calls (tools.ts): one matched hook per tool, each
   // matcher naming its tool literally. Each answers for itself: a failure is
-  // a deny, else the reply is the result. A checkpoint save or a compact_now
-  // that the engine answered is a deliberate save (noteSave).
+  // a deny, else the reply is the result. A compact_now the engine answered
+  // asks for the compaction at the turn boundary (noteSave).
   on('tool.call', { tool: 'mcp__windvane__checkpoint' }, async ($, e) => {
     const got = await serve(hostOf($), 'checkpoint', e, settings)
     if ('deny' in got) return { deny: got.deny }
-    noteSave(e, false, await $.clock.now())
     return { result: got.result }
   })
   on('tool.call', { tool: 'mcp__windvane__compact_now' }, async ($, e) => {
     const got = await serve(hostOf($), 'compact_now', e, settings)
     if ('deny' in got) return { deny: got.deny }
-    noteSave(e, true, await $.clock.now())
+    noteSave(e, true)
     return { result: got.result }
   })
   on('tool.call', { tool: 'mcp__windvane__memory' }, async ($, e) => {
@@ -751,10 +751,13 @@ export const register: Register = (on, options) => {
 
       const latest = await readLatest(ioOf($), rings, store)
       const pct = stale ? undefined : percentOf(usage.context, bandState.point)
-      const band = bandState.enteredAt !== undefined && !savedInBand() ? ' · checkpoint now' : ''
+      // The mark the fill stands at, in the segment's words: the engine's
+      // last call, or the early_compaction row's mark under it.
+      const mark = bandState.enteredAt === undefined ? undefined : bandState.early ? 'early' : 'checkpoint'
+      const band = mark === 'checkpoint' ? ' · checkpoint now' : mark === 'early' ? ' · compact at step end' : ''
       if (settings.statusSegment) $.ui.status(`${PLUGIN} ctx ${pct === undefined ? '?' : pct + '%'} · ${ageText(latest?.created)}${band}`)
-      // The same figures for the band above the prompt.
-      await update($, pressure, () => ({ percent: pct, checkpointCreated: latest?.created, inBand: band !== '' }))
+      // The same figures for the band above the prompt and the pane.
+      await update($, pressure, () => ({ percent: pct, checkpointCreated: latest?.created, mark }))
     }
 
     await tick()
@@ -775,26 +778,24 @@ export const register: Register = (on, options) => {
     compactRequested = false
   }
 
-  // The turn boundary: compact_now asked for it, or the fill is inside the
-  // band with a checkpoint banked since the band was entered; compact now,
-  // at windvane's number. The compaction runs inside this hook, where the
-  // engine says it belongs: the conversation compacts between turns, and a
-  // compaction left to a timer lost the race against a prompt queued for
-  // the next turn ("a turn is running"). The hook's budget stops while a $
-  // call is in flight, so the compaction costs it nothing.
+  // The turn boundary: compact_now asked for the compaction during the turn,
+  // so it runs here, at the model's own number. Nothing else compacts: the
+  // band and the engine's notes inform, and Claude Code's own trigger is
+  // the floor. The compaction runs inside this hook, where the engine says
+  // it belongs: the conversation compacts between turns, and a compaction
+  // left to a timer lost the race against a prompt queued for the next turn
+  // ("a turn is running"). The hook's budget stops while a $ call is in
+  // flight, so the compaction costs it nothing.
   on('turn.complete', async ($, e, next) => {
     if ((e as unknown as { agentId?: string }).agentId !== undefined) return next(e)
     // A turn ended: the next reading is the rewritten conversation's.
     staleTokens = undefined
-    // Decided before the ledger judges the band again below: the band a
-    // costly turn opened at its end is what the save in this turn answered.
-    const compacting = (compactAsked || savedInBand()) && !compactRequested
-    const why = bandState.early && early !== undefined ? ` (early_compaction ${early.label})` : ''
+    const compacting = compactAsked && !compactRequested
     if (compacting) compactRequested = true
     const done = await next(e)
     // The ledger counts the turn once it is done. What the turn cost is the
     // early_compaction row's dollar signal, so the band is judged again here
-    // and a save in the next turn counts.
+    // and the mirror carries the mark before the next tick.
     try {
       const cost = await recordTurn($, e)
       if (cost !== undefined) bandState.lastTurnCostUsd = cost
@@ -805,7 +806,8 @@ export const register: Register = (on, options) => {
     if (compacting) {
       turnBeganAt = (await $.clock.now()) - Math.max(0, e.durationMs ?? 0)
       const tokens = await fillOf($)
-      $.ui.toast(`${PLUGIN}: checkpoint banked, compacting at ${Math.round((tokens ?? 0) / 1000)}K${why}`)
+      const at = tokens !== undefined && bandState.point ? ` at ${Math.round((100 * tokens) / bandState.point)}%` : ''
+      $.ui.toast(`${PLUGIN}: compact_now: draft banked, compacting${at}`)
       let compacted = false
       try {
         const out = await $.session.compact()

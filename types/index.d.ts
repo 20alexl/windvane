@@ -16,7 +16,8 @@ export type WindvaneRead = {
   mistakes: number
   // the engine's margin-band nudge: the trigger is near, save now
   checkpointNow: boolean
-  // the early_compaction band's nudge: save at the end of the step in hand
+  // the early_compaction mark's note: save at the step's end, compact if
+  // the phase has closed
   checkpointAtStepEnd: boolean
   headsUp: boolean
   stall: boolean
@@ -26,7 +27,9 @@ export type WindvaneRead = {
 export type Pressure = {
   percent?: number
   checkpointCreated?: number
-  inBand: boolean
+  // the mark the fill stands at: the engine's last call ('checkpoint'), or
+  // the early_compaction row's mark under it ('early'); absent below both
+  mark?: 'early' | 'checkpoint'
 }
 
 export type Line = { id: string; content: string }

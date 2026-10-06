@@ -170,7 +170,7 @@ export function drawPane(ui: Draw, data: PaneData, act: PaneActions): RenderElem
   const summary = [
     figures ? `ctx ${figures.percent ?? '?'}%` : undefined,
     figures ? ageText(figures.checkpointCreated, now) : undefined,
-    figures?.inBand ? 'checkpoint now' : undefined,
+    figures?.mark === 'checkpoint' ? 'checkpoint now' : figures?.mark === 'early' ? 'compact at step end' : undefined,
     view ? count(view.rules.length, 'rule') : undefined,
     view?.file ? `${count(view.mistakes.length, 'mistake')} for ${basename(view.file)}` : undefined,
   ].filter((s): s is string => s !== undefined)
