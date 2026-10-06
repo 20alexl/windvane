@@ -1,7 +1,7 @@
 [project]
 name = "windvane"
 version = "1.0.6"
-description = "Keeps the state and steers the session for Claude Code: checkpoints the recorder drafts, compaction at the right point, project memory and rules, all from hooks the model never has to call."
+description = "Babysits a long Claude Code session so you don't have to: checkpoints the recorder drafts, compaction at the right point, project memory and rules, all from hooks the model never has to call."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

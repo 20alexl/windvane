@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "windvane",
-      "description": "Keeps the state and steers the session: drafted checkpoints, compaction at the right point, project memory and rules.",
+      "description": "Babysits a long Claude Code session so you don't have to: watches the context fill, drafts the checkpoint, compacts at the right point and resumes the work. Rules in every subagent, project memory.",
       "source": ".",
       "category": "productivity"
     }
