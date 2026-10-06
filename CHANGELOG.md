@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.7 (2026-10-06)
+
+- **The early band asks for the checkpoint at the end of the step, not now.** With `early_compaction` set, the band opens far below the auto-compaction trigger, and the engine's nudge there said CHECKPOINT NOW before it said "finish the step in hand". Read over a night's sessions, the model obeyed the first word about half the time: it saved within seconds, mid-build, and the turn boundary compacted with the step half done, the record saying so. The early band's note now opens with CHECKPOINT AT THE END OF THIS STEP, says the trigger is far and there is no hurry, asks for the save when the step is done, and says what a save made before that does. The engine's own margin band, where the trigger is near, keeps CHECKPOINT NOW. The band above the prompt shows "checkpoint at step end" for the early note, and the quick reference and the docs say the same.
+
 ## 1.0.6 (2026-10-05)
 
 - **A prompt typed over the running turn is not the person continuing after the compaction.** The resume prompt after a compaction windvane started is skipped when the person typed during the compaction, since that prompt runs first. The check counted any prompt typed since the compacting turn began, and a line typed while that turn was still working, which Claude Code delivered into the turn and the model answered before the compaction, was read as the person continuing: the transcript said so, no resume prompt came, and the session sat idle. Only a prompt typed while no turn runs, which the compaction window is, now counts. A prompt typed over the turn that the engine kept for the next turn runs before the resume prompt, whose text already tells the model to stop in one line in that case.

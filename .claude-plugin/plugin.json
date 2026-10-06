@@ -1,6 +1,6 @@
 {
   "name": "windvane",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Babysits a long Claude Code session so you don't have to: the context fill is watched, the recorder drafts the checkpoint, compaction happens at the right point with the state banked and the work is resumed, the rules and the checkpoint ride inside the compacted conversation and every subagent's prompt, tool results are trimmed and secrets redacted at the door, project memory and rules are a tool call away, and a token ledger, a pane and a status segment show where the session stands.",
   "author": { "name": "windvane" },
   "types": "./types/index.d.ts",
@@ -56,7 +56,7 @@
     "early_compaction": {
       "type": "string",
       "title": "Early compaction",
-      "description": "Open the checkpoint band early: at a fill such as 40% of the compaction window, or once one turn has cost as much as $0.40. The band asks for a save and the next turn boundary after the save compacts. Empty keeps the band at its margin above the trigger.",
+      "description": "Open the checkpoint band early: at a fill such as 40% of the compaction window, or once one turn has cost as much as $0.40. The band asks for a save at the end of the step in hand, and the next turn boundary after the save compacts. Empty keeps the band at its margin above the trigger.",
       "default": ""
     }
   }
