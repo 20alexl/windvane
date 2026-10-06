@@ -226,9 +226,18 @@ def test_a_mirror_the_mod_marked_early_opens_the_checkpoint_band(monkeypatch):
     a = cp.assess({**plain, "early_band": "40%"})
     assert a["band"] == "checkpoint" and a["early"] == "40%"
     text = cp.checkpoint_text(a)
-    assert text.startswith("<windvane-context>CHECKPOINT NOW: the early_compaction setting (40%)")
-    assert "turn boundary after the save compacts" in text and "318K tokens to the auto-compaction trigger" in text
-    assert "early_compaction" not in cp.checkpoint_text(cp.assess({**plain, "total_input_tokens": 725_000}))
+    # Far below the trigger the save is asked for at the end of the step, never
+    # now: a NOW here was obeyed mid-step and the boundary compacted half a step.
+    assert text.startswith(
+        "<windvane-context>CHECKPOINT AT THE END OF THIS STEP: the early_compaction setting (40%)"
+    )
+    assert "NOW" not in text and "no hurry" in text
+    assert "when it is done, save and end the turn, and the turn boundary after the save compacts" in text
+    assert "318K tokens to the auto-compaction trigger" in text
+    assert "A save made before the step is done compacts the session at that turn's end" in text
+    assert "the checkpoint tool with operation save and no other argument accepts it" in text
+    late = cp.checkpoint_text(cp.assess({**plain, "total_input_tokens": 725_000}))
+    assert late.startswith("<windvane-context>CHECKPOINT NOW: ") and "early_compaction" not in late
 
 
 def test_nudges_latch_once_per_band_per_compaction_cycle(monkeypatch):

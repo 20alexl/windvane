@@ -67,6 +67,7 @@ export function parseWindvane(text: string, at: number): WindvaneRead | null {
     rules,
     mistakes,
     checkpointNow: text.includes('<windvane-context>CHECKPOINT NOW'),
+    checkpointAtStepEnd: text.includes('<windvane-context>CHECKPOINT AT THE END OF THIS STEP'),
     headsUp: text.includes('<windvane-context>Context pressure:'),
     stall: tags.includes('stall'),
   }
@@ -83,6 +84,7 @@ export function bandLine(r: WindvaneRead, p: { percent?: number; checkpointCreat
   if (r.rules) parts.push(plural(r.rules, 'rule'))
   if (r.mistakes) parts.push(plural(r.mistakes, 'mistake'))
   if (r.checkpointNow) parts.push('CHECKPOINT NOW')
+  else if (r.checkpointAtStepEnd) parts.push('checkpoint at step end')
   else if (r.headsUp) parts.push('heads-up')
   if (r.stall) parts.push('stall')
   if (parts.length === 1) parts.push(...r.tags)

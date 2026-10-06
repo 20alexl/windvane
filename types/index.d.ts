@@ -14,7 +14,10 @@ export type WindvaneRead = {
   rules: number
   // mistakes the row showed: the AUTO-CHECK past-mistakes lines
   mistakes: number
+  // the engine's margin-band nudge: the trigger is near, save now
   checkpointNow: boolean
+  // the early_compaction band's nudge: save at the end of the step in hand
+  checkpointAtStepEnd: boolean
   headsUp: boolean
   stall: boolean
 }

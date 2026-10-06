@@ -114,8 +114,9 @@ type Mirror = {
   // stay for older readers.
   rate_limits: Record<string, { pct?: number; resets_at?: number }>
   // The early_compaction row opened the checkpoint band below the engine's
-  // own margin: the engine's nudge says CHECKPOINT NOW from this, with the
-  // row's value as the reason.
+  // own margin: the engine's nudge asks for the checkpoint at the end of the
+  // step from this (not NOW, the trigger being far), with the row's value as
+  // the reason.
   early_band?: string
   // The compaction window the mod measured against (the session's
   // rawMaxTokens, or the default point), so a store can be read when the band

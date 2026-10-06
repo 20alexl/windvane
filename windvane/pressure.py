@@ -748,17 +748,30 @@ _DRAFTED = (
 def checkpoint_text(a: dict) -> str:
     left = max(0, int(a["trigger_at"]) - int(a["used"]))
     early = a.get("early")
-    why = (
-        f"the early_compaction setting ({early}) opens the checkpoint band here, "
-        "and the turn boundary after the save compacts; "
-        if early
-        else ""
+    distance = (
+        f"{_k(left)} tokens to the auto-compaction trigger (~{_k(a['trigger_at'])}; "
+        f"the {_k(a['point'])} setting minus the output reserve)"
     )
+    if early:
+        # The band opened on the person's early_compaction row, far below the
+        # trigger: the save is asked for at the end of the step, not now. A
+        # note that said NOW here was obeyed as "save now", mid-step, and the
+        # turn boundary compacted with the step half done (seen 2026-10-06).
+        return (
+            "<windvane-context>CHECKPOINT AT THE END OF THIS STEP: "
+            f"the early_compaction setting ({early}) opens the checkpoint band here, "
+            f"with {distance}, so there is no hurry. "
+            "Finish the step in hand and start nothing new; when it is done, save and "
+            "end the turn, and the turn boundary after the save compacts with a record "
+            "that describes the finished work. A save made before the step is done "
+            "compacts the session at that turn's end wherever the step then stands. "
+            + _DRAFTED
+            + "</windvane-context>"
+        )
     return (
         "<windvane-context>CHECKPOINT NOW: "
-        + why
-        + f"{_k(left)} tokens to the auto-compaction trigger (~{_k(a['trigger_at'])}; "
-        f"the {_k(a['point'])} setting minus the output reserve). "
+        + distance
+        + ". "
         + _DRAFTED
         + " Finish the step in hand and start nothing new; then save and end the turn, "
         "so the record describes the finished work and the turn boundary compacts. "

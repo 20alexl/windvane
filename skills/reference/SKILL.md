@@ -20,7 +20,7 @@ Save when a unit of work has closed. When a `CHECKPOINT NOW` note arrives, finis
 
 ## Compacting
 
-`compact_now` banks the draft and compacts as soon as the turn ends. Call it when a phase is done and the context is filling, then end your turn at once. After the compaction windvane sends one prompt that resumes the work; the rules and the checkpoint arrive with it in the session-start brief. The windvane mod also compacts by itself once the fill is in the checkpoint band and a save has landed. The person's `early_compaction` setting can open that band sooner, at a fill or a turn cost; the `CHECKPOINT NOW` note names it when it did, and the rule is the same: finish the step, save, end the turn, and the turn boundary compacts. When a `heads-up` note arrives, finish the step and start nothing long.
+`compact_now` banks the draft and compacts as soon as the turn ends. Call it when a phase is done and the context is filling, then end your turn at once. After the compaction windvane sends one prompt that resumes the work; the rules and the checkpoint arrive with it in the session-start brief. The windvane mod also compacts by itself once the fill is in the checkpoint band and a save has landed. The person's `early_compaction` setting can open that band sooner, at a fill or a turn cost; a `CHECKPOINT AT THE END OF THIS STEP` note names it when it did. There is no hurry then: finish the step, and only when it is done save and end the turn, so the turn boundary compacts with a record of the finished work. A save made mid-step compacts at that turn's end wherever the step stands. When a `heads-up` note arrives, finish the step and start nothing long.
 
 ## Memory
 

@@ -74,6 +74,8 @@ const RULE_AND_CHECKPOINT = [
   '</windvane-rule>',
   '<windvane-context>CHECKPOINT NOW: 18K tokens to the auto-compaction trigger (~718K).</windvane-context>',
 ].join('\n')
+const EARLY_BAND =
+  '<windvane-context>CHECKPOINT AT THE END OF THIS STEP: the early_compaction setting (45%) opens the checkpoint band here, with 395K tokens to the auto-compaction trigger (~718K), so there is no hurry.</windvane-context>'
 
 test('the band counts what windvane injected and hides on request', async ($, on) => {
   const stored: Record<string, unknown> = {}
@@ -145,6 +147,17 @@ test('the band counts what windvane injected and hides on request', async ($, on
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'windvane', surface, ...BAND })
     expect((await ui.find(LINE))?.text).toContain('windvane · 1 rule · CHECKPOINT NOW')
+    await ui.unmount()
+  }
+
+  // The early band's note asks for the save at the end of the step, and the
+  // band says so in its own words, never NOW.
+  await append($, hookRow(EARLY_BAND))
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'windvane', surface, ...BAND })
+    const text = (await ui.find(LINE))?.text ?? ''
+    expect(text).toContain('windvane · checkpoint at step end')
+    expect(text).not.toContain('NOW')
     await ui.unmount()
   }
 
