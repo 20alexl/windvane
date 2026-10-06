@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.6 (2026-10-05)
+
+- **A prompt typed over the running turn is not the person continuing after the compaction.** The resume prompt after a compaction windvane started is skipped when the person typed during the compaction, since that prompt runs first. The check counted any prompt typed since the compacting turn began, and a line typed while that turn was still working, which Claude Code delivered into the turn and the model answered before the compaction, was read as the person continuing: the transcript said so, no resume prompt came, and the session sat idle. Only a prompt typed while no turn runs, which the compaction window is, now counts. A prompt typed over the turn that the engine kept for the next turn runs before the resume prompt, whose text already tells the model to stop in one line in that case.
+
 ## 1.0.5 (2026-10-05)
 
 One defect in the checkout record 1.0.4 added, seen on its first live compaction.
