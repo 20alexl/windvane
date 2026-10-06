@@ -1,6 +1,6 @@
 {
   "name": "windvane",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Babysits a long Claude Code session so you don't have to: the context fill is watched, the recorder drafts the checkpoint, compaction happens at the right point with the state banked and the work is resumed, the rules and the checkpoint ride inside the compacted conversation and every subagent's prompt, tool results are trimmed and secrets redacted at the door, project memory and rules are a tool call away, and a token ledger, a pane and a status segment show where the session stands.",
   "author": { "name": "windvane" },
   "types": "./types/index.d.ts",
@@ -50,13 +50,13 @@
     "continue_after_compact": {
       "type": "boolean",
       "title": "Continue after compaction",
-      "description": "After a compaction windvane started (compact_now, or the checkpoint band), windvane sends one prompt that resumes the work from the checkpoint. Off, the session waits for the person.",
+      "description": "After a compaction windvane started (compact_now), windvane sends one prompt that resumes the work from the checkpoint. Off, the session waits for the person.",
       "default": true
     },
     "early_compaction": {
       "type": "string",
       "title": "Early compaction",
-      "description": "Open the checkpoint band early: at a fill such as 40% of the compaction window, or once one turn has cost as much as $0.40. The band asks for a save at the end of the step in hand, and the next turn boundary after the save compacts. Empty keeps the band at its margin above the trigger.",
+      "description": "The first of the three context notes, set early: at a fill such as 45% of the compaction point, or once one turn has cost as much as $0.40. The note asks for a checkpoint at the end of the step in hand and leaves the compaction to the model (compact_now). Empty means the heads-up is the first note.",
       "default": ""
     }
   }
