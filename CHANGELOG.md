@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.9 (2026-10-07)
+
+- **The save's reply carries the fill and the choice.** Under 1.0.8 a session saved "phase done and committed" at 46% and "new phase starting" at 59% of the point and kept everything until the heads-up at 87%, where it compacted within seconds: the model compacts when a note reads as now, and the early note, said once per cycle, cannot reach the step end where the decision is made. The checkpoint tool's save reply now ends with the fill as a percent of the compaction point and the marks; past the early mark it adds the one question the save raises (call `compact_now` now if the next step does not need what is in the context, otherwise carry on), and at the heads-up or the last call it says compact unless the step in hand is mid-flight. Nothing is said right after a compaction, while the reading still predates it. The early note no longer says "save a checkpoint", since two sessions saved within seconds of it as a reflex; it says each save from here answers with the fill.
+
 ## 1.0.8 (2026-10-06)
 
 - **Compaction is the model's call.** A checkpoint save inside the band used to compact at the next turn boundary, so the model could not save at a step without ending the cycle, and the decision to compact was never made out loud. Now only `compact_now` compacts before Claude Code's own trigger; a save is a save, inside the band or out of it. The model saves at every step end and compacts when the phase has closed. The resume prompt after a `compact_now` is unchanged, and Claude Code's trigger stays the floor, with the draft banked before it.
