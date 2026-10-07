@@ -564,6 +564,9 @@ def pressure_state(state: dict) -> dict:
     ps.setdefault("not_recording_announced", False)
     ps.setdefault("last_stop_at", 0.0)
     ps.setdefault("milestone_pending", None)
+    # A save past the early mark whose reply put the compaction to the model;
+    # the next turn asks once what became of it (compact_choice_text).
+    ps.setdefault("compact_pending", None)
     ps.setdefault("setpoint_notice_done", False)
     ps.setdefault("budget_5h_noticed_reset", 0)  # resets_at the 5-hour notice was for
     ps.setdefault("budget_7d_noticed_reset", 0)
@@ -707,6 +710,7 @@ def note_compaction(state: dict) -> None:
     ps["early_done"] = False
     ps["headsup_done"] = False
     ps["checkpoint_done"] = False
+    ps["compact_pending"] = None  # the compaction answers the save's question
     ps["compacted_at"] = time.time()
     comps = ps.get("compactions")
     if not isinstance(comps, list):
@@ -769,22 +773,67 @@ def context_after_save(state: dict, session_id: str, project_dir: str = "") -> s
     a = current_assessment(state, session_id, project_dir)
     if a["band"] == "nodata":
         return ""
+    ps = pressure_state(state)
     head = (
         f"Context: {a['fill_pct']} of the {_k(a['point'])} compaction point "
         f"(heads-up at {a['headsup_pct']}, last call at {a['checkpoint_pct']}, "
         f"auto-compaction at {a['trigger_pct']})."
     )
     if a["band"] == "clear":
+        ps["compact_pending"] = None
         return head
+    # Past the early mark the save puts the compaction to the model, and the
+    # next turn asks once what became of it (nudge): a question at the tail
+    # of a tool result was read as status and skipped seven saves running
+    # (2026-10-07), while a note at the top of a turn is read.
+    ps["compact_pending"] = {"at": time.time(), "fill_pct": a["fill_pct"], "band": a["band"]}
     if a["band"] == "early":
         return (
-            head + " This save closed a step: call compact_now now if the next step does "
-            "not need what is in the context; otherwise carry on."
+            head + " This save closed a step: call compact_now now and end the turn, so "
+            "the next step starts in a fresh context with this checkpoint restored. "
+            + _CARRY_ON_ONLY
         )
     return (
         head + " Call compact_now now unless the step in hand is mid-flight; the next "
         "step starts in a fresh context with this checkpoint restored."
     )
+
+
+# The one reason to keep the context past a closed step. The default is the
+# compaction: "call compact_now if the next step does not need the context,
+# otherwise carry on" read as carry on by default and was never taken.
+_CARRY_ON_ONLY = (
+    "Carry on only if the next step needs something only this context holds, "
+    "such as an edit half made or a result not yet written down."
+)
+
+
+def compact_choice_text(fill_pct: str) -> str:
+    """The follow-through on the save's question, said once per save at the
+    next turn's start: the save closed a step past the early mark and no
+    compact_now followed."""
+    return (
+        f"<windvane-context>Last turn's checkpoint save at {fill_pct} of the compaction "
+        "point closed a step and no compact_now followed. Compact at this step end: call "
+        "compact_now and end the turn, and the next step starts in a fresh context with "
+        f"that checkpoint restored. {_CARRY_ON_ONLY}</windvane-context>"
+    )
+
+
+def _ring_compact_now_after(project_dir: str, t: float) -> bool:
+    """Did a compact_now bank land in the project's ring after ``t``? The
+    compaction it asks for answers the save's question before it runs."""
+    if not project_dir or not t:
+        return False
+    try:
+        from windvane.events.common import get_handoff_data
+
+        entry = get_handoff_data(project_dir) or {}
+        if str(entry.get("trigger", "")) != "compact_now":
+            return False
+        return float(entry.get("created") or entry.get("timestamp") or 0.0) > t
+    except Exception:
+        return False
 
 
 def headsup_text(a: dict, cycle: int) -> str:
@@ -1093,6 +1142,18 @@ def nudge(state: dict, session_id: str, project_dir: str = "") -> tuple[str, boo
     if _budget:
         changed = True
         texts.extend(_budget)
+
+    # A save past the early mark put the compaction to the model and the turn
+    # ended without a compact_now: asked once, at the next turn's start. A
+    # compaction since clears it (note_compaction); a compact_now banked since
+    # answers it silently. It waits for the save's turn to end, like a task
+    # close: inside that turn the model may still be about to call it.
+    cpd = ps.get("compact_pending")
+    if isinstance(cpd, dict) and float(ps.get("last_stop_at") or 0.0) > float(cpd.get("at") or 0.0):
+        ps["compact_pending"] = None
+        changed = True
+        if a["band"] not in ("clear",) and not _ring_compact_now_after(project_dir, float(cpd.get("at") or 0.0)) and not texts:
+            texts.append(compact_choice_text(str(cpd.get("fill_pct") or a.get("fill_pct") or "?")))
 
     # A closed step with no deliberate checkpoint behind it. Delivered once;
     # a checkpoint that landed since the claim answers it silently.

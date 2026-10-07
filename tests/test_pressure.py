@@ -282,19 +282,77 @@ def test_the_save_reply_carries_the_fill_and_past_the_early_mark_the_choice(monk
     _mod_mirror(sid, 200_000)
     t = cp.context_after_save(state, sid)
     assert t == "Context: 27% of the 750K compaction point (heads-up at 87%, last call at 93%, auto-compaction at 96%)."
+    assert state["pressure"]["compact_pending"] is None  # below the mark nothing is put to the model
     _mod_mirror(sid, 440_000, "45%")
     t = cp.context_after_save(state, sid)
     assert t.startswith("Context: 59% of the 750K compaction point")
-    assert "This save closed a step: call compact_now now if the next step does not need what is in the context; otherwise carry on." in t
+    # The default is the compaction; carrying on needs a named reason. The
+    # earlier "call compact_now if the next step does not need the context,
+    # otherwise carry on" read as carry on and was taken seven saves running.
+    assert "This save closed a step: call compact_now now and end the turn" in t
+    assert "Carry on only if the next step needs something only this context holds" in t
+    assert "otherwise carry on" not in t and "if the next step does not need" not in t
+    staged = state["pressure"]["compact_pending"]
+    assert isinstance(staged, dict) and staged["fill_pct"] == "59%" and staged["band"] == "early"
     _mod_mirror(sid, 660_000, "45%")
     t = cp.context_after_save(state, sid)
     assert t.startswith("Context: 88%") and "Call compact_now now unless the step in hand is mid-flight" in t
+    assert state["pressure"]["compact_pending"]["band"] == "headsup"
     _mod_mirror(sid, 700_000)
     assert "Call compact_now now unless" in cp.context_after_save(state, sid)
-    # Right after a compaction the mirror still shows the old size: silence.
+    # Right after a compaction the mirror still shows the old size: silence,
+    # and the compaction answered the question.
     time.sleep(0.02)
     cp.note_compaction(state)
     assert cp.context_after_save(state, sid) == ""
+    assert state["pressure"]["compact_pending"] is None
+
+
+def test_a_save_that_put_the_compaction_to_the_model_is_followed_up_once(monkeypatch):
+    """The save's question was read as status and skipped (tradelab, seven
+    saves between 58% and 77%, 2026-10-07). So the next turn's start asks
+    once what became of it: after the save's turn ended, unless a compaction
+    or a compact_now bank answered it. Said once per save."""
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
+    sid = "s-compact-followup"
+    state: dict = {"last_session_start": time.time()}
+    _mod_mirror(sid, 440_000, "45%")
+    cp.note_stop(state)  # the cycle's first Stop: the marks are settled
+    time.sleep(0.01)
+    t, _ = cp.nudge(state, sid)
+    assert t.startswith("<windvane-context>COMPACT AT A STEP END")  # the early mark, said once
+    assert cp.nudge(state, sid)[0] == ""
+    cp.context_after_save(state, sid)
+    assert state["pressure"]["compact_pending"]["fill_pct"] == "59%"
+    # Inside the save's own turn nothing is said: the model may be about to call it.
+    assert cp.nudge(state, sid)[0] == "" and state["pressure"]["compact_pending"] is not None
+    time.sleep(0.01)
+    cp.note_stop(state, "Waiting on the owner's word for list 27.")
+    t, changed = cp.nudge(state, sid)
+    assert changed and t.startswith("<windvane-context>Last turn's checkpoint save at 59% of the compaction point closed a step and no compact_now followed.")
+    assert "call compact_now and end the turn" in t
+    assert "Carry on only if the next step needs something only this context holds" in t
+    assert cp.nudge(state, sid)[0] == "" and state["pressure"]["compact_pending"] is None
+    # A compact_now banked since answers it silently.
+    cp.context_after_save(state, sid)
+    time.sleep(0.01)
+    cp.note_stop(state)
+    monkeypatch.setattr(cp, "_ring_compact_now_after", lambda project_dir, t: True)
+    assert cp.nudge(state, sid)[0] == "" and state["pressure"]["compact_pending"] is None
+    monkeypatch.setattr(cp, "_ring_compact_now_after", lambda project_dir, t: False)
+    # A compaction since clears it.
+    cp.context_after_save(state, sid)
+    time.sleep(0.02)
+    cp.note_compaction(state)
+    assert state["pressure"]["compact_pending"] is None
+    # A mark said in the same slot outranks it and carries the same ask.
+    _mod_mirror(sid, 660_000, "45%")
+    cp.context_after_save(state, sid)
+    time.sleep(0.01)
+    cp.note_stop(state)
+    t, _ = cp.nudge(state, sid)
+    assert "Context pressure" in t and "Last turn's checkpoint save" not in t
+    assert state["pressure"]["compact_pending"] is None
 
 
 def test_the_three_marks_are_each_said_once_in_order_and_reset_by_a_compaction(monkeypatch):

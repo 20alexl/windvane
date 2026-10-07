@@ -99,7 +99,13 @@ def test_checkpoint_save_answers_with_the_fill_and_the_choice(tmp_path, monkeypa
     saved = call(warm, "checkpoint", proj, operation="save", task_description="Port the tools")
     assert saved["isError"] is False and "task_id: task_" in saved["text"]
     assert "Context: 59% of the 750K compaction point (heads-up at 87%, last call at 93%, auto-compaction at 96%)." in saved["text"]
-    assert "This save closed a step: call compact_now now if the next step does not need what is in the context; otherwise carry on." in saved["text"]
+    assert "This save closed a step: call compact_now now and end the turn" in saved["text"]
+    assert "Carry on only if the next step needs something only this context holds" in saved["text"]
+    # The follow-through is staged in the session's own state for the next turn.
+    from windvane import draft
+
+    _sid, state, _tp = draft.session_inputs(sid)
+    assert state["pressure"]["compact_pending"]["fill_pct"] == "59%"
 
 
 def _session_with_a_draft(tmp_path, monkeypatch, proj, sid):

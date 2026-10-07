@@ -352,9 +352,17 @@ def _context_after_save(project_dir: str) -> str:
 
     try:
         sid, state, _transcript = _d.session_inputs()
-        if not sid:
+        if not sid or not isinstance(state, dict):
             return ""
-        return _p.context_after_save(state if isinstance(state, dict) else {}, sid, project_dir)
+        text = _p.context_after_save(state, sid, project_dir)
+        # The reply that puts the compaction to the model stages the
+        # follow-through (pressure.compact_pending); the next turn's nudge
+        # reads it from the session's state, so the state is written here.
+        try:
+            _d._hook("save_state")(state)
+        except Exception:
+            pass
+        return text
     except Exception:
         return ""
 
