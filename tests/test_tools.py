@@ -78,6 +78,30 @@ def test_checkpoint_save_list_restore(warm, proj):
     assert "No checkpoint at index 7" in call(warm, "checkpoint", proj, operation="restore", index=7)["text"]
 
 
+def test_checkpoint_save_answers_with_the_fill_and_the_choice(tmp_path, monkeypatch, warm, proj):
+    """The save's reply carries the fill as a percent of the compaction point
+    and, past the early mark, the question the save raises. Without a
+    reading the reply says nothing about the context."""
+    from windvane import pressure as cp
+
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    sid = "aaaaaaaa-0000-4000-8000-00000000000c"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    plain = call(warm, "checkpoint", proj, operation="save", task_description="Port the tools")
+    assert plain["isError"] is False and "Context:" not in plain["text"]
+
+    rec = {"session_id": sid, "ts": time.time(), "source": "mod", "total_input_tokens": 440_000,
+           "context_window_size": 1_000_000, "early_band": "45%"}
+    p = cp.mirror_path(sid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(json.dumps(rec).encode("utf-8"))
+    saved = call(warm, "checkpoint", proj, operation="save", task_description="Port the tools")
+    assert saved["isError"] is False and "task_id: task_" in saved["text"]
+    assert "Context: 59% of the 750K compaction point (heads-up at 87%, last call at 93%, auto-compaction at 96%)." in saved["text"]
+    assert "This save closed a step: call compact_now now if the next step does not need what is in the context; otherwise carry on." in saved["text"]
+
+
 def _session_with_a_draft(tmp_path, monkeypatch, proj, sid):
     """A session the recorder can draft from: a previous own checkpoint and a
     transcript with a typed prompt, an edit and a closing reply."""

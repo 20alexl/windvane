@@ -331,6 +331,9 @@ def _checkpoint(warm: Warm, op: str, args: dict, raw: dict) -> str:
         text = response.to_formatted_string()
         if drafted:
             text += "\nDrafted by the recorder: " + ", ".join(drafted)
+        ctx = _context_after_save(args["project_path"])
+        if ctx:
+            text += "\n" + ctx
         return text
     if op == "restore":
         return guard.restore_checkpoint(
@@ -338,6 +341,22 @@ def _checkpoint(warm: Warm, op: str, args: dict, raw: dict) -> str:
         ).to_formatted_string()
     # list
     return guard.list_checkpoints(project_path=args["project_path"]).to_formatted_string()
+
+
+def _context_after_save(project_dir: str) -> str:
+    """The fill and the choice it raises, for the save's reply
+    (pressure.context_after_save). The save is where the model decides what
+    comes next, so the fill rides on its answer. Never raises: the save
+    stands either way."""
+    from windvane import draft as _d, pressure as _p
+
+    try:
+        sid, state, _transcript = _d.session_inputs()
+        if not sid:
+            return ""
+        return _p.context_after_save(state if isinstance(state, dict) else {}, sid, project_dir)
+    except Exception:
+        return ""
 
 
 def _compact_now(warm: Warm, args: dict, raw: dict) -> str:

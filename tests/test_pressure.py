@@ -259,12 +259,42 @@ def test_a_mirror_the_mod_marked_early_is_the_first_of_three_marks(monkeypatch):
     assert "the early_compaction setting (45%)" in text and "NOW" not in text and "no hurry" in text
     assert "nothing compacts before it unless you call compact_now" in text
     assert "A heads-up comes at 87% and a last call at 93%" in text
+    # No "save a checkpoint" imperative: two sessions saved within seconds of
+    # the note as a reflex. The save's own reply carries the fill instead.
+    assert "save a checkpoint" not in text and "Each checkpoint save from here answers with the fill" in text
     assert "the checkpoint tool with operation save and no other argument accepts it" in text
     assert "K tokens" not in text  # the marks are percentages, never token counts
     assert cp.assess({**plain, "total_input_tokens": 660_000, "early_band": "45%"})["band"] == "headsup"
     late = cp.assess({**plain, "total_input_tokens": 725_000, "early_band": "45%"})
     assert late["band"] == "checkpoint"
     assert cp.checkpoint_text(late).startswith("<windvane-context>CHECKPOINT NOW: the fill is 97% of the 750K compaction point")
+
+
+def test_the_save_reply_carries_the_fill_and_past_the_early_mark_the_choice(monkeypatch):
+    """The checkpoint tool's save answers with the fill as a percent of the
+    point; past the early mark it asks the one question the save raises,
+    and at the heads-up or the last call it says compact unless mid-step.
+    Nothing is known right after a compaction, so nothing is said."""
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
+    sid = "s-save-reply"
+    state: dict = {}
+    assert cp.context_after_save(state, sid) == ""  # no mirror
+    _mod_mirror(sid, 200_000)
+    t = cp.context_after_save(state, sid)
+    assert t == "Context: 27% of the 750K compaction point (heads-up at 87%, last call at 93%, auto-compaction at 96%)."
+    _mod_mirror(sid, 440_000, "45%")
+    t = cp.context_after_save(state, sid)
+    assert t.startswith("Context: 59% of the 750K compaction point")
+    assert "This save closed a step: call compact_now now if the next step does not need what is in the context; otherwise carry on." in t
+    _mod_mirror(sid, 660_000, "45%")
+    t = cp.context_after_save(state, sid)
+    assert t.startswith("Context: 88%") and "Call compact_now now unless the step in hand is mid-flight" in t
+    _mod_mirror(sid, 700_000)
+    assert "Call compact_now now unless" in cp.context_after_save(state, sid)
+    # Right after a compaction the mirror still shows the old size: silence.
+    time.sleep(0.02)
+    cp.note_compaction(state)
+    assert cp.context_after_save(state, sid) == ""
 
 
 def test_the_three_marks_are_each_said_once_in_order_and_reset_by_a_compaction(monkeypatch):

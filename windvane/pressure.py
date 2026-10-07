@@ -749,12 +749,41 @@ def early_text(a: dict) -> str:
         f"{a['fill_pct']} of the {_k(a['point'])} compaction point, the early_compaction "
         f"setting ({a['early']}); auto-compaction fires at {a['trigger_pct']}, so there is no "
         "hurry, and nothing compacts before it unless you call compact_now. Finish the "
-        "step in hand. When it is done, save a checkpoint, and call compact_now if the "
-        "phase has closed and the work ahead does not need what is in the context; "
-        "otherwise carry on and compact at a later step end. A heads-up comes at "
-        f"{a['headsup_pct']} and a last call at {a['checkpoint_pct']}. "
+        "step in hand. Each checkpoint save from here answers with the fill; at a step "
+        "end, call compact_now if the phase has closed and the work ahead does not need "
+        "what is in the context, otherwise carry on and compact at a later step end. "
+        f"A heads-up comes at {a['headsup_pct']} and a last call at {a['checkpoint_pct']}. "
         + _DRAFTED
         + "</windvane-context>"
+    )
+
+
+def context_after_save(state: dict, session_id: str, project_dir: str = "") -> str:
+    """The checkpoint tool's save reply: the fill as a percent of the
+    compaction point and, past the early mark, the choice the save raises.
+    The save is where the model decides what comes next, so the fill belongs
+    in its reply rather than in a note said once per cycle: a session saved
+    "phase DONE" at 46% and "new phase starting" at 59% and kept everything
+    until the heads-up (2026-10-07). Empty when nothing is known (no mirror,
+    or the reading still predates the last compaction)."""
+    a = current_assessment(state, session_id, project_dir)
+    if a["band"] == "nodata":
+        return ""
+    head = (
+        f"Context: {a['fill_pct']} of the {_k(a['point'])} compaction point "
+        f"(heads-up at {a['headsup_pct']}, last call at {a['checkpoint_pct']}, "
+        f"auto-compaction at {a['trigger_pct']})."
+    )
+    if a["band"] == "clear":
+        return head
+    if a["band"] == "early":
+        return (
+            head + " This save closed a step: call compact_now now if the next step does "
+            "not need what is in the context; otherwise carry on."
+        )
+    return (
+        head + " Call compact_now now unless the step in hand is mid-flight; the next "
+        "step starts in a fresh context with this checkpoint restored."
     )
 
 
