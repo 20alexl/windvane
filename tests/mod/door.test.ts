@@ -4,13 +4,13 @@
 // model's own reply (thinking, text, tool_use) is never touched.
 //
 // The test's session.append hook records the row exactly as the plugin handed
-// it down. It cannot store it: the kit (2.1.289) holds every session.append
-// hook to the event's rule, so an answer without `next` is skipped, and beneath
-// the test's hooks there is no store ("no implementation for session.append").
-// `append` below therefore expects that one rejection. A skipped plugin hook
-// does not show in it, so each pass-through test first sends a canary row the
-// door must change (`proveLive`): a dead hook fails there. Every secret here
-// is a fake shape.
+// it down. The kit holds every session.append hook to the event's rule, so an
+// answer without `next` is skipped. Beneath the test's hooks the 2.1.289 kit
+// had no store and rejected with "no implementation for session.append"; the
+// 2.1.293 kit has one and answers. `append` below accepts either. A skipped
+// plugin hook does not show in it, so each pass-through test first sends a
+// canary row the door must change (`proveLive`): a dead hook fails there.
+// Every secret here is a fake shape.
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
@@ -35,13 +35,11 @@ function setup(on: On, env: Record<string, string> = {}): Row[] {
 }
 
 async function append($: Engine, row: AppendInput): Promise<void> {
-  let error = ''
   try {
     await $.session.append(row)
   } catch (err) {
-    error = String(err)
+    if (!String(err).includes('no implementation for session.append')) throw err
   }
-  expect(error).toContain('no implementation for session.append')
 }
 
 // Block `b` of stored row `r`, as the plugin handed it down.
