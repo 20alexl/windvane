@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.11 (2026-10-08)
+
+- **A bare `checkpoint` call is the save.** Two sessions called the checkpoint tool with an empty input, no operation at all, and were refused with "Unknown checkpoint operation ''". The notes say "the checkpoint tool with operation save and no other argument accepts the draft", and a model that drops the arguments drops the operation with them; a missing operation now means save, for this tool alone, and the tool's schema no longer marks it required. The other tools still need theirs.
+
 ## 1.0.10 (2026-10-07)
 
 - **The save's question is followed through.** Under 1.0.9 one session saved at closed steps seven times between 58% and 77% of the point and never once addressed the question in the save's reply: each reply after it was a status report to the person, and the session rode on to the heads-up. A question at the tail of a tool result reads as status; a note at the top of a turn is read. Two changes. The save's reply past the early mark now has the compaction as its default (call `compact_now` now and end the turn) and names the one reason to carry on instead (the next step needs something only the context holds, such as an edit half made or a result not yet written down); the earlier "call `compact_now` if the next step does not need the context, otherwise carry on" read as carry on by default. And when the save's turn ends without a `compact_now`, the next turn opens with the same question once, the way a closed step with no save behind it is asked for; a compaction or a `compact_now` banked in between answers it silently, and a pressure note due in the same slot takes its place.
