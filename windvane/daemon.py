@@ -843,7 +843,9 @@ def score_via_server(text: str) -> tuple[float, str]:
         sock.settimeout(1.0)
         sock.connect(("127.0.0.1", port))
 
-        request = json.dumps(_with_token({"text": text})) + "\n"
+        # nowait: a model still loading answers at once and the regex tier
+        # scores, instead of this call waiting out its whole budget.
+        request = json.dumps(_with_token({"text": text, "nowait": True})) + "\n"
         sock.sendall(request.encode("utf-8"))
 
         data = b""
@@ -896,7 +898,9 @@ def embed_via_server(text: str) -> list[float]:
         sock.settimeout(2.0)
         sock.connect(("127.0.0.1", port))
 
-        request = json.dumps(_with_token({"embed": text})) + "\n"
+        # nowait, as in score_via_server: a hook stores the entry without an
+        # embedding rather than wait out the model load.
+        request = json.dumps(_with_token({"embed": text, "nowait": True})) + "\n"
         sock.sendall(request.encode("utf-8"))
 
         data = b""

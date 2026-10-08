@@ -625,6 +625,71 @@ def test_no_model_call_bypasses_the_pool():
     assert "model.encode(" not in handler and "_score_text(" not in handler
 
 
+def test_a_hook_path_request_never_waits_on_a_loading_model(ss, monkeypatch):
+    """The daemon reloads after its idle timeout and after an engine edit,
+    and the model takes about 20 s to load. A hook's scoring and embedding
+    calls each waited out their one- and two-second budgets against it, and
+    the prompt hook ran past its 5 s (2026-10-08). A client that sends
+    nowait is answered at once; the bulk clients still wait."""
+    from windvane.semantic import encoder
+
+    class Loading:
+        model = decision_embs = non_decision_embs = None
+
+        def __init__(self):
+            self.ready = threading.Event()  # never set: the load is in progress
+            self.waited = []
+
+        def wait(self, timeout=20.0):
+            self.waited.append(timeout)
+            return False
+
+    holder = Loading()
+    t0 = time.monotonic()
+    assert json.loads(encoder.serve_model_request({"text": "let us use redis", "nowait": True}, holder)) == {"error": "model loading"}
+    assert json.loads(encoder.serve_model_request({"embed": "x", "nowait": True}, holder)) == {"error": "model loading"}
+    assert time.monotonic() - t0 < 0.5 and holder.waited == []
+    # Without the flag the request waits out the load, as the miner's batches do.
+    assert json.loads(encoder.serve_model_request({"embed_batch": ["x"]}, holder)) == {"error": "model unavailable"}
+    assert holder.waited == [20.0]
+    # Once the model is there the flag changes nothing.
+    ready = Loading()
+    ready.ready.set()
+    assert json.loads(encoder.serve_model_request({"embed": "x", "nowait": True}, ready)) == {"error": "model unavailable"}
+    assert ready.waited == [20.0]
+
+    # The two hook-path clients send the flag; the batch client does not.
+    sent = []
+
+    class Sock:
+        def __init__(self, *a, **k):
+            pass
+
+        def settimeout(self, t):
+            pass
+
+        def connect(self, addr):
+            pass
+
+        def sendall(self, b):
+            sent.append(json.loads(b.decode("utf-8")))
+
+        def recv(self, n):
+            return b'{"error": "model loading"}\n'
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ss, "_semantic_on", lambda: True)
+    monkeypatch.setattr(ss, "_ensure_server", lambda: True)
+    monkeypatch.setattr(ss.PORT_FILE.__class__, "read_text", lambda self, *a, **k: "1")
+    monkeypatch.setattr(ss.socket, "socket", Sock)
+    assert ss.score_via_server("let us use redis for the cache") == (0.0, "")
+    assert ss.embed_via_server("x") == []
+    assert ss.embed_batch_via_server(["x"]) == [[]]
+    assert [r.get("nowait") for r in sent] == [True, True, None]
+
+
 def test_a_model_request_is_answered_on_the_pinned_thread():
     from windvane.semantic import encoder
 

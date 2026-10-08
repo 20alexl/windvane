@@ -5,7 +5,7 @@
       {
         "matcher": "",
         "hooks": [
-          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/windvane/daemon_client.py\" prompt_json", "timeout": 5, "statusMessage": "Capturing decisions..."}
+          {"type": "command", "command": "python -S \"${CLAUDE_PLUGIN_ROOT}/windvane/daemon_client.py\" prompt_json", "timeout": 10, "statusMessage": "Capturing decisions..."}
         ]
       }
     ],

@@ -18,7 +18,7 @@ The store, `~/.windvane` or the folder `WINDVANE_DIR` names, is the only thing t
 
 | Event | Handler | Timeout |
 |---|---|---|
-| UserPromptSubmit | prompt | 5 s |
+| UserPromptSubmit | prompt | 10 s |
 | PreToolUse on Edit or Write | pre-edit check | 3 s |
 | PreToolUse on Read | pre-read orientation | 3 s |
 | PreToolUse on Bash or PowerShell | rule detectors | 3 s |

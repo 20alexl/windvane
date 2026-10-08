@@ -109,7 +109,7 @@ def test_hooks_json_registers_every_event_through_the_client():
     # Timeouts are seconds (Claude Code's unit): 3 on the per-tool hooks,
     # 5 on the turn-level ones, 10 where a cold client may start the daemon.
     assert seen == {
-        ("UserPromptSubmit", ""): ("prompt_json", 5),
+        ("UserPromptSubmit", ""): ("prompt_json", 10),
         ("PreToolUse", "Edit|Write"): ("pre_edit_json", 3),
         ("PreToolUse", "Read"): ("pre_read_json", 3),
         ("PreToolUse", "Bash|PowerShell"): ("pre_bash_json", 3),

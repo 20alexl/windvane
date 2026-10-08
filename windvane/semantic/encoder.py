@@ -156,7 +156,18 @@ def serve_model_request(request: dict, holder: "_ModelHolder") -> bytes:
     """Answer one embed / embed_batch / score request with the loaded model.
     Returns the JSON line to send. Every model call goes through
     ``_on_model_thread``; never call the model from the request thread."""
-    # Everything here needs the model; wait out a still-loading one.
+    # Everything here needs the model. A hook-path client (a score, a single
+    # embed) sends ``nowait``: it has a one- or two-second budget and a regex
+    # tier behind it, so a model still loading is answered at once and the
+    # caller degrades, instead of the client burning its whole budget on a
+    # wait it cannot win. The daemon reloads after its idle timeout and
+    # after an engine edit, and the load takes about 20 s, so the first
+    # prompts of a morning hit this window: a hook's own scoring and
+    # embedding calls each waited out their timeouts against the loading
+    # model and the prompt hook ran past its 5 s (2026-10-08). The bulk
+    # clients (the miner, search) still wait out the load.
+    if request.get("nowait") and not holder.ready.is_set():
+        return b'{"error": "model loading"}\n'
     if not holder.wait():
         return b'{"error": "model unavailable"}\n'
     model = holder.model
