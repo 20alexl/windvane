@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.12 (2026-10-08)
+
+- **A hook never waits on a loading model.** The daemon reloads after its idle timeout and after an engine edit, and the semantic model takes about twenty seconds to load. In that window a scoring or embedding request waited on the model for up to twenty seconds, so the prompt hook's own decision capture waited out its one-second budget, the store's embedding its two, and with the client's fallback repeating the work the hook ran past its five seconds and Claude Code dropped its output, nudges included. The two hook-path clients (a score, a single embedding) now ask the daemon not to wait: a model still loading is answered at once and the regex tier scores. The bulk clients, the miner and search, still wait out the load. The prompt hook's budget is ten seconds, as session start's is.
+
 ## 1.0.11 (2026-10-08)
 
 - **A bare `checkpoint` call is the save.** Two sessions called the checkpoint tool with an empty input, no operation at all, and were refused with "Unknown checkpoint operation ''". The notes say "the checkpoint tool with operation save and no other argument accepts the draft", and a model that drops the arguments drops the operation with them; a missing operation now means save, for this tool alone, and the tool's schema no longer marks it required. The other tools still need theirs.
