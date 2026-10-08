@@ -52,7 +52,7 @@ const CHECKPOINT_FIELDS = {
     type: 'string',
     enum: ['save', 'restore', 'list'],
     description:
-      'save banks the task state (with no other argument it accepts the record the recorder drafted from the session; a field given amends that field); restore reads one back; list shows the ring newest first.',
+      'save banks the task state (with no other argument it accepts the record the recorder drafted from the session; a field given amends that field); restore reads one back; list shows the ring newest first. Omitted, save.',
   },
   task_description: { type: 'string', description: 'save: what the task is, in one sentence.' },
   current_step: { type: 'string', description: 'save: the step in progress.' },
@@ -157,7 +157,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     name: 'checkpoint',
     description:
       'Bank, read back or list the task checkpoints windvane restores after a compaction and in the next session (save, restore, list); a bare save accepts the record the recorder drafted.',
-    inputSchema: { type: 'object', properties: CHECKPOINT_FIELDS, required: ['operation'] },
+    inputSchema: { type: 'object', properties: CHECKPOINT_FIELDS },
   },
   {
     name: 'compact_now',

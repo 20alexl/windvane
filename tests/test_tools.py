@@ -71,6 +71,11 @@ def test_checkpoint_save_list_restore(warm, proj):
     saved = call(warm, "checkpoint", proj, operation="save", task_description="Port the tools",
                  pending_steps=["spike"], handoff_summary="Port the tools: the spike is in.")
     assert saved["isError"] is False and "task_id: task_" in saved["text"]
+    # A bare call is the save: two sessions sent the checkpoint tool an empty
+    # input and were refused with "Unknown checkpoint operation ''".
+    bare = call(warm, "checkpoint", proj, task_description="Port the tools")
+    assert bare["isError"] is False and "task_id: task_" in bare["text"]
+    assert "Unknown" in call(warm, "memory", proj)["text"]  # the other tools still need one
     listed = call(warm, "checkpoint", proj, operation="list")
     assert "Port the tools: the spike is in." in listed["text"]
     restored = call(warm, "checkpoint", proj, operation="restore")

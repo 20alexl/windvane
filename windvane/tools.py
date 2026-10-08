@@ -875,6 +875,11 @@ def _answer(tool: str, raw: dict, warm: Warm) -> str:
     if tool == "compact_now":
         return _compact_now(warm, args, raw)
     op = str(raw.get("operation") or "")
+    # A bare checkpoint call is the save: the notes say "the checkpoint tool
+    # with operation save and no other argument", and two sessions dropped
+    # the operation along with the arguments (2026-10-08).
+    if tool == "checkpoint" and not op:
+        op = "save"
     if op not in OPERATIONS[tool]:
         raise ToolError(f"Unknown {tool} operation {op!r}; one of {', '.join(OPERATIONS[tool])}")
     handler: Callable = _DISPATCH[tool]

@@ -11,7 +11,7 @@ windvane records the session state itself. Most of what you would otherwise writ
 
 The recorder drafts the whole checkpoint: the task, the current step, completed and pending steps, files, warnings and the handoff note. It reads your task list, your edits, your git commits and the closing paragraph of your last reply.
 
-- `checkpoint(operation="save")` with no other argument accepts the draft. This is the normal call.
+- `checkpoint(operation="save")` with no other argument accepts the draft. This is the normal call; a bare `checkpoint()` means the same.
 - A field you pass amends that field and keeps the rest of the draft: `task_description`, `current_step`, `completed_steps`, `pending_steps`, `files_involved`, `handoff_summary`, `handoff_warnings`, `handoff_context_needed`.
 - `checkpoint(operation="restore")` reads one back. `index` picks an older record, 0 is the newest.
 - `checkpoint(operation="list")` shows the ring, newest first.
