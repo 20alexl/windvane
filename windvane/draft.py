@@ -889,8 +889,9 @@ def summary_line(entry: dict) -> str:
     n_done = len(entry.get("completed_steps") or [])
     n_next = len(entry.get("next_steps") or [])
     parts.append(f"{n_done} done, {n_next} pending")
-    if entry.get("files_in_progress"):
-        parts.append(f"{len(entry['files_in_progress'])} files")
+    n_files = len(entry.get("files_in_progress") or [])
+    if n_files:
+        parts.append("1 file" if n_files == 1 else f"{n_files} files")
     return "; ".join(parts) + "."
 
 

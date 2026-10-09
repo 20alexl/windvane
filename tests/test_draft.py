@@ -380,6 +380,10 @@ def test_a_compact_now_bank_is_a_deliberate_ring_entry_with_a_summary_line(tmp_p
     assert ck.read_history([ring])[0]["created"] == banked["created"]
     line = d.summary_line(banked)
     assert line.startswith("Banked the drafted checkpoint (compact_now): Phase 2 brief CLI") and "2 pending" in line
+    # The file count agrees in number: the demo's reply read "1 files".
+    assert d.summary_line({**banked, "files_in_progress": ["a.py"]}).endswith("; 1 file.")
+    assert d.summary_line({**banked, "files_in_progress": ["a.py", "b.py"]}).endswith("; 2 files.")
+    assert "file" not in d.summary_line({**banked, "files_in_progress": []}).split("pending")[1]
 
 
 def test_the_hooks_bank_stays_an_automatic_entry(tmp_path, monkeypatch):
