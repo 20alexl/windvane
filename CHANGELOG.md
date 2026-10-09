@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.14 (2026-10-09)
+
+- **The demo, re-recorded on 1.0.13.** The live take runs on Sonnet: the edit, the checkpoint save and `compact_now` in the same turn on the last call, the compaction at the turn end, and the resume prompt with nothing typed. The fixture places the heads-up with `headsup_percent` (with a 1M window and a 100K point the computed mark falls below zero), and the gif keeps 128 colours so the accents hold.
+- The `compact_now` reply's file count agrees in number ("1 file", not "1 files").
+
 ## 1.0.13 (2026-10-09)
 
 - **The last call leads with the instruction.** Two live takes on Sonnet read the `CHECKPOINT NOW` note through: the model made its edits, wrote its summary and ended the turn with no save and no `compact_now`, and the session would have ridden into Claude Code's own compaction. The note opened with the paragraph about the drafted checkpoint and closed with "left alone, the auto-compaction banks the draft as it stands", which reads as leave to skip. It now opens with the fill and the instruction (this turn must end with the save and the compaction: finish the step, call the checkpoint tool and `compact_now`, end the turn), says what skipping it costs (a compaction cut in the middle of the next step, with only the recorder's draft), and puts the draft paragraph last, shorter. Unverified on Sonnet so far; the next live take says.
