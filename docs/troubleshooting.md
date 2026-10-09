@@ -66,6 +66,8 @@ Two small files under `sessions/` in the store coordinate the mod and the hooks:
 - `<session id>.mod` is written every 10 seconds by the mod. While it is under two minutes old the engine knows a mod is present, the session-start banner does not complain about a missing status line, and status line scripts stay out of the context mirror.
 - `<session id>.briefed` is written when the mod placed the rules and the checkpoint inside a compacted conversation. While it is under two minutes old, the session-start banner for the compaction leaves them out.
 
+A third, `<session id>.marks.json`, is the engine's: the marks (heads-up, last call, trigger) its last assessment stood on, with the window and the point. The mod reads it so the status segment and the band stand where the engine's notes say; if the segment says `checkpoint now` at the computed default while a `last_call_percent` setting puts the last call elsewhere, the engine has not assessed the session yet (it does at each prompt and turn end) or the file is missing.
+
 If the rules and the checkpoint show twice after a compaction, the marker was not written or was older than two minutes. If they show neither, the marker is fresh but the compacted conversation lost the message. Run `/windvane` to see what the store holds and `python -m windvane.brief --project <dir> --checkpoint` to see what would be injected.
 
 If the status segment is missing in a session, check `status_segment`, and check that `sessions/` exists in the store. The mod logs `no sessions folder` and keeps the mirror off when it does not. The engine creates that folder the first time a hook saves session state, and the segment appears after the next tick, within ten seconds.

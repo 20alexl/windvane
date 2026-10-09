@@ -50,6 +50,11 @@ from typing import Optional
 from windvane import config
 
 MIRROR_SUFFIX = ".ctx.json"
+# The engine's marks for the session, written beside the mirror each time
+# the fill is assessed: the mod reads them, so its segment and band stand
+# where the engine's notes say (the percent knobs move the marks; the mod
+# knows only the computed defaults).
+MARKS_SUFFIX = ".marks.json"
 
 # "compact before the window fills, at about 967K tokens by default"
 # (model-config docs, native-1M models). Approximate by the docs' own wording.
@@ -161,6 +166,48 @@ def record_statusline(data: dict) -> Optional[Path]:
     path = mirror_path(sid)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(rec), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        return None
+    return path
+
+
+def marks_path(session_id: str) -> Path:
+    """Per-session marks file, beside the mirror: where the engine's marks
+    sit, for the mod's segment and band."""
+    return _storage_dir() / "sessions" / f"{session_id}{MARKS_SUFFIX}"
+
+
+def write_marks(session_id: str, a: dict) -> Optional[Path]:
+    """Write the assessment's marks for the mod: the window and point they
+    were computed against, and the three marks as token counts and as
+    percents of the point. The mod computes the same defaults itself; this
+    file carries the knobs (headsup_percent, last_call_percent,
+    output_reserve) it cannot read, and the mod takes it only while its own
+    point matches. Written only when the figures changed; never raises."""
+    if not session_id or a.get("band") == "nodata":
+        return None
+    rec = {
+        "session_id": session_id,
+        "window": a.get("window"),
+        "point": a.get("point"),
+        "headsup_at": a.get("headsup_at"),
+        "checkpoint_at": a.get("checkpoint_at"),
+        "trigger_at": a.get("trigger_at"),
+        "headsup_pct": a.get("headsup_pct"),
+        "checkpoint_pct": a.get("checkpoint_pct"),
+        "trigger_pct": a.get("trigger_pct"),
+    }
+    path = marks_path(session_id)
+    try:
+        if path.is_file():
+            old = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(old, dict) and {k: old.get(k) for k in rec} == rec:
+                return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rec["ts"] = time.time()
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(rec), encoding="utf-8")
         tmp.replace(path)
@@ -741,7 +788,10 @@ def current_assessment(state: dict, session_id: str, project_dir: str = "") -> d
         a = assess(None, project_dir)
         a["reason"] = "mirror predates the last compaction"
         return a
-    return assess(mirror, project_dir)
+    a = assess(mirror, project_dir)
+    # The marks the assessment stood on, for the mod's segment and band.
+    write_marks(session_id, a)
+    return a
 
 
 def early_text(a: dict) -> str:
@@ -851,27 +901,32 @@ def headsup_text(a: dict, cycle: int) -> str:
 # The recorder drafts the checkpoint; the nudges say how to accept or amend
 # it and what the draft reads.
 _DRAFTED = (
-    "The recorder has drafted the checkpoint: the task, steps, files and warnings "
-    "carried from the last checkpoint or recorded from this session, the handoff "
-    "from your closing lines. Calling the checkpoint tool with operation save and no "
-    "other argument accepts it; a call with one field amends that field. The draft reads your task list and "
-    "the end of your reply: keep the tasks current (TaskUpdate) and end the reply "
-    "with what is next."
+    "The recorder has drafted the checkpoint from your task list, your edits and "
+    "commits and the end of your last reply. Calling the checkpoint tool with "
+    "operation save and no other argument accepts it; a call with one field amends "
+    "that field. Keep the tasks current (TaskUpdate) and end the reply with what is "
+    "next."
 )
 
 
 def checkpoint_text(a: dict) -> str:
     """The last call: the fixed margin under the trigger, where a compaction
-    the model does not start comes by itself."""
+    the model does not start comes by itself. The instruction leads and the
+    cost of skipping it is said: a note that opened with the draft paragraph
+    and closed with "left alone, the auto-compaction banks the draft" was
+    read through on Sonnet, which made its edits and ended the turn with no
+    save at all, twice running (2026-10-08)."""
     return (
         "<windvane-context>CHECKPOINT NOW: the fill is "
         f"{a['fill_pct']} of the {_k(a['point'])} compaction point and auto-compaction "
-        f"fires at {a['trigger_pct']} (the {_k(a['point'])} setting minus the output reserve). "
+        f"fires at {a['trigger_pct']}. This turn must end with the save and the compaction: "
+        "finish the step in hand and start nothing new, then call the checkpoint tool "
+        "(operation save, no other argument), call compact_now, and end the turn. A turn "
+        "that ends without them leaves the compaction to Claude Code, which cuts in the "
+        "middle of whatever step is then in hand and keeps only the recorder's draft, "
+        "not your closing lines. "
         + _DRAFTED
-        + " Finish the step in hand and start nothing new; then save, call compact_now "
-        "and end the turn, so the record describes the finished work and the turn "
-        "boundary compacts. Left alone, the auto-compaction banks the draft as it "
-        "stands.</windvane-context>"
+        + "</windvane-context>"
     )
 
 

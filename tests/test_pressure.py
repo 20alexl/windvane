@@ -377,7 +377,7 @@ def test_the_three_marks_are_each_said_once_in_order_and_reset_by_a_compaction(m
     _mod_mirror(sid, 700_000, "45%")
     t, ch = cp.nudge(state, sid)
     assert t.startswith("<windvane-context>CHECKPOINT NOW: the fill is 93%") and ch
-    assert "then save, call compact_now and end the turn" in t
+    assert "call the checkpoint tool (operation save, no other argument), call compact_now, and end the turn" in t
     assert cp.nudge(state, sid) == ("", False)
 
     time.sleep(0.02)
@@ -404,7 +404,7 @@ def test_nudges_latch_once_per_band_per_compaction_cycle(monkeypatch):
     cp.record_statusline(_payload(sid, 700_000))
     t, ch = cp.nudge(state, sid)
     assert t.startswith("<windvane-context>CHECKPOINT NOW") and ch
-    assert "auto-compaction fires at 96% (the 750K setting minus the output reserve)" in t
+    assert "of the 750K compaction point and auto-compaction fires at 96%." in t
     assert "checkpoint tool" in t and "operation save" in t
     assert cp.nudge(state, sid)[0] == ""
 
@@ -619,13 +619,58 @@ def test_checkpoint_text_and_cadence_say_the_recorder_drafted_the_record():
         assert "one field amends that field" in text and "TaskUpdate" in text and "what is next" in text
         assert "task_description," not in text and "handoff_summary" not in text
     assert cp.checkpoint_text(a).startswith(
-        "<windvane-context>CHECKPOINT NOW: the fill is 75% of the 200K compaction point and auto-compaction fires at 84% (the 200K setting"
+        "<windvane-context>CHECKPOINT NOW: the fill is 75% of the 200K compaction point and auto-compaction fires at 84%. "
+        "This turn must end with the save and the compaction:"
     )
     # The save comes after the step, not before it, and the compaction is the
-    # model's own call: save, compact_now, end the turn.
-    assert "Finish the step in hand and start nothing new; then save, call compact_now and end the turn" in cp.checkpoint_text(a)
-    assert "Then continue" not in cp.checkpoint_text(a)
+    # model's own call: save, compact_now, end the turn. The instruction comes
+    # before the draft paragraph, and the note never says that skipping it is
+    # fine: Sonnet read "left alone, the auto-compaction banks the draft" as
+    # leave to skip and saved nothing, twice (2026-10-08).
+    t = cp.checkpoint_text(a)
+    assert "finish the step in hand and start nothing new, then call the checkpoint tool (operation save, no other argument), call compact_now, and end the turn" in t
+    assert t.index("call compact_now") < t.index("The recorder has drafted")
+    assert "Left alone" not in t and "as it stands" not in t and "Then continue" not in t
+    assert "keeps only the recorder's draft, not your closing lines" in t
     assert "60 turns" in cp.cadence_text(60)
+
+
+def test_the_marks_are_written_for_the_mod_with_the_knobs_applied(tmp_path: Path, monkeypatch):
+    """The mod computes the default marks itself and cannot read the engine's
+    knobs; each assessment writes the marks it stood on beside the mirror,
+    and the mod takes them while the point matches. The status segment said
+    "checkpoint now" at the default last call with last_call_percent set
+    elsewhere (2026-10-08)."""
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "750000")
+    sid = "s-marks-file"
+    state: dict = {"last_session_start": time.time()}
+    assert cp.current_assessment(state, sid)["band"] == "nodata"
+    assert not cp.marks_path(sid).exists()  # nothing known, nothing written
+    monkeypatch.setenv("WINDVANE_LAST_CALL_PERCENT", "60")
+    monkeypatch.setenv("WINDVANE_HEADSUP_PERCENT", "50")
+    cp.record_statusline(_payload(sid, 100_000))
+    a = cp.current_assessment(state, sid)
+    assert a["band"] == "clear"
+    m = json.loads(cp.marks_path(sid).read_bytes())
+    assert m["session_id"] == sid and m["window"] == 1_000_000 and m["point"] == 750_000
+    assert m["checkpoint_at"] == 450_000 and m["headsup_at"] == 375_000 and m["trigger_at"] == 718_000
+    assert m["checkpoint_pct"] == "60%" and m["headsup_pct"] == "50%" and m["trigger_pct"] == "96%"
+    assert m["headsup_at"] < m["checkpoint_at"] < m["trigger_at"]
+    # The same figures again: the file is left alone.
+    ts = m["ts"]
+    time.sleep(0.02)
+    cp.record_statusline(_payload(sid, 120_000))
+    cp.current_assessment(state, sid)
+    assert json.loads(cp.marks_path(sid).read_bytes())["ts"] == ts
+    # A knob change is written at the next assessment.
+    monkeypatch.setenv("WINDVANE_LAST_CALL_PERCENT", "70")
+    cp.current_assessment(state, sid)
+    m2 = json.loads(cp.marks_path(sid).read_bytes())
+    assert m2["checkpoint_at"] == 525_000 and m2["ts"] > ts
+    # A mirror from before the last compaction says nothing: the marks stand.
+    cp.pressure_state(state)["compacted_at"] = time.time() + 5
+    cp.current_assessment(state, sid)
+    assert json.loads(cp.marks_path(sid).read_bytes()) == m2
 
 
 def test_setpoint_notice_names_the_number_for_this_model(monkeypatch):

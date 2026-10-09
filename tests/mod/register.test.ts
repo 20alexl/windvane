@@ -184,6 +184,9 @@ type Counters = {
   // Every file the mod wrote, by forward-slash path, when the test reads them.
   written?: Record<string, string>
   toasts?: string[]
+  // The engine's marks file for the session (sessions/<sid>.marks.json), when
+  // the test lays one; else no file.
+  marks?: string
 }
 
 function inBand(
@@ -211,7 +214,13 @@ function inBand(
     return { text: e.text }
   })
   on('fs.exists', ($, e) => ({ value: counters.noSessions !== true && e.path.replace(/\\/g, '/').endsWith('/sessions') }))
-  on('fs.read', () => ({ value: '' }))
+  on('fs.read', ($, e) => {
+    if (e.path.replace(/\\/g, '/').endsWith('.marks.json')) {
+      if (counters.marks === undefined) throw new Error(`ENOENT: ${e.path}`)
+      return { value: counters.marks }
+    }
+    return { value: '' }
+  })
   on('fs.write', ($, e) => {
     if (counters.written) counters.written[e.path.replace(/\\/g, '/')] = e.text
     return { value: undefined }
@@ -367,6 +376,43 @@ test('after a compaction the fill reads stale until it changes: no band, no fill
   expect(mirror().total_input_tokens).toBe(120_000)
   expect(mirror().stale_after_compaction).toBe(undefined)
   expect(counters.statuses.at(-1)).toContain('ctx 16%')
+})
+
+test('the band stands where the engine\'s marks say: the knobs move the last call, the mod reads it', async ($, on) => {
+  // The engine honours last_call_percent and headsup_percent; the mod knows
+  // only the computed defaults (last call at 698K of a 750K point here). The
+  // segment said "checkpoint now" at the default with the knob set lower
+  // (2026-10-08). The engine writes its marks beside the mirror and the mod
+  // takes them while they were computed against its own point.
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, tokens: 500_000 }
+  const clock = mock.clock(on)
+  inBand(on, counters)
+  const marks = (point: number, checkpointAt: number) =>
+    JSON.stringify({ session_id: SID, window: 1_000_000, point, headsup_at: 375_000, checkpoint_at: checkpointAt, trigger_at: 718_000, ts: 1 })
+
+  // No marks file yet: the defaults, and 500K is under the last call.
+  await $.session.start(START)
+  expect(counters.statuses.at(-1)).toContain('ctx 67%')
+  expect(counters.statuses.at(-1)).not.toContain('checkpoint now')
+
+  // The engine wrote a last call at 60% of the same point: the band opens.
+  counters.marks = marks(750_000, 450_000)
+  await clock.advance(10_000)
+  expect(counters.statuses.at(-1)).toContain('checkpoint now')
+
+  // Marks computed against another point say nothing here: the defaults.
+  counters.marks = marks(800_000, 450_000)
+  await clock.advance(10_000)
+  expect(counters.statuses.at(-1)).not.toContain('checkpoint now')
+
+  // A file that is not the marks (half written, or another version's) is
+  // ignored the same way.
+  counters.marks = '{"point": 750000, "checkpoint_at": "soon"}'
+  await clock.advance(10_000)
+  expect(counters.statuses.at(-1)).not.toContain('checkpoint now')
+
+  // The mod never writes the marks file: that is the engine's.
+  expect(Object.keys(counters.written!).some(p => p.endsWith('.marks.json'))).toBe(false)
 })
 
 test('a delivery into the running turn is not the person continuing: the continue prompt follows', async ($, on) => {

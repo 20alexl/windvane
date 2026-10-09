@@ -67,7 +67,14 @@ def test_bad_requests_answer_is_error(warm):
 # ── checkpoint ──────────────────────────────────────────────────────────────
 
 
-def test_checkpoint_save_list_restore(warm, proj):
+def test_checkpoint_save_list_restore(warm, proj, monkeypatch):
+    # A tool call carries its session's id (the mod passes it in the
+    # environment); the bare save below drafts its handoff from this
+    # session's previous record, which is how the restore of the newest
+    # record still says "the spike is in". Without the id the draft has no
+    # own record to carry from, and the test depended on an id another test
+    # file's run had left in the hook module.
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s-tools-restore")
     saved = call(warm, "checkpoint", proj, operation="save", task_description="Port the tools",
                  pending_steps=["spike"], handoff_summary="Port the tools: the spike is in.")
     assert saved["isError"] is False and "task_id: task_" in saved["text"]

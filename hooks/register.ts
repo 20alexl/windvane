@@ -134,13 +134,48 @@ function rateLimitsOf(limits: readonly { kind: string; percentUsed?: number; res
   return out
 }
 
-function thresholds(window: number, point: number) {
+type Marks = { headsupAt: number; checkpointAt: number; triggerAt: number }
+
+// The computed defaults: the engine's own, with no knob set.
+function thresholds(window: number, point: number): Marks {
   const margin = window <= SMALL_WINDOW ? CHECKPOINT_MARGIN_SMALL : CHECKPOINT_MARGIN
   const triggerAt = Math.floor(point - OUTPUT_RESERVE)
   const checkpointAt = Math.floor(triggerAt - margin)
   let headsupAt = Math.floor(point - HEADSUP_FRACTION * window)
   if (headsupAt >= checkpointAt) headsupAt = Math.floor(checkpointAt - (HEADSUP_FRACTION * window) / 2)
   return { headsupAt, checkpointAt, triggerAt }
+}
+
+// The engine's marks for this session (sessions/<sid>.marks.json, written
+// each time it assesses the fill), read as the mod's own: the percent knobs
+// and the output reserve move them, and the mod knows only the defaults.
+// Taken while they were computed against the mod's point; else undefined.
+function marksOf(raw: string | undefined, point: number): Marks | undefined {
+  if (!raw) return undefined
+  try {
+    const v: unknown = JSON.parse(raw)
+    if (typeof v !== 'object' || v === null) return undefined
+    const r = v as Record<string, unknown>
+    if (r.point !== point) return undefined
+    const h = r.headsup_at
+    const c = r.checkpoint_at
+    const t = r.trigger_at
+    if (typeof h !== 'number' || typeof c !== 'number' || typeof t !== 'number') return undefined
+    if (!(h < c && c < t)) return undefined
+    return { headsupAt: h, checkpointAt: c, triggerAt: t }
+  } catch {
+    return undefined
+  }
+}
+
+// The marks file's text, or undefined when there is none yet (the engine
+// writes it at its first assessment, a prompt or a turn end into the session).
+async function readMarks($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return String(await $.fs.read(path))
+  } catch {
+    return undefined
+  }
 }
 
 function defaultPoint(window: number): number {
@@ -161,12 +196,14 @@ type BandState = { enteredAt?: number; early: boolean; lastTurnCostUsd?: number;
 // the early_compaction row's fill (a share of that window, as /context
 // counts it) or turn cost is reached. A top-level function because $ is
 // followed only into one.
-async function updateBand($: EngineInterface, usage: { context: Context }, early: EarlyCompaction | undefined, band: BandState): Promise<void> {
+async function updateBand($: EngineInterface, usage: { context: Context }, early: EarlyCompaction | undefined, band: BandState, marksPath: string): Promise<void> {
   const tokens = tokensOf(usage.context)
   const point = (await $.session.usage({ breakdown: 'summary' })).context.breakdown?.rawMaxTokens
     ?? defaultPoint(usage.context.window)
   band.point = point
-  const th = thresholds(usage.context.window, point)
+  // The engine's marks where it has written them for this point (the knobs
+  // live on its side); the computed defaults until then.
+  const th = marksOf(await readMarks($, marksPath), point) ?? thresholds(usage.context.window, point)
   const earlyHit = early !== undefined && tokens !== undefined && (
     (early.percent !== undefined && tokens * 100 >= point * early.percent)
     || (early.usd !== undefined && band.lastTurnCostUsd !== undefined && band.lastTurnCostUsd >= early.usd))
@@ -410,6 +447,7 @@ export const register: Register = (on, options) => {
   let sid = ''
   let store = ''
   let sessions = ''
+  let marksPath = '' // sessions/<sid>.marks.json, the engine's marks (updateBand)
   let rings: string[] = []
   // Times are $.clock's (ms since the epoch).
   const bandState: BandState = { early: false } // the checkpoint band (updateBand)
@@ -694,6 +732,7 @@ export const register: Register = (on, options) => {
     sessions = `${store}/sessions`
     const mirrorPath = `${sessions}/${sid}.ctx.json`
     const markerPath = `${sessions}/${sid}.mod`
+    marksPath = `${sessions}/${sid}.marks.json`
 
     // The rings this session can save into, through the store's manifest.
     try {
@@ -722,7 +761,7 @@ export const register: Register = (on, options) => {
         bandState.early = false
       } else {
         staleTokens = undefined
-        await updateBand($, usage, early, bandState)
+        await updateBand($, usage, early, bandState, marksPath)
       }
       const five = usage.rateLimits.find(r => r.kind === 'five_hour')
       const seven = usage.rateLimits.find(r => r.kind === 'seven_day')
@@ -799,7 +838,7 @@ export const register: Register = (on, options) => {
     try {
       const cost = await recordTurn($, e)
       if (cost !== undefined) bandState.lastTurnCostUsd = cost
-      if (early?.usd !== undefined && cost !== undefined) await updateBand($, await $.session.usage(), early, bandState)
+      if (early?.usd !== undefined && cost !== undefined) await updateBand($, await $.session.usage(), early, bandState, marksPath)
     } catch (err) {
       $.ui.log(`${PLUGIN}: ledger: ${String(err)}`)
     }
