@@ -145,6 +145,10 @@ export WINDVANE_SEMANTIC=0
 # The door would cut the API document's read to 60,000 characters; the take
 # needs the whole read in the context to reach the band.
 export WINDVANE_RESULT_BUDGET=120000
+# Computed, the heads-up sits a tenth of the window under the point, which
+# is below zero on a 1M window with a 100K point and fires at the first
+# prompt; 40% puts it under the last call (48%) and over the opening fill.
+export WINDVANE_HEADSUP_PERCENT=40
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW=$WINDOW
 export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
 export DISABLE_AUTOUPDATER=1

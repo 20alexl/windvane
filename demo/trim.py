@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Cut the long static stretches out of the live recording.
 
-    python3 demo/trim.py demo/windvane.mp4 demo/windvane.gif [--cap 2] [--fps 10] [--colors 32]
+    python3 demo/trim.py demo/windvane.mp4 demo/windvane.gif [--cap 2] [--fps 10] [--colors 128]
 
-The defaults keep a 46-second take under 5 MiB, the largest file the plugin
-directory accepts anywhere in the repository; the palette is the lever,
-the frame rate and the cap do little. Check the size after a new take.
+The defaults keep a take under 5 MiB (4.8 MB for the 1.0.13 take), the
+largest file the plugin directory accepts anywhere in the repository; the
+palette is the lever, the frame rate and the cap do little. At 32 colours
+the accent reds, yellows and blues wash out to grey; 64 is the fallback
+when a longer take passes the limit. Check the size after a new take.
 
 A live take waits for the model and for the compaction, and those waits are
 most of the recording: a spinner and a token counter ticking for twenty
@@ -118,7 +120,7 @@ def main() -> int:
     ap.add_argument("gif")
     ap.add_argument("--cap", type=float, default=2.0, help="seconds of a static stretch kept (default 2)")
     ap.add_argument("--fps", type=int, default=10, help="the gif's frame rate (default 10)")
-    ap.add_argument("--colors", type=int, default=32, help="palette size (default 32)")
+    ap.add_argument("--colors", type=int, default=128, help="palette size (default 128)")
     ap.add_argument("--width", type=int, default=0,
                     help="scale the gif to this width (default: the recording's own)")
     args = ap.parse_args()

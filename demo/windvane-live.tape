@@ -41,6 +41,9 @@ Type "bash demo/live_setup.sh 2>/dev/null && source /tmp/wv-demo/env.sh && cd /t
 Enter
 Wait+Line@60s /\$\s*$/
 # The plugin is the snapshot live_setup.sh made, so nothing reloads mid-take.
+# Sonnet: the fixture's API document is sized for Sonnet reading it whole,
+# which lands the fill past the last call. Opus searched first and read
+# part of it, and the fill stopped at 34%.
 Type "claude --plugin-dir /tmp/wv-demo/plugin --dangerously-skip-permissions --model sonnet"
 Enter
 # The bypass-permissions acceptance is answered in the demo settings, so no
@@ -79,9 +82,10 @@ Sleep 1s
 Screenshot demo/screenshots-live/3-band.png
 
 # 4: the edit prompt. It carries the engine's CHECKPOINT NOW note, which
-# says to finish the step, then save and end the turn: the model does the
-# edit, banks the checkpoint itself (a bare save through the plugin's tool)
-# and ends the turn. Nothing is typed after this: a queued prompt would run
+# says to finish the step, then save, call compact_now and end the turn: the
+# model does the edit, banks the checkpoint itself (a bare save through the
+# plugin's tool), calls compact_now and ends the turn. Nothing is typed after
+# this: a queued prompt would run
 # before the compaction and before windvane's own continue.
 Type "Edit items_api/api.py with the Edit tool (no shell): add cursor pagination to GET /items and keep page= working"
 Wait+Screen@10s /cursor\s+pagination/
@@ -90,8 +94,15 @@ Wait+Screen@240s /(?i)checkpoint \(MCP\)|Checkpoint saved|operation: "save"/
 Sleep 1s
 Screenshot demo/screenshots-live/4-saved.png
 
-# 5: the turn ends after the edit; the mod compacts at the boundary with
-# the save banked, and the brief sits right after the summary.
+# 4b: the save's reply carries the fill and puts the compaction to the
+# model; the model calls compact_now and ends the turn. Nothing compacts
+# until it does.
+Wait+Screen@240s /(?i)compact_now/
+Sleep 1s
+Screenshot demo/screenshots-live/4b-compact-now.png
+
+# 5: the turn ends; the mod compacts at the boundary, at the model's call,
+# with the save banked, and the brief sits right after the summary.
 Wait+Screen@300s /(?i)compacted|windvane-compact/
 Sleep 2s
 Screenshot demo/screenshots-live/5-compacted.png
