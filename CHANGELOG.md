@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.15 (2026-10-09)
+
+- **The miner's memory follows the messages, not the file.** A session log keeps every tool result in full, and the live miner read a grown session whole, as dicts: a 513 MB transcript became several gigabytes, and the live tick re-read it every five minutes for a turn or two of growth, so the background miner peaked at 5.4 GB on a box already short of memory. Each record is now slimmed as it is read, to what the extractors use (the chain fields, cut text, a tool call's path or command, a tool result's error flag and the edges of its text, a shell result's stderr); on a 188 MB transcript the read went from 441 MB to 81 MB with the same extractions. A live tick re-reads a mined session only once it has grown by ten messages; the session-end run takes any growth.
+- **The miner waits for the model.** Its template embeddings and its scorer probe went through the single-text client, the hook path that since 1.0.12 answers nothing while the model loads, so a run during a daemon reload lost every semantic score and extracted no corrections. They go through the bulk client, which waits.
+
 ## 1.0.14 (2026-10-09)
 
 - **The demo, re-recorded on 1.0.13.** The live take runs on Sonnet: the edit, the checkpoint save and `compact_now` in the same turn on the last call, the compaction at the turn end, and the resume prompt with nothing typed. The fixture places the heads-up with `headsup_percent` (with a 1M window and a 100K point the computed mark falls below zero), and the gif keeps 128 colours so the accents hold.
