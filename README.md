@@ -121,7 +121,7 @@ Nine rows are set in the plugin config: `python`, `status_segment`, `result_budg
 | `budget_five_hour_pct` | 90 | Usage percent of the 5-hour window that nudges |
 | `budget_seven_day_pct` | 95 | Usage percent of the 7-day window that nudges |
 | `budget_pct` | 90 | Usage percent of any other rate-limit window that nudges |
-| `live_mine` | 300 | Seconds between live mining ticks at turn end, 0 disables |
+| `live_mine` | 300 | Seconds between live mining ticks at turn end, 0 disables; a tick re-reads a mined session only once it has grown by ten messages |
 | `non_project_dirs` | empty | Comma-separated directory names that are never a project |
 | `git_trace` | empty | File that logs every git call, for debugging |
 

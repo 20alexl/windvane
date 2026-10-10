@@ -247,6 +247,93 @@ def iter_messages(
             yield offset, msg
 
 
+# What a record keeps once slimmed for the extractors: a prompt or a reply
+# past this many characters is cut, a tool result keeps its head and its
+# tail (an error's name sits at either end: a traceback's last line, a
+# pytest summary's), a command this much.
+SLIM_TEXT_CHARS = 4_000
+SLIM_RESULT_EDGE_CHARS = 3_000
+SLIM_COMMAND_CHARS = 2_000
+_SLIM_RECORD_KEYS = (
+    "uuid", "parentUuid", "logicalParentUuid", "type", "subtype", "isSidechain", "timestamp", "sessionId", "gitBranch", "cwd",
+)
+
+
+def _cut(text: object, n: int) -> object:
+    return text[:n] if isinstance(text, str) and len(text) > n else text
+
+
+def _edges(text: object, n: int) -> object:
+    """A string over 2n characters keeps its first n and its last n."""
+    if isinstance(text, str) and len(text) > 2 * n:
+        return text[:n] + "\n...\n" + text[-n:]
+    return text
+
+
+def _slim_block(block: object) -> object:
+    if not isinstance(block, dict):
+        return block
+    kind = block.get("type")
+    if kind == "text":
+        return {"type": "text", "text": _cut(block.get("text", ""), SLIM_TEXT_CHARS)}
+    if kind == "thinking":
+        return {"type": "thinking", "thinking": _cut(block.get("thinking", ""), SLIM_TEXT_CHARS)}
+    if kind == "tool_use":
+        raw_in = block.get("input")
+        inp: dict = {}
+        if isinstance(raw_in, dict):
+            # The fields the extractors read: an edit's path, a shell command.
+            for k in ("file_path", "path", "command", "description"):
+                if k in raw_in:
+                    inp[k] = _cut(raw_in[k], SLIM_COMMAND_CHARS)
+        return {"type": "tool_use", "id": block.get("id", ""), "name": block.get("name", ""), "input": inp}
+    if kind == "tool_result":
+        content = block.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(
+                str(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("type") == "text"
+            )
+        out = {"type": "tool_result", "content": _edges(content, SLIM_RESULT_EDGE_CHARS)}
+        if block.get("is_error"):
+            out["is_error"] = True
+        if "tool_use_id" in block:
+            out["tool_use_id"] = block["tool_use_id"]
+        return out
+    return {"type": kind}
+
+
+def slim_message(msg: dict) -> dict:
+    """The record with only what the extractors read, bounded in size: the
+    chain fields (uuid, parent, type, sidechain), the timestamp, the text
+    blocks cut, a tool call's name and path or command, a tool result's
+    error flag and the edges of its text, a Bash result's stderr. A session
+    log holds every tool result in full (one transcript was 513 MB), and the
+    miner read a grown session whole, as dicts, several gigabytes at a time
+    (2026-10-09). Slimmed, a record is a few kilobytes at most."""
+    out: dict = {k: msg[k] for k in _SLIM_RECORD_KEYS if k in msg}
+    # A compaction boundary's link back: the live-branch walk resumes at its
+    # logical parent or at the newest of the records it preserved.
+    meta = msg.get("compactMetadata")
+    kept = meta.get("preservedMessages") if isinstance(meta, dict) else None
+    if isinstance(kept, dict) and isinstance(kept.get("uuids"), list):
+        out["compactMetadata"] = {"preservedMessages": {"uuids": list(kept["uuids"])}}
+    m = msg.get("message")
+    if isinstance(m, dict):
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = [_slim_block(b) for b in content]
+        else:
+            content = _cut(content, SLIM_TEXT_CHARS)
+        slim_m: dict = {"content": content}
+        if "role" in m:
+            slim_m["role"] = m["role"]
+        out["message"] = slim_m
+    tr = msg.get("toolUseResult")
+    if isinstance(tr, dict) and isinstance(tr.get("stderr"), str) and tr["stderr"]:
+        out["toolUseResult"] = {"stderr": _edges(tr["stderr"], SLIM_RESULT_EDGE_CHARS)}
+    return out
+
+
 def read_tail(jsonl_path: Path, n_messages: int = 50) -> list[dict]:
     """
     Read the last N messages from a JSONL file efficiently.

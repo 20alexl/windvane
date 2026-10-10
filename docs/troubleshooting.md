@@ -78,7 +78,7 @@ The band above the prompt says what windvane last put in front of the model. It 
 
 - **Mod.** Its diagnostics go to Claude Code's debug log (`claude --debug`) on lines that begin `windvane:`. In a session that hot-reloads the plugin folder (a `--plugin-dir` session), a failed hook or a module that did not load also leaves one dim line in the transcript.
 - **Engine.** There is no log file. The daemon and the background miner discard their output.
-- **Mining.** `mining_status.json` in the store holds the miner's status and, when Claude Code's transcript format is no longer recognised, a warning that the session-start banner shows.
+- **Mining.** `mining_status.json` in the store holds the miner's status, its peak memory per phase (`rss_by_phase`, in MB) and, when Claude Code's transcript format is no longer recognised, a warning that the session-start banner shows. The miner reads a transcript as slimmed records (the chain fields, cut text, a tool call's path or command, a result's error flag and edges), so its memory follows the number of messages, not the size of the file.
 - **Runs.** A substantial session writes a run report to `<project>/.windvane/runs/`. `mine(run_report)` writes and returns the current session's report.
 - **Alerts.** Each alert, sent or not, is recorded in the session state with the reason a send failed.
 

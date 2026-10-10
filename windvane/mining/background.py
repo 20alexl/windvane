@@ -44,6 +44,12 @@ def _status_file() -> Path:
 # and resumed within minutes and each launched the full 3 GB, 7-minute run.
 POST_SESSION_GAP_SECS = 600
 
+# A live tick re-extracts a session already extracted only once it has grown
+# by this many main messages: every tick re-read a 513 MB transcript whole
+# for a turn or two of growth (2026-10-09). The session-end run takes any
+# growth.
+LIVE_MIN_GROWTH = 10
+
 _HELD = None  # this process's miner lock, while it runs
 
 
@@ -402,8 +408,13 @@ def run_mining(project_path: str, mode: str, windvane_storage_dir: str):
             try:
                 from windvane.mining.extractors import run_extraction_pipeline
 
+                # A live tick re-reads a grown session only once it has
+                # grown by a few turns; the session-end run takes every one.
                 extraction_count = run_extraction_pipeline(
-                    project_path, index, windvane_storage_dir
+                    project_path,
+                    index,
+                    windvane_storage_dir,
+                    min_growth=LIVE_MIN_GROWTH if mode == "live" else 1,
                 )
             except ImportError:
                 pass  # optional dependency missing -- expected, not an error

@@ -151,14 +151,15 @@ def _get_template_embeddings(
         return _template_cache[key]
 
     try:
-        from windvane.daemon import embed_via_server
+        # The bulk client: one request, and it waits out a model still
+        # loading. The single-text client is the hook path and answers
+        # nothing while the model loads, so a run during a daemon reload
+        # lost every semantic score and extracted no corrections (2026-10-09).
+        from windvane.daemon import embed_batch_via_server
 
-        embeddings = []
-        for t in templates:
-            emb = embed_via_server(t)
-            if not emb:
-                return None
-            embeddings.append(emb)
+        embeddings = embed_batch_via_server(list(templates))
+        if len(embeddings) != len(templates) or not all(embeddings):
+            return None
         _template_cache[key] = embeddings
         return embeddings
     except Exception:
@@ -846,14 +847,17 @@ def _live_messages(jsonl_file) -> list[dict]:
     history: a decision the user rewound past was stored as decided
     (2026-09-26). A subagent's inline sidechain records are kept; a record
     with no uuid is kept."""
-    from windvane.mining.jsonl_reader import iter_messages
+    from windvane.mining.jsonl_reader import iter_messages, slim_message
     from windvane.transcript import chain_of
 
     # The chain is built over EVERY record with a uuid: it runs through the
-    # system and attachment records between turns.
-    everything = [msg for _, msg in iter_messages(jsonl_file)]
+    # system and attachment records between turns. Each record is slimmed as
+    # it is read (slim_message): the file is streamed once and what stays in
+    # memory is bounded per record, not the transcript's own size.
+    everything = [slim_message(msg) for _, msg in iter_messages(jsonl_file)]
     live = chain_of(m for m in everything if m.get("uuid"))
     messages = [m for m in everything if m.get("type") in ("user", "assistant")]
+    del everything
     if not live:
         return messages
     return [m for m in messages if m.get("isSidechain") or not m.get("uuid") or m["uuid"] in live]
@@ -863,9 +867,16 @@ def run_extraction_pipeline(
     project_path: str,
     index,  # SessionIndex
     windvane_storage_dir: str = "~/.windvane",
+    min_growth: int = 1,
 ) -> int:
     """
     Run all extractors on unprocessed sessions.
+
+    A session already extracted is read again only once it has grown by at
+    least ``min_growth`` main messages (user and assistant): a live tick
+    every five minutes re-read a 513 MB transcript whole for a handful of
+    new turns (2026-10-09), so the live run asks for more growth than the
+    session-end run does.
 
     Returns count of new extractions.
     """
@@ -874,6 +885,7 @@ def run_extraction_pipeline(
     from windvane.mining.jsonl_reader import (
         resolve_jsonl_dir,
         iter_messages,
+        slim_message,
     )
 
     _fed_projects.clear()
@@ -900,12 +912,15 @@ def run_extraction_pipeline(
     extractions_dir = hash_dir / "extractions"
     extractions_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check scorer availability once before the loop
+    # Check scorer availability once before the loop, through the bulk
+    # client, which waits out a model still loading (the single-text client
+    # is the hook path and answers nothing meanwhile).
     scorer_available = False
     try:
-        from windvane.daemon import embed_via_server
+        from windvane.daemon import embed_batch_via_server
 
-        scorer_available = bool(embed_via_server("test"))
+        probe = embed_batch_via_server(["test"])
+        scorer_available = bool(probe and probe[0])
     except Exception:
         pass
 
@@ -933,7 +948,7 @@ def run_extraction_pipeline(
                     session_meta.get("assistant_message_count", 0)
                 )
                 stored_main = existing.get("main_message_count")
-                grown = stored_main is not None and expected_main > int(stored_main)
+                grown = stored_main is not None and expected_main - int(stored_main) >= max(1, int(min_growth))
                 if not grown:
                     # Skip if: has content AND (scorer was available OR still isn't)
                     # Reprocess if: scorer is now available but wasn't during
@@ -960,7 +975,7 @@ def run_extraction_pipeline(
         if subagents_dir.exists():
             for sub_jsonl in subagents_dir.glob("*.jsonl"):
                 for _, msg in iter_messages(sub_jsonl, types={"user", "assistant"}):
-                    messages.append(msg)
+                    messages.append(slim_message(msg))
 
         if not messages:
             # Mark genuinely empty sessions so we don't re-parse their JSONL every run

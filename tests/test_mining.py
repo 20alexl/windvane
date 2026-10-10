@@ -632,6 +632,176 @@ def test_the_miner_mines_the_live_branch_only(tmp_path: Path):
     assert typed == ["let's use sqlite for the alias store", "never resolve aliases outside the registry"]
 
 
+def test_a_record_is_slimmed_to_what_the_extractors_read():
+    """A session log keeps every tool result in full (one transcript was
+    513 MB) and the miner read a grown session whole, as dicts, several
+    gigabytes at a time (2026-10-09). Slimmed, a record is bounded: the
+    chain fields, cut text, a tool call's path or command, a result's error
+    flag and edges."""
+    from windvane.mining.jsonl_reader import SLIM_RESULT_EDGE_CHARS, SLIM_TEXT_CHARS, slim_message
+
+    big = "x" * 400_000
+    user = {
+        "uuid": "u1", "parentUuid": "a0", "type": "user", "isSidechain": False, "timestamp": "t1",
+        "sessionId": "s", "gitBranch": "main", "cwd": "E:/p", "requestId": "req", "userType": "external",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu1", "is_error": True,
+             "content": "Traceback (most recent call last):\n" + big + "\nKeyError: 'x'"},
+            {"type": "tool_result", "tool_use_id": "tu2", "content": [{"type": "text", "text": "ok " + big}, {"type": "image", "source": {"data": big}}]},
+        ]},
+        "toolUseResult": {"stdout": big, "stderr": "boom\n" + big + "\nValueError: y", "interrupted": False},
+    }
+    s = slim_message(user)
+    assert set(s) == {"uuid", "parentUuid", "type", "isSidechain", "timestamp", "sessionId", "gitBranch", "cwd", "message", "toolUseResult"}
+    blocks = s["message"]["content"]
+    assert blocks[0]["is_error"] is True and blocks[0]["tool_use_id"] == "tu1"
+    assert blocks[0]["content"].startswith("Traceback") and blocks[0]["content"].endswith("KeyError: 'x'")
+    assert len(blocks[0]["content"]) <= 2 * SLIM_RESULT_EDGE_CHARS + 10
+    assert "is_error" not in blocks[1] and blocks[1]["content"].startswith("ok ") and len(blocks[1]["content"]) <= 2 * SLIM_RESULT_EDGE_CHARS + 10
+    assert set(s["toolUseResult"]) == {"stderr"} and s["toolUseResult"]["stderr"].endswith("ValueError: y")
+    assert len(json.dumps(s)) < 20_000
+
+    assistant = {
+        "uuid": "a1", "parentUuid": "u1", "type": "assistant", "timestamp": "t2",
+        "message": {"role": "assistant", "model": "m", "usage": {"input_tokens": 9}, "content": [
+            {"type": "thinking", "thinking": "hmm " + big, "signature": big},
+            {"type": "text", "text": "Let's use sqlite. " + big},
+            {"type": "tool_use", "id": "tu3", "name": "Edit", "input": {"file_path": "/p/a.py", "old_string": big, "new_string": big}},
+            {"type": "tool_use", "id": "tu4", "name": "Bash", "input": {"command": "pytest -q " + big, "description": "run tests"}},
+        ]},
+    }
+    a = slim_message(assistant)
+    c = a["message"]["content"]
+    assert c[0] == {"type": "thinking", "thinking": ("hmm " + big)[:SLIM_TEXT_CHARS]}
+    assert c[1]["text"].startswith("Let's use sqlite.") and len(c[1]["text"]) == SLIM_TEXT_CHARS
+    assert c[2] == {"type": "tool_use", "id": "tu3", "name": "Edit", "input": {"file_path": "/p/a.py"}}
+    assert c[3]["name"] == "Bash" and c[3]["input"]["command"].startswith("pytest -q") and c[3]["input"]["description"] == "run tests"
+    assert "usage" not in a["message"] and len(json.dumps(a)) < 20_000
+    # A plain prompt keeps its text, cut at the bound; a chain-only record keeps its chain.
+    assert slim_message({"type": "user", "message": {"content": "short"}})["message"]["content"] == "short"
+    assert slim_message({"uuid": "s1", "parentUuid": "a1", "type": "system", "subtype": "turn_duration", "durationMs": 5}) == \
+        {"uuid": "s1", "parentUuid": "a1", "type": "system", "subtype": "turn_duration"}
+    # A compaction boundary keeps the links the live-branch walk resumes at
+    # (the first slimming dropped them and the walk stopped at the last
+    # compaction: 447 live messages of 23,325).
+    boundary = {"uuid": "c1", "parentUuid": None, "logicalParentUuid": "a1", "type": "system", "subtype": "compact_boundary",
+                "compactMetadata": {"trigger": "manual", "preTokens": 419_189, "preservedMessages": {"uuids": ["u0", "a0"], "count": 2}}}
+    assert slim_message(boundary) == {"uuid": "c1", "parentUuid": None, "logicalParentUuid": "a1", "type": "system",
+                                      "subtype": "compact_boundary", "compactMetadata": {"preservedMessages": {"uuids": ["u0", "a0"]}}}
+
+
+def test_the_miner_scores_through_the_bulk_client_which_waits_for_the_model(monkeypatch):
+    """The single-text client is the hook path: since 1.0.12 it answers
+    nothing while the daemon's model loads. The miner's template embeddings
+    went through it one by one, so a run during a daemon reload lost every
+    semantic score and extracted no corrections (2026-10-09). The miner
+    uses the bulk client, which waits."""
+    from windvane import daemon
+
+    extractors._template_cache.clear()
+    calls: list = []
+    monkeypatch.setattr(daemon, "embed_via_server", lambda t: calls.append(("single", t)) or None)  # loading: nothing
+    monkeypatch.setattr(daemon, "embed_batch_via_server", lambda texts: calls.append(("batch", len(texts))) or [_fake_vec(t) for t in texts])
+    embs = extractors._get_template_embeddings(["use X instead of Y", "the better approach is"], "t-test")
+    assert embs is not None and len(embs) == 2 and calls == [("batch", 2)]
+    assert extractors._get_template_embeddings(["use X instead of Y", "the better approach is"], "t-test") is embs  # cached
+    # A tier that is off answers empty vectors: no templates, no scores.
+    extractors._template_cache.clear()
+    monkeypatch.setattr(daemon, "embed_batch_via_server", lambda texts: [[] for _ in texts])
+    assert extractors._get_template_embeddings(["use X instead of Y"], "t-off") is None
+    extractors._template_cache.clear()
+
+
+def test_the_live_branch_runs_through_a_compaction_when_slimmed(tmp_path: Path):
+    """The walk from the last record crosses a compaction boundary through
+    its logical parent; the slimmed records must carry that link."""
+    def rec(uid, parent, kind, content):
+        return {"uuid": uid, "parentUuid": parent, "type": kind, "isSidechain": False,
+                "timestamp": "2026-10-09T00:00:00Z", "message": {"role": kind, "content": content}}
+
+    recs = [
+        rec("u1", None, "user", "let's use sqlite for the alias store"),
+        rec("a1", "u1", "assistant", [{"type": "text", "text": "Done; the store is sqlite now."}]),
+        {"uuid": "c1", "parentUuid": None, "logicalParentUuid": "a1", "type": "system", "subtype": "compact_boundary",
+         "isSidechain": False, "compactMetadata": {"trigger": "manual", "preservedMessages": {"uuids": [], "count": 0}}},
+        rec("u2", "c1", "user", "This session is being continued from a previous conversation..."),
+        rec("u3", "u2", "user", "never resolve aliases outside the registry"),
+        rec("a3", "u3", "assistant", [{"type": "text", "text": "Noted."}]),
+    ]
+    p = tmp_path / "t.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    msgs = extractors._live_messages(p)
+    assert [m["uuid"] for m in msgs] == ["u1", "a1", "u2", "u3", "a3"]
+
+
+def test_slimmed_records_extract_the_same(tmp_path: Path):
+    """What the extractors read survives the slimming: the same decisions,
+    mistakes, corrections, approaches and files come out of the live-branch
+    read as out of the full records."""
+    from windvane.mining.jsonl_reader import iter_messages as _iter
+
+    sid = _sid()
+    p = _session(tmp_path, sid, n=8)
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(_user("No, don't do that. Always use the registry for alias lookups, never a cache.", sid, 20) + "\n")
+        f.write(_assistant("Understood: the registry it is.", sid, 21, tool_use={"name": "Bash", "input": {"command": "pytest -q tests/test_alias.py"}}) + "\n")
+        f.write(_result("FAILED tests/test_alias.py::test_a - KeyError: 'alias'\n1 failed, 3 passed", sid, is_error=True, offset_min=22) + "\n")
+        f.write(_assistant("Fixed the KeyError by seeding the alias.", sid, 23, tool_use={"name": "Edit", "input": {"file_path": "/project/src/alias.py", "old_string": "a", "new_string": "b"}}) + "\n")
+    full = [m for _, m in _iter(p, types={"user", "assistant"})]
+    slim = extractors._live_messages(p)
+    assert len(slim) == len(full)
+    a, b = asdict(extractors.extract_all(full)), asdict(extractors.extract_all(slim))
+    for k in ("decisions", "mistakes", "approaches", "corrections", "session_files"):
+        assert a[k] == b[k], k
+    assert b["session_files"] == ["/project/src/auth.py", "/project/src/alias.py"]
+
+
+def test_a_live_tick_re_extracts_a_session_only_once_it_has_grown_enough(tmp_path: Path, monkeypatch):
+    """Every live tick re-read a 513 MB transcript whole for a turn or two of
+    growth (2026-10-09). The pipeline's min_growth asks for more; the
+    session-end run keeps taking any growth."""
+    from windvane.mining import jsonl_reader as jr
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_projects = tmp_path / "claude_projects"
+    jdir = claude_projects / path_to_dir_name(str(project))
+    jdir.mkdir(parents=True)
+    monkeypatch.setattr(jr, "_get_claude_projects_dir", lambda: claude_projects)
+    store = tmp_path / "store"
+    (store / "projects" / "p1").mkdir(parents=True)
+    norm = str(project.resolve()).replace("\\", "/")
+    if len(norm) >= 2 and norm[1] == ":":
+        norm = norm[0].lower() + norm[1:]
+    (store / "manifest.json").write_text(json.dumps({"projects": {norm: {"hash": "p1", "name": "proj"}}}), encoding="utf-8")
+
+    sid = _sid()
+    f = _session(jdir, sid, n=6)
+    idx = SessionIndex(tmp_path / "index" / "session_index.json")
+    idx.update_session(build_index_for_session(f))
+    extraction_file = store / "projects" / "p1" / "extractions" / f"{sid}.json"
+
+    extractors.run_extraction_pipeline(str(project), idx, str(store), min_growth=10)
+    first = json.loads(extraction_file.read_text(encoding="utf-8"))
+    # The fixture writes n+1 prompts, n+1 replies and n+1 tool results (user
+    # records too): 3(n+1) main messages.
+    assert first["main_message_count"] == 21
+
+    # Two more turns (6 main messages): under the live tick's bar, so the
+    # file is left as it is; the session-end run (min_growth 1) takes them.
+    f = _session(jdir, sid, n=8)
+    idx.update_session(build_index_for_session(f))
+    extractors.run_extraction_pipeline(str(project), idx, str(store), min_growth=10)
+    assert json.loads(extraction_file.read_text(encoding="utf-8"))["main_message_count"] == 21
+    extractors.run_extraction_pipeline(str(project), idx, str(store), min_growth=1)
+    assert json.loads(extraction_file.read_text(encoding="utf-8"))["main_message_count"] == 27
+    # Grown by the bar or more, the live tick re-extracts too.
+    f = _session(jdir, sid, n=13)
+    idx.update_session(build_index_for_session(f))
+    extractors.run_extraction_pipeline(str(project), idx, str(store), min_growth=10)
+    assert json.loads(extraction_file.read_text(encoding="utf-8"))["main_message_count"] == 42
+
+
 def _workspace(tmp_path: Path):
     ws = tmp_path / "ws"
     a, b = ws / "proj-a", ws / "proj-b"
