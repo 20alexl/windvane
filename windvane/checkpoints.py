@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -563,12 +564,10 @@ class ContextGuard:
         self._actual_verifications: list = []
 
     def _task_id(self) -> str:
-        """``task_<epoch seconds>``, bumped past an existing file so two saves
-        in one second never share a task file."""
-        n = int(time.time())
-        while (self.storage_dir / f"task_{n}.json").exists():
-            n += 1
-        return f"task_{n}"
+        """``task_<epoch seconds>_<random>``. Sessions share one store, and two
+        saving in one second could each look for the other's file before either
+        had written it, then share an id and a task file."""
+        return f"task_{int(time.time())}_{secrets.token_hex(3)}"
 
     def save_checkpoint(
         self,

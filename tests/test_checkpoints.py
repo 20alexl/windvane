@@ -158,6 +158,17 @@ def test_a_saved_record_carries_one_name_per_concept(tmp_path, monkeypatch):
     assert second.data["task_id"] != rec["task_id"]
 
 
+def test_two_sessions_saving_in_one_second_never_share_an_id(tmp_path, monkeypatch):
+    """Each looked for the other's file before either had written it: one id,
+    one task file, and the second save over the first."""
+    from windvane import checkpoints as ck
+
+    monkeypatch.setattr(ck.time, "time", lambda: 1_800_000_000.0)
+    first, second = _guard_with_ring(tmp_path, monkeypatch, tmp_path / "ring"), ck.ContextGuard()
+    ids = {first._task_id(), second._task_id(), first._task_id()}  # nothing written between them
+    assert len(ids) == 3 and all(i.startswith("task_1800000000") for i in ids)
+
+
 def test_a_collapsed_record_restores_like_a_dual_vocabulary_one(tmp_path, monkeypatch):
     from windvane import checkpoints as ck
 
