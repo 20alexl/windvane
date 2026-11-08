@@ -381,7 +381,12 @@ def _words(s: str) -> set:
 
 def similar(a: str, b: str, threshold: float = 0.45, anchors: Optional[list] = None) -> bool:
     """Same rule in substance: word-set Jaccard, one's opening inside the
-    other, or a rule-specific anchor phrase present in the existing text."""
+    other, or a rule-specific anchor phrase present in the existing text.
+    Never one that says the opposite."""
+    from windvane.storage import says_not
+
+    if says_not(a) != says_not(b):
+        return False
     wa, wb = _words(a), _words(b)
     if not wa or not wb:
         return False

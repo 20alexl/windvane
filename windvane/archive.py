@@ -25,12 +25,15 @@ use the store's own state and savers.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
+
+ARCHIVE_WRITE_FAILED = "the archive could not be written, so nothing was moved"
 
 
 class ArchiveMixin:
@@ -111,35 +114,43 @@ class ArchiveMixin:
             "dry_run": dry_run,
         }
         if not dry_run and to_archive:
-            archive_proj = self._archive_project_for(self._normalize_path(project_path), proj.project_name)
-            archive_ids = {e.id for e in archive_proj.entries}
-            for entry in to_archive:
-                entry.archived_at = time.time()
-                if entry.id not in archive_ids:
-                    archive_proj.entries.append(entry)
-            archived_ids = {e.id for e in to_archive}
-            proj.entries = [e for e in proj.entries if e.id not in archived_ids]
-            self._rebuild_indexes(proj)
-            self._dirty_projects.add(proj.project_path)
+            if self._move_entries_to_archive(proj, to_archive) is None:
+                report.update(archived_count=0, entries=[], error=ARCHIVE_WRITE_FAILED)
+                return report
             self._save()
-            self._save_archive()
         return report
 
-    def _move_entries_to_archive(self, proj, entries: list) -> int:
-        """Move entries from a hot project into the archive (no save)."""
+    def _copy_into_archive(self, proj, entries: list) -> bool:
+        """Write entries into the archive and keep them there only if the
+        write landed. The caller removes them from the hot tier after this,
+        so a failure leaves the one copy where it was. Removing first lost
+        the entry outright when the archive could not be written."""
         archive_proj = self._archive_project_for(self._normalize_path(proj.project_path), proj.project_name)
-        archive_ids = {e.id for e in archive_proj.entries}
-        moved = 0
+        before = list(archive_proj.entries)
+        archive_ids = {e.id for e in before}
         for entry in entries:
-            entry.archived_at = time.time()
             if entry.id not in archive_ids:
-                archive_proj.entries.append(entry)
-                moved += 1
+                archived = copy.deepcopy(entry)
+                archived.archived_at = time.time()
+                archive_proj.entries.append(archived)
+        if self._save_archive():
+            return True
+        archive_proj.entries = before
+        return False
+
+    def _move_entries_to_archive(self, proj, entries: list) -> Optional[int]:
+        """Move entries from a hot project into the archive: the archive is
+        written here, the caller saves the hot tier. None when the archive
+        could not be written, with nothing moved. A crash between the two
+        writes leaves a duplicate, never a loss; the next move or restore
+        reconciles it by id."""
+        if not self._copy_into_archive(proj, entries):
+            return None
         gone = {e.id for e in entries}
         proj.entries = [e for e in proj.entries if e.id not in gone]
         self._rebuild_indexes(proj)
         self._dirty_projects.add(proj.project_path)
-        return moved
+        return len(gone)
 
     def archive_memory(self, project_path: str, memory_id: str) -> tuple[bool, str]:
         """Move one active memory to the archive by its id."""
@@ -147,9 +158,9 @@ class ArchiveMixin:
         entry = self._get_entry_by_id(proj, memory_id) if proj else None
         if not proj or not entry:
             return (False, f"Memory {memory_id} not found in this project")
-        self._move_entries_to_archive(proj, [entry])
+        if self._move_entries_to_archive(proj, [entry]) is None:
+            return (False, f"Memory {memory_id} stays active: {ARCHIVE_WRITE_FAILED}")
         self._save()
-        self._save_archive()
         return (True, f"Archived memory {memory_id}; memory(restore, memory_id='{memory_id}') brings it back")
 
     def _recurring_error_sigs(self, project_path: str) -> list:
@@ -248,9 +259,10 @@ class ArchiveMixin:
             "dry_run": dry_run,
         }
         if not dry_run and to_archive:
-            self._move_entries_to_archive(proj, to_archive)
+            if self._move_entries_to_archive(proj, to_archive) is None:
+                report.update(error=ARCHIVE_WRITE_FAILED)
+                return report
             self._save()
-            self._save_archive()
         return report
 
     def restore_from_archive(self, project_path: str, memory_id: str) -> tuple[bool, str]:
@@ -544,15 +556,13 @@ class ArchiveMixin:
                 report["duplicates_merged"].append(dup["entry_id"])
 
         if report.get("archived"):
-            archive_proj = self._archive_project_for(self._normalize_path(proj.project_path), proj.project_name)
-            archive_ids = {e.id for e in archive_proj.entries}
-            for arch_info in report["archived"]:
-                entry = self._get_entry_by_id(proj, arch_info["entry_id"])
-                if entry and entry.id not in archive_ids:
-                    entry.archived_at = time.time()
-                    archive_proj.entries.append(entry)
-                    ids_to_remove.add(entry.id)
-            self._save_archive()
+            found = [self._get_entry_by_id(proj, a["entry_id"]) for a in report["archived"]]
+            leaving = [e for e in found if e]
+            if self._copy_into_archive(proj, leaving):
+                ids_to_remove.update(e.id for e in leaving)
+            else:
+                report["archived"] = []
+                report["error"] = ARCHIVE_WRITE_FAILED
 
         for decay_info in report["decayed"]:
             entry = self._get_entry_by_id(proj, decay_info["entry_id"])

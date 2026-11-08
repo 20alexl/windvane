@@ -149,7 +149,9 @@ def test_recording_verdicts_health_and_the_summary():
     assert len(new) == 1 and new[0]["turn"] == 4 and new[0]["verdict"] == "unattended"
     again = c.record(state, rules, hits, "Bash", {"command": "rm -rf x"}, tool_use_id="t1", turn=4, permission_mode="bypassPermissions")
     assert again == [] and len(state["compliance"]["matches"]) == 1
-    assert c.record(state, rules, hits, "Bash", {"command": "rm -rf x"}, tool_use_id="t2", turn=5, permission_mode="default")[0]["verdict"] == "prompted"
+    # Default mode does not say a person saw this call: an allowlisted call
+    # runs with no prompt.
+    assert c.record(state, rules, hits, "Bash", {"command": "rm -rf x"}, tool_use_id="t2", turn=5, permission_mode="default")[0]["verdict"] == "approval_unknown"
     assert c.record(state, rules, hits, "Bash", {"command": "rm -rf x"}, tool_use_id="t3", turn=6, permission_mode="plan")[0]["verdict"] == "plan"
     new4 = c.record(state, rules, hits, "Bash", {"command": "rm -rf x"}, tool_use_id="t4", turn=6, permission_mode="auto", agent_id="a1")
     assert new4[0]["verdict"] == "unattended" and new4[0]["subagent"]
@@ -159,7 +161,7 @@ def test_recording_verdicts_health_and_the_summary():
     assert "r2" not in h
     s = c.summary(state, pm)
     assert s["with_detector"] == 2 and s["advisory"] == 1 and s["broken"] == 1
-    assert s["unattended"] == 2 and s["prompted"] == 1 and len(s["matches"]) == 4
+    assert s["unattended"] == 2 and s["approval_unknown"] == 1 and len(s["matches"]) == 4
     assert c.summary(state)["rules"] == [] and len(c.summary(state)["matches"]) == 4
     for i in range(c.MATCHES_KEEP + 20):
         c.record(state, rules, hits, "Bash", {"command": "rm x"}, tool_use_id=f"x{i}", turn=7, permission_mode="default")
@@ -174,7 +176,7 @@ def test_the_injected_rule_text():
     assert "[r1] No rm" in t and "command ~" in t
     assert "No permission prompt stands before this call" in t
     t2 = c.rule_text(hits, "default", context="the last prompt reads as approval")
-    assert "A permission prompt stands between you and the call" in t2 and "reads as approval" in t2
+    assert "does not say whether a person approved" in t2 and "reads as approval" in t2
     assert c.rule_text([], "default") == ""
 
 

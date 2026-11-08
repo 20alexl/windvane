@@ -231,6 +231,7 @@ def transcript_for_session(session_id: str) -> Optional[Path]:
     sid = str(session_id or "").strip()
     if not sid:
         return None
-    root = Path.home() / ".claude" / "projects"
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    root = (Path(cfg) if cfg else Path.home() / ".claude") / "projects"
     hits = glob.glob(str(root / "*" / f"{sid}.jsonl"))
     return Path(hits[0]) if hits else None

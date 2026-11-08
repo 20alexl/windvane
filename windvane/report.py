@@ -781,7 +781,8 @@ def render_md(r: dict) -> str:
             "A rule with a detector has every matching tool call recorded. A rule without one "
             "is advisory: nothing here says whether it was followed. The verdict is what the hooks "
             "can see: `unattended` means no person approved the call (bypass / auto / dontAsk mode); "
-            "`prompted` means Claude Code's permission prompt stood between the model and the call."
+            "`approval_unknown` means the mode does not say: a person may have seen a prompt, or an "
+            "allow rule may have let the call through with none."
         )
         rules = cp.get("rules") or []
         if rules:
@@ -800,7 +801,7 @@ def render_md(r: dict) -> str:
         matches = cp.get("matches") or []
         lines.append("")
         lines.append(
-            f"- matches: {len(matches)} · unattended {cp.get('unattended', 0)} · prompted {cp.get('prompted', 0)}"
+            f"- matches: {len(matches)} · unattended {cp.get('unattended', 0)} · approval unknown {cp.get('approval_unknown', 0)}"
         )
         if matches:
             lines.append("")

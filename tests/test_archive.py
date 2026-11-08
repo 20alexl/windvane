@@ -26,6 +26,46 @@ def _ms():
     return MemoryStore()
 
 
+def test_a_failed_archive_write_keeps_the_memory_active(tmp_path, monkeypatch):
+    """The entry left the active list before the archive was written, and the
+    archive's failure was ignored: the only copy was gone and the tool said
+    it had archived it."""
+    s = _ms()
+    proj = str(tmp_path / "p")
+    assert s.remember_discovery(proj, "a fact worth keeping about the parser", category="discovery", auto_embed=False)[0]
+    mid = s.get_project(proj).entries[0].id
+    with monkeypatch.context() as m:
+        m.setattr(s, "_save_archive", lambda: False)
+        ok, msg = s.archive_memory(proj, mid)
+    assert not ok and "active" in msg
+    assert [e.id for e in s.get_project(proj).entries] == [mid]
+    assert s.get_project(proj).entries[0].archived_at is None
+    assert _ms().get_project(proj).entries[0].id == mid
+    assert not s._archive_projects[s._normalize_path(proj)].entries
+    # The write works again: the move goes through, destination first.
+    assert s.archive_memory(proj, mid)[0]
+    assert s.get_project(proj).entries == []
+    fresh = _ms()
+    fresh._load_archive()
+    assert [e.id for e in fresh._archive_projects[fresh._normalize_path(proj)].entries] == [mid]
+
+
+def test_the_bulk_archive_keeps_its_entries_when_the_archive_will_not_write(tmp_path, monkeypatch):
+    s = _ms()
+    proj = str(tmp_path / "p")
+    assert s.remember_discovery(proj, "a stale fact about the parser", category="discovery", relevance=3, auto_embed=False)[0]
+    entry = s.get_project(proj).entries[0]
+    entry.last_accessed = time.time() - 400 * 86400
+    with monkeypatch.context() as m:
+        m.setattr(s, "_save_archive", lambda: False)
+        report = s.archive_old_memories(proj, dry_run=False)
+    assert report["archived_count"] == 0 and "error" in report
+    assert [e.id for e in s.get_project(proj).entries] == [entry.id]
+    assert entry.archived_at is None
+    assert s.archive_old_memories(proj, dry_run=False)["archived_count"] == 1
+    assert s.get_project(proj).entries == []
+
+
 def _archivable(store, *, category, relevance, stale_days):
     from windvane.store import MemoryEntry
 

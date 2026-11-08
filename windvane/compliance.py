@@ -17,9 +17,9 @@ is only what the hooks can actually see:
     unattended -- bypassPermissions / dontAsk / auto: nobody at the prompt
                   approved this call. For an ask-first rule that is the
                   violation; for a never-do rule it is the violation.
-    prompted   -- default / acceptEdits: Claude Code's own permission
-                  prompt stood between the model and the call, so a person
-                  saw it. Recorded, not judged.
+    approval_unknown -- default / acceptEdits: a person may have seen a
+                  prompt, or an allow rule may have let the call through
+                  with none. The hook cannot tell. Recorded, not judged.
     plan       -- plan mode; nothing runs.
 
 A rule WITHOUT a detector is advisory, and the report says so per rule.
@@ -248,7 +248,7 @@ def verdict(permission_mode: str) -> str:
         return "plan"
     if m in _UNATTENDED:
         return "unattended"
-    return "prompted"
+    return "approval_unknown"
 
 
 def compliance_state(state: dict) -> dict:
@@ -364,7 +364,7 @@ def rule_text(hits: list[dict], permission_mode: str, context: str = "") -> str:
             "ask; the match is recorded in the run report either way."
         )
     else:
-        lines.append("  Recorded for the run report. A permission prompt stands between you and the call.")
+        lines.append("  Recorded for the run report. The permission mode does not say whether a person approved this call.")
     lines.append("</windvane-rule>")
     return "\n".join(lines)
 
@@ -395,7 +395,8 @@ def summary(state: dict, project_memory: Optional[dict] = None) -> dict:
         "broken": sum(1 for r in per_rule if r["detector"] and r["ok"] is False),
         "matches": matches,
         "unattended": sum(1 for m in matches if m.get("verdict") == "unattended"),
-        "prompted": sum(1 for m in matches if m.get("verdict") == "prompted"),
+        # "prompted" is the same verdict in matches recorded before 1.0.20.
+        "approval_unknown": sum(1 for m in matches if m.get("verdict") in ("approval_unknown", "prompted")),
     }
 
 

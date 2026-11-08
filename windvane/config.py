@@ -133,14 +133,16 @@ def user_config() -> dict:
 
 def plugin_config() -> dict:
     """The plugin's userConfig values from Claude Code's settings:
-    ``pluginConfigs`` -> the first key starting with ``windvane``. The values
-    sit under ``options`` in some versions and flat in others; both read."""
+    ``pluginConfigs`` -> ``windvane`` or ``windvane@<marketplace>``, never
+    another plugin whose name starts the same (windvane-keeper's row sorted
+    first and hid every setting). The values sit under ``options`` in some
+    versions and flat in others; both read."""
     data = _read_json(_settings_path())
     configs = data.get("pluginConfigs")
     if not isinstance(configs, dict):
         return {}
     for key in sorted(configs):
-        if str(key).startswith("windvane"):
+        if str(key).split("@", 1)[0] == "windvane":
             entry = configs[key]
             if not isinstance(entry, dict):
                 return {}

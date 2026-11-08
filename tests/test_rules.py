@@ -220,3 +220,19 @@ def test_the_detector_helpers_are_reachable_from_rules():
 
     assert rules.compile_detector is compliance.compile_detector
     assert rules.rules_with_detectors is compliance.rules_with_detectors
+
+
+def test_a_rule_saying_the_opposite_is_kept_apart(tmp_path):
+    """The word overlap and the anchors cannot see a "never": the opposite of
+    a stored rule was dropped as a duplicate of it."""
+    from windvane import rules
+    from windvane.store import MemoryStore
+
+    assert rules.similar("Never use rm in the build folder", "Always use rm in the build folder") is False
+    assert rules.similar("Never use rm in the build folder", "Do not use rm in the build folder") is True
+    assert rules.similar("Never kill by name", "Please always kill by image", anchors=["kill by"]) is False
+    s = MemoryStore(storage_dir=str(tmp_path / "s"))
+    words = "before cleaning the temporary output files in the generated build folder of this project"
+    assert s.add_rule(str(tmp_path), f"Always run the sweep script {words}")[0]
+    assert s.add_rule(str(tmp_path), f"Never run the sweep script {words}")[0]
+    assert s.add_rule(str(tmp_path), f"Always run the sweep script {words}")[0] is False

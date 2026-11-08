@@ -102,6 +102,16 @@ def test_plugin_config_reads_flat_or_under_options_and_only_a_windvane_key(tmp_p
     assert config.plugin_config() == {}
 
 
+def test_the_keeper_plugins_row_is_not_read_as_windvanes(tmp_path):
+    """The keeper's key sorts first and also starts with "windvane", so its
+    row hid every setting of the main plugin."""
+    _write_json(_settings(tmp_path), {"pluginConfigs": {
+        "windvane-keeper@windvane": {"options": {}},
+        "windvane@windvane": {"options": {"goal_turn_cap": 41}},
+    }})
+    assert config.plugin_config() == {"goal_turn_cap": 41}
+
+
 def test_a_missing_or_broken_layer_is_skipped(tmp_path):
     (tmp_path / "claude").mkdir()
     _settings(tmp_path).write_bytes(b"{not json")
@@ -582,6 +592,16 @@ def test_rules_counts_and_the_claude_md_filter(tmp_path):
     # The "(Reason: ...)" tail is not compared: CLAUDE.md states rules without one.
     reasoned = [{"id": "r3", "content": "Never force push the main branch (Reason: a rewrite cost a day of history and some trust)"}]
     assert storage.filter_rules_in_claude_md(reasoned, str(proj)) == []
+    # A CLAUDE.md line that says the opposite does not cover a rule, however
+    # many words they share: the model would see only the opposite.
+    (proj / "CLAUDE.md").write_bytes(b"Always use rm when cleaning temp files in the build folder.\n")
+    (hub / "CLAUDE.md").unlink()
+    opposite = [{"id": "r4", "content": "Never use rm when cleaning temp files in the build folder."}]
+    assert storage.filter_rules_in_claude_md(opposite, str(proj)) == opposite
+    # Scattered words across a file with no line on the subject still count
+    # as covered, as does a line that agrees in other words.
+    (proj / "CLAUDE.md").write_bytes(b"- Do not use rm when cleaning temp files in the build folder.\n")
+    assert storage.filter_rules_in_claude_md(opposite, str(proj)) == []
 
 
 def _register(store: Path, projects: dict) -> None:

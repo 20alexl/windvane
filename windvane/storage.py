@@ -19,25 +19,57 @@ from windvane.paths import (
 )
 
 
-def _claude_md_words(project_dir: str) -> set:
-    """Significant words of the CLAUDE.md files Claude Code loads for the
-    project: its own and its ancestors' up the tree (a hub's CLAUDE.md binds
-    a spoke, and the rules a spoke inherits repeat it). Empty set when there
-    is none."""
-    words: set = set()
+_NEGATION = re.compile(r"\b(?:never|not|no|don'?t|dont|cannot|can'?t|won'?t|mustn'?t|shouldn'?t|avoid)\b")
+
+
+def says_not(text: str) -> bool:
+    """Does an instruction forbid rather than ask? The word overlap every
+    duplicate check uses cannot see this: "never use rm here" and "always use
+    rm here" share all but one word. A heuristic, enough to keep two opposite
+    instructions apart; a double negative reads as a negative."""
+    return bool(_NEGATION.search(str(text).lower().replace("’", "'")))
+
+
+def _significant_words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9_>-]+", text.lower()) if len(w) > 2}
+
+
+def _claude_md_text(project_dir: str) -> str:
+    """The CLAUDE.md files Claude Code loads for the project, joined: its own
+    and its ancestors' up the tree (a hub's CLAUDE.md binds a spoke, and the
+    rules a spoke inherits repeat it). Empty when there is none."""
+    texts: list = []
     try:
         here = Path(project_dir)
         for _ in range(8):
             md = here / "CLAUDE.md"
             if md.exists() and md.stat().st_size < 200_000:
-                text = md.read_text(encoding="utf-8", errors="ignore").lower()
-                words |= {w for w in re.findall(r"[a-z0-9_>-]+", text) if len(w) > 2}
+                texts.append(md.read_text(encoding="utf-8", errors="ignore"))
             if here.parent == here:
                 break
             here = here.parent
     except Exception:
         pass
-    return words
+    return "\n".join(texts)
+
+
+def _opposed_by_a_line(words: set, negative: bool, lines: list) -> bool:
+    """True when the line closest to the rule says the opposite. The closest
+    line decides, and agreement wins a tie: a file that states the rule and
+    elsewhere mentions the same words the other way still covers it."""
+    best = 0.0
+    opposed = False
+    for line_words, line_negative in lines:
+        share = len(words & line_words) / len(words)
+        if share < 0.5 or share < best:
+            continue
+        agrees = line_negative == negative
+        if share > best:
+            opposed = not agrees
+        elif agrees:
+            opposed = False
+        best = share
+    return opposed
 
 
 def filter_rules_in_claude_md(rules: list, project_dir: str) -> list:
@@ -49,18 +81,24 @@ def filter_rules_in_claude_md(rules: list, project_dir: str) -> list:
     covered when >=70% of its significant words appear in CLAUDE.md; the
     "(Reason: ...)" tail is not compared, CLAUDE.md states rules without
     one. Rules are still enforced and listable; only banner display is
-    deduped.
+    deduped. A rule the closest CLAUDE.md line contradicts is not covered:
+    hiding it would leave the model only the opposite.
     """
-    md_words = _claude_md_words(project_dir)
+    text = _claude_md_text(project_dir)
+    md_words = _significant_words(text)
     if not md_words:
         return rules
+    lines = None
     kept = []
     for r in rules:
         content = (r.get("content", "") if isinstance(r, dict) else str(r)).lower()
         content = re.sub(r"\s*\(reason:.*\)\s*$", "", content, flags=re.DOTALL)
-        words = {w for w in re.findall(r"[a-z0-9_>-]+", content) if len(w) > 2}
+        words = _significant_words(content)
         if words and len(words & md_words) / len(words) >= 0.7:
-            continue
+            if lines is None:
+                lines = [(_significant_words(ln), says_not(ln)) for ln in text.splitlines() if ln.strip()]
+            if not _opposed_by_a_line(words, says_not(content), lines):
+                continue
         kept.append(r)
     return kept
 

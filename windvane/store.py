@@ -645,13 +645,16 @@ class MemoryStore(RulesMixin, ArchiveMixin):
 
     def _is_duplicate(self, content: str, entries: list, threshold: float = 0.85) -> Optional[MemoryEntry]:
         """The existing entry ``content`` duplicates (word-set Jaccard at
-        ``threshold``), or None."""
+        ``threshold``), or None. An entry saying the opposite is no duplicate."""
+        from windvane.storage import says_not
+
         new_words = set(content.lower().split())
         if not new_words:
             return None
+        negative = says_not(content)
         for entry in entries:
             existing_words = set(entry.content.lower().split())
-            if not existing_words:
+            if not existing_words or says_not(entry.content) != negative:
                 continue
             union = len(new_words | existing_words)
             if union > 0 and len(new_words & existing_words) / union >= threshold:

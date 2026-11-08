@@ -247,6 +247,71 @@ def test_tool_use_and_result_pairs_become_chunks():
     assert search._extract_tool_chunks(plain, plain, sid, "t.jsonl", 5, _ts()) == []
 
 
+def _tool_call(sid, *calls):
+    return {"type": "assistant", "sessionId": sid, "timestamp": _ts(), "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": cid, "name": "Bash", "input": {"command": cmd}} for cid, cmd in calls]}}
+
+
+def _tool_answer(sid, *answers, **extra):
+    return {"type": "user", "sessionId": sid, "timestamp": _ts(), **extra, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": cid, "content": text} for cid, text in answers]}}
+
+
+def test_parallel_tool_results_join_their_own_calls():
+    """Two calls in one message both got the first result's text, so a search
+    found one command's output under the other command."""
+    sid = _sid()
+    both = _tool_call(sid, ("ta", "pytest tests/test_a.py"), ("tb", "pytest tests/test_b.py"))
+    # Reversed, and in one message.
+    out = search._extract_tool_chunks(both, _tool_answer(sid, ("tb", "RESULT-OF-B"), ("ta", "RESULT-OF-A")), sid, "t.jsonl", 1, _ts())
+    previews = {c.preview.split("\n")[0]: c.preview for c, _ in out}
+    assert "RESULT-OF-A" in previews["[bash] pytest tests/test_a.py"] and "RESULT-OF-B" not in previews["[bash] pytest tests/test_a.py"]
+    assert "RESULT-OF-B" in previews["[bash] pytest tests/test_b.py"] and "RESULT-OF-A" not in previews["[bash] pytest tests/test_b.py"]
+    # A result naming one call says nothing about the other.
+    out = search._extract_tool_chunks(both, _tool_answer(sid, ("ta", "RESULT-OF-A")), sid, "t.jsonl", 2, _ts())
+    assert [c.preview.split("\n")[0] for c, _ in out] == ["[bash] pytest tests/test_a.py"]
+    # The record-level stdout of a single result goes with that result.
+    bash = _tool_answer(sid, ("ta", ""), toolUseResult={"stdout": "OUT-OF-A", "stderr": ""})
+    assert "OUT-OF-A" in search._extract_tool_chunks(both, bash, sid, "t.jsonl", 3, _ts())[0][0].preview
+    err = _tool_answer(sid, ("ta", ""), toolUseResult={"stdout": "", "stderr": "boom in a"})
+    assert search._extract_tool_chunks(both, err, sid, "t.jsonl", 4, _ts())[0][0].preview.startswith("[bash error]")
+    # No ids anywhere and several calls: nothing can be joined.
+    bare = json.loads(_result("WHOSE-OUTPUT", sid))
+    assert all("WHOSE-OUTPUT" not in c.preview for c, _ in search._extract_tool_chunks(both, bare, sid, "t.jsonl", 5, _ts()))
+
+
+def test_a_scan_joins_results_that_arrive_in_their_own_records(tmp_path: Path):
+    """Claude Code writes each parallel result as its own record, and a
+    delayed one after other messages: the second result followed a user
+    record, so its call was never indexed at all."""
+    sid = _sid()
+    jdir = tmp_path / "jsonl"
+    jdir.mkdir()
+    recs = [
+        _tool_call(sid, ("ta", "pytest tests/test_a.py"), ("tb", "pytest tests/test_b.py")),
+        _tool_answer(sid, ("tb", "RESULT-OF-B")),
+        json.loads(_assistant("Waiting on the other command to finish now.", sid)),
+        _tool_answer(sid, ("ta", "RESULT-OF-A")),
+    ]
+    (jdir / f"{sid}.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    chunks, _texts, _progress = search._scan_session_chunks(jdir, sid, {"jsonl_file": f"{sid}.jsonl"}, {})
+    tools = {c.preview.split("\n")[0]: c.preview for c in chunks if c.msg_type == "tool"}
+    assert "RESULT-OF-A" in tools["[bash] pytest tests/test_a.py"]
+    assert "RESULT-OF-B" in tools["[bash] pytest tests/test_b.py"]
+
+
+def test_the_transcripts_follow_a_relocated_config_folder(tmp_path: Path, monkeypatch):
+    from windvane import transcript
+    from windvane.mining import jsonl_reader as jr
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "profile"))
+    assert jr._get_claude_projects_dir() == tmp_path / "profile" / "projects"
+    f = tmp_path / "profile" / "projects" / "slug" / "s1.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_bytes(b"{}\n")
+    assert transcript.transcript_for_session("s1") == f
+
+
 def test_hits_are_classified_by_what_they_are():
     assert search.classify_chunk("TypeError: bad") == "error"
     assert search.classify_chunk("we decided to use the registry") == "decision"

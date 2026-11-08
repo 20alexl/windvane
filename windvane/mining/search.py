@@ -32,7 +32,6 @@ from windvane.mining.jsonl_reader import (
     extract_user_text,
     extract_assistant_text,
     extract_tool_uses,
-    extract_tool_results,
     extract_file_edits,
     extract_bash_commands,
     get_timestamp,
@@ -106,6 +105,45 @@ class ChunkIndex:
     related_files: list[str] = field(default_factory=list)
 
 
+_PENDING_USES_KEEP = 512
+
+
+def _note_tool_uses(msg: dict, pending: dict) -> None:
+    """Remember an assistant record's calls by id until their results come.
+    Bounded: a call never answered must not grow this with the transcript."""
+    for use in extract_tool_uses(msg):
+        if use.get("id"):
+            pending[use["id"]] = use
+    while len(pending) > _PENDING_USES_KEEP:
+        pending.pop(next(iter(pending)))
+
+
+def _result_blocks(msg: dict) -> list[dict]:
+    """The tool_result blocks of a user record. extract_tool_results returns
+    the record's toolUseResult instead when it has one, which names no call."""
+    content = msg.get("message", {}).get("content", "") if msg.get("type") == "user" else ""
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+
+
+def _result_text(block: dict) -> tuple[str, bool]:
+    """A result block's text and whether it reported an error."""
+    is_error = bool(block.get("is_error"))
+    content = block.get("content", "")
+    if isinstance(content, str):
+        return content, is_error
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("is_error"):
+                    is_error = True
+                text = part.get("content", "") or part.get("text", "")
+                if text:
+                    return text, is_error
+    return "", is_error
+
+
 def _extract_tool_chunks(
     prev_msg: dict,
     curr_msg: dict,
@@ -113,55 +151,54 @@ def _extract_tool_chunks(
     jsonl_file: str,
     msg_offset: int,
     ts: str,
+    pending: Optional[dict] = None,
 ) -> list[tuple["ChunkIndex", str]]:
     """
     Extract searchable chunks from tool_use (prev_msg) + tool_result (curr_msg) pairs.
+
+    A result names its call by id, so each call gets its own result: parallel
+    calls all took the one text the loop ended on. ``pending`` holds the calls
+    still unanswered in this transcript (_note_tool_uses); a result finds its
+    call there when other records came between them. A result with no id is
+    joined only when there is one call it can belong to.
 
     Returns list of (ChunkIndex, embed_text) tuples.
     """
     chunks = []
 
+    blocks = _result_blocks(curr_msg)
+    named = {b["tool_use_id"]: b for b in blocks if b.get("tool_use_id")}
+
     # Get tool uses from the assistant message
-    tool_uses = extract_tool_uses(prev_msg) if prev_msg else []
+    if named and pending is not None:
+        tool_uses = [pending.pop(i) for i in named if i in pending]
+    else:
+        tool_uses = extract_tool_uses(prev_msg) if prev_msg else []
+        if named:
+            tool_uses = [t for t in tool_uses if t.get("id") in named]
     if not tool_uses:
         return chunks
-
-    # Get tool results from the current user message
-    tool_results = extract_tool_results(curr_msg)
-
-    # Build result text (stderr, stdout, error content)
-    result_text = ""
-    is_error = False
-    for tr in tool_results:
-        if isinstance(tr, dict):
-            if tr.get("is_error"):
-                is_error = True
-            content = tr.get("content", "")
-            if isinstance(content, str):
-                result_text = content
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        result_text = block.get("content", "") or block.get("text", "")
-                        if block.get("is_error"):
-                            is_error = True
-                        if result_text:
-                            break
-
-    # Also check toolUseResult field (bash results have stdout/stderr)
-    tur = curr_msg.get("toolUseResult", {})
-    if isinstance(tur, dict):
-        stdout = tur.get("stdout", "")
-        stderr = tur.get("stderr", "")
-        if stderr:
-            result_text = stderr
-            is_error = True
-        elif stdout and not result_text:
-            result_text = stdout
 
     for tool in tool_uses:
         name = tool["name"]
         inp = tool.get("input", {})
+        block = named.get(tool.get("id"))
+        if block is None and not named and len(tool_uses) == 1 and len(blocks) <= 1:
+            block = blocks[0] if blocks else {}
+        block = block or {}
+        result_text, is_error = _result_text(block)
+        # toolUseResult (a shell result's stdout and stderr) sits on the record
+        # beside its one result block.
+        if len(blocks) <= 1 and (len(tool_uses) == 1 or block):
+            tur = curr_msg.get("toolUseResult", {})
+            if isinstance(tur, dict):
+                stdout = tur.get("stdout", "")
+                stderr = tur.get("stderr", "")
+                if stderr:
+                    result_text = stderr
+                    is_error = True
+                elif stdout and not result_text:
+                    result_text = stdout
 
         if name == "Bash":
             cmd = inp.get("command", "")
@@ -394,10 +431,12 @@ def _scan_session_chunks(
 
     msg_idx = 0
     prev_msg = None
+    pending_uses: dict = {}
     if jsonl_file.exists():
         for _, msg in iter_messages(jsonl_file, types={"user", "assistant"}):
             msg_idx += 1
             ts = get_timestamp(msg)
+            _note_tool_uses(msg, pending_uses)
 
             if msg_idx > main_mark:
                 # User messages (questions, directives)
@@ -441,10 +480,14 @@ def _scan_session_chunks(
                 # still finds its tool_use.
                 if prev_msg and msg.get("type") == "user":
                     for tool_chunk, tool_text in _extract_tool_chunks(
-                        prev_msg, msg, session_id, jfile, msg_idx, ts
+                        prev_msg, msg, session_id, jfile, msg_idx, ts, pending_uses
                     ):
                         chunks.append(tool_chunk)
                         texts.append(tool_text)
+            else:
+                # Below the watermark: already indexed, so its call is done.
+                for block in _result_blocks(msg):
+                    pending_uses.pop(block.get("tool_use_id"), None)
 
             prev_msg = msg
 
@@ -467,9 +510,11 @@ def _scan_session_chunks(
 
             sub_idx = 0
             sub_prev_msg = None
+            sub_pending: dict = {}
             for _, msg in iter_messages(sub_jsonl, types={"user", "assistant"}):
                 sub_idx += 1
                 ts = get_timestamp(msg)
+                _note_tool_uses(msg, sub_pending)
 
                 if sub_idx > sub_mark:
                     for text in extract_assistant_text(msg):
@@ -495,11 +540,14 @@ def _scan_session_chunks(
 
                     if sub_prev_msg and msg.get("type") == "user":
                         for tool_chunk, tool_text in _extract_tool_chunks(
-                            sub_prev_msg, msg, session_id, sub_jsonl.name, sub_idx, ts
+                            sub_prev_msg, msg, session_id, sub_jsonl.name, sub_idx, ts, sub_pending
                         ):
                             tool_chunk.msg_type = "subagent_tool"
                             chunks.append(tool_chunk)
                             texts.append(tool_text)
+                else:
+                    for block in _result_blocks(msg):
+                        sub_pending.pop(block.get("tool_use_id"), None)
 
                 sub_prev_msg = msg
 

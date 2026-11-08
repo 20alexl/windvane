@@ -38,7 +38,8 @@ KNOWN_TYPES = {
 
 def _get_claude_projects_dir() -> Path:
     """Get the Claude Code projects directory."""
-    return Path.home() / ".claude" / "projects"
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    return (Path(cfg) if cfg else Path.home() / ".claude") / "projects"
 
 
 def path_to_dir_name(project_path: str) -> str:
