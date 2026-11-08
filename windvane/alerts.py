@@ -51,8 +51,11 @@ def _quote(s: str) -> str:
         # cmd.exe has no escape inside double quotes: a backslash before a
         # quote ends the argument and the rest of the message runs as a
         # command, and %NAME% expands. The message can hold text from a
-        # session, so the two characters are left out.
-        return '"' + s.replace('"', "'").replace("%", " percent ") + '"'
+        # session, so the two characters are left out. A backslash left before
+        # the closing quote escapes it for the program reading its arguments,
+        # so those are doubled.
+        s = s.replace('"', "'").replace("%", " percent ")
+        return '"' + s + "\\" * (len(s) - len(s.rstrip("\\"))) + '"'
     return shlex.quote(s)
 
 
