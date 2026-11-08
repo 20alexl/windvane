@@ -314,6 +314,9 @@ def write_handoff(
     entry in the history would evict real checkpoints from the capped ring).
     A trivial automatic record is skipped entirely. ``None`` dirs are
     ignored. Returns {"skipped", "appended", "promoted"}."""
+    from windvane.privacy import clean
+
+    handoff.update(clean(handoff))
     handoff.setdefault("created", time.time())
     handoff.setdefault("kind", "auto")
     report: dict = {"skipped": False, "appended": [], "promoted": []}

@@ -866,6 +866,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         auto_embed: bool = True,  # False for bulk inserts, then embed_all_memories
     ) -> tuple[bool, str]:
         """Remember something about a project. Returns (added, message)."""
+        from windvane.privacy import redact
+
+        content = redact(content)
         proj = self.remember_project(project_path)
         duplicate = self._is_duplicate(content, proj.entries)
         if duplicate:

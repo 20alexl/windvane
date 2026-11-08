@@ -115,6 +115,34 @@ test('the budget follows WINDVANE_RESULT_BUDGET, and text blocks inside a tool_r
   expect(inner[1]).toEqual(image)
 })
 
+test('the text blocks of one tool result share its budget', { options: { result_budget: '1000' } }, async ($, on) => {
+  const stored = setup(on)
+  // Ten blocks each over the budget: each took the whole budget, ten times over.
+  await append($, toolResultRow(Array.from({ length: 10 }, () => ({ type: 'text', text: 'x'.repeat(5_000) }))))
+  const inner = block(stored, 0).content as Block[]
+  expect(inner).toHaveLength(10)
+  for (const b of inner) expect(b.text).toBe('x'.repeat(75) + MARKER(4_900) + 'x'.repeat(25))
+})
+
+test('a small block beside a large one keeps every character', { options: { result_budget: '1000' } }, async ($, on) => {
+  const stored = setup(on)
+  const header = 'h'.repeat(100)
+  await append($, toolResultRow([{ type: 'text', text: header }, { type: 'text', text: 'b'.repeat(3_000) }]))
+  const inner = block(stored, 0).content as Block[]
+  expect(inner[0]?.text).toBe(header)
+  expect(inner[1]?.text).toBe('b'.repeat(675) + MARKER(2_100) + 'b'.repeat(225))
+})
+
+test('blocks that fit together are not cut, and no block comes out empty', { options: { result_budget: '10' } }, async ($, on) => {
+  const stored = setup(on)
+  await append($, toolResultRow([{ type: 'text', text: 'aaaa' }, { type: 'text', text: 'bbbb' }]))
+  const fits = block(stored, 0).content as Block[]
+  expect(fits.map(b => b.text)).toEqual(['aaaa', 'bbbb'])
+  // More blocks than the budget has characters: each still says what was cut.
+  await append($, toolResultRow(Array.from({ length: 20 }, () => ({ type: 'text', text: 'c'.repeat(50) }))))
+  for (const b of block(stored, 1).content as Block[]) expect(String(b.text).length).toBeGreaterThan(0)
+})
+
 test('a short tool result passes byte-identical', async ($, on) => {
   const stored = setup(on)
   await proveLive($, stored)
@@ -131,12 +159,20 @@ test('a fake AWS key id, a private key block and an assigned literal are redacte
   // A key word with a literal value: the value alone goes, the line stays
   // readable. A header's bearer token likewise.
   await append($, toolResultRow('set api_key="fakefakefakefake1234" then\nAuthorization: Bearer fakefakefakefake5678.rest'))
-  expect(block(stored, 1).content).toBe('set api_key="[redacted]" then\nAuthorization: Bearer [redacted].rest')
+  expect(block(stored, 1).content).toBe('set api_key="[redacted]" then\nAuthorization: Bearer [redacted]')
 
   // The model's reply is not a tool result: it passes as written.
   const reply = responseRow('00000000-0000-4000-8000-0000000000ff', [{ type: 'text', text: `set api_key=fakefakefakefake1234 and ${FAKE_KEY_ID}` }])
   await append($, reply)
   expect(JSON.stringify(stored[2])).toBe(JSON.stringify(reply.message))
+})
+
+test('a JSON key, a dotted bearer value and a token by its shape are redacted whole', async ($, on) => {
+  const stored = setup(on)
+  const long = 'abcdEFGH1234abcdEFGH1234'
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLWJ5dGVz'
+  await append($, toolResultRow(`{"password": "${long}"}\nBearer ${long}.second.third\ncookie ${jwt} end`))
+  expect(block(stored, 0).content).toBe('{"password": "[redacted]"}\nBearer [redacted]\ncookie [redacted] end')
 })
 
 test('source that names a secret, an author line and a tool id are not secrets', async ($, on) => {
@@ -147,6 +183,8 @@ test('source that names a secret, an author line and a tool id are not secrets',
       'password = os.environ["DB_PASSWORD"]',
       'api_key: process.env.OPENAI_KEY,',
       'token = settings.TOKEN  # short: "abc12345"',
+      'password = settings.database_password',
+      'uses bearer authentication for the API',
       'Author: Some Dev <dev@example.com>',
       'toolu_014HmZXPp6gLad7FhHybvYFk integrity sha512-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789==',
       'the Bearer token is sent in the header',

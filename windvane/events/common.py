@@ -1088,10 +1088,16 @@ def _append_memory_entry(project_dir: str, entry: dict, skip_if=None) -> bool:
     normalized path -- a lost manifest write just gets re-added later pointing
     at the same directory.
 
+    The content is redacted first (a hook captures from what the person typed
+    and what a tool printed).
+
     ``skip_if(existing_entries)`` lets callers add extra dedup (e.g. the
     decision capturer's word-overlap check). Exact-content duplicates are
     always skipped. Returns True if the entry was written.
     """
+    from windvane.privacy import redact
+
+    entry["content"] = redact(entry["content"])
     norm_dir = _normalize_path(project_dir)
     storage = get_windvane_storage_dir()
     manifest = _get_manifest()

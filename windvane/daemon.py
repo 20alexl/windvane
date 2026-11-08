@@ -279,7 +279,8 @@ def _serve_hook_event(request: dict) -> dict:
                 except SystemExit:
                     pass
         except Exception as e:
-            return {"error": str(e)[:200]}
+            # ran: the handler started, so the client must not run it again.
+            return {"error": str(e)[:200], "ran": True}
         finally:
             _restore_env(old_env)
         # dispatch returns what the hook printed; anything a handler wrote to

@@ -287,10 +287,11 @@ class RulesMixin:
         """Add a rule. A similar rule already there is not duplicated; if it
         has no detector and one is given, it adopts the detector.
         Returns (added, message)."""
+        from windvane.privacy import redact
         from windvane.store import MemoryEntry
 
         proj = self.remember_project(project_path)
-        full_content = f"{content} (Reason: {reason})" if reason else content
+        full_content = redact(f"{content} (Reason: {reason})" if reason else content)
         existing_rules = [e for e in proj.entries if e.category == "rule"]
         duplicate = self._is_duplicate(full_content, existing_rules)
         if duplicate:

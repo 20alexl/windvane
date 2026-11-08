@@ -39,9 +39,14 @@ const PEM_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z
 // Vendor keys by prefix: AWS access key id, GitHub tokens, OpenAI-style
 // `sk-`, Slack `xox?-`.
 const PREFIXED_KEY = /\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g
-// `api_key = <literal>`, `password: "<literal>"`, `Bearer <literal>`: group 1
-// is kept, group 2 (16+ token characters, no dot) is the value.
-const ASSIGNED_VALUE = /\b((?:api[_ -]?key|secret|token|password|passwd)\b\s*[:=]\s*["']?|bearer\s+)([A-Za-z0-9_\-/+=]{16,})/gi
+// A JSON web token by its shape, with or without a key word before it.
+const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g
+// `api_key = <literal>`, `"password": "<literal>"`, `Bearer <literal>`: group 1
+// is kept, the rest is the value. Its first segment is 16+ token characters, so
+// a dotted name in source (`password = settings.database_password`) is left
+// alone; a dotted tail goes with a value that long. windvane/privacy.py holds
+// the same patterns for what the engine writes.
+const ASSIGNED_VALUE = /\b((?:api[_ -]?key|secret|token|password|passwd)\b["']?\s*[:=]\s*["']?|bearer\s+)[A-Za-z0-9_\-/+=]{16,}(?:\.[A-Za-z0-9_\-/+=]+)*/gi
 
 export const REDACTED = '[redacted]'
 
@@ -49,6 +54,7 @@ export function redact(text: string): string {
   return text
     .replace(PEM_BLOCK, REDACTED)
     .replace(PREFIXED_KEY, REDACTED)
+    .replace(JWT, REDACTED)
     .replace(ASSIGNED_VALUE, (_m: string, head: string) => head + REDACTED)
 }
 
@@ -79,7 +85,50 @@ function pass(text: string, budget: number): string {
   return trim(redact(text), budget)
 }
 
-// The row's blocks through the door; undefined when nothing changed.
+// What each text keeps of a shared budget. A text under its fair share keeps
+// every character and the rest split what that leaves, so a short header beside
+// a huge body stays whole. Shortest first: each one's fair share is what is left
+// over the texts not yet served.
+function shares(lengths: readonly number[], budget: number): number[] {
+  const order = lengths.map((_, i) => i).sort((a, b) => (lengths[a] ?? 0) - (lengths[b] ?? 0))
+  const out = lengths.map(() => 0)
+  let left = budget
+  order.forEach((i, served) => {
+    const kept = Math.min(lengths[i] ?? 0, Math.floor(left / (order.length - served)))
+    out[i] = kept
+    left -= kept
+  })
+  return out
+}
+
+// The blocks inside one tool result: their texts share its budget. Each took
+// the whole budget before, so a result of ten text blocks kept ten budgets. A
+// marker is not counted, as for a single text; a text past its share always
+// keeps its marker, so none comes out empty.
+function rewriteShared(blocks: readonly Block[], budget: number): Block[] | undefined {
+  const texts = blocks.map(b => (b.type === 'text' && typeof b.text === 'string' ? redact(b.text) : undefined))
+  const kept = shares(texts.filter(t => t !== undefined).map(t => t.length), budget)
+  let next = 0
+  let changed = false
+  const out = blocks.map((b, i) => {
+    const text = texts[i]
+    if (text === undefined) {
+      const nested = b.type === 'tool_result' ? rewrite([b], budget)?.[0] : undefined
+      if (nested === undefined) return b
+      changed = true
+      return nested
+    }
+    const trimmed = trim(text, kept[next] ?? 0)
+    next += 1
+    if (trimmed === b.text) return b
+    changed = true
+    return { ...b, text: trimmed }
+  })
+  return changed ? out : undefined
+}
+
+// The row's blocks through the door; undefined when nothing changed. Each tool
+// result has its own budget, parallel results included.
 export function rewrite(content: readonly Block[], budget: number): Block[] | undefined {
   let changed = false
   const out = content.map(block => {
@@ -98,7 +147,7 @@ export function rewrite(content: readonly Block[], budget: number): Block[] | un
         return { ...block, content: text }
       }
       if (Array.isArray(inner)) {
-        const rewritten = rewrite(inner as Block[], budget)
+        const rewritten = rewriteShared(inner as Block[], budget)
         if (rewritten === undefined) return block
         changed = true
         return { ...block, content: rewritten }

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from windvane.privacy import clean, redact
 from windvane.mining.jsonl_reader import (
     resolve_jsonl_dir,
     iter_messages,
@@ -181,7 +182,7 @@ def _extract_tool_chunks(
 
     for tool in tool_uses:
         name = tool["name"]
-        inp = tool.get("input", {})
+        inp = clean(tool.get("input", {}))
         block = named.get(tool.get("id"))
         if block is None and not named and len(tool_uses) == 1 and len(blocks) <= 1:
             block = blocks[0] if blocks else {}
@@ -199,6 +200,7 @@ def _extract_tool_chunks(
                     is_error = True
                 elif stdout and not result_text:
                     result_text = stdout
+        result_text = redact(result_text)
 
         if name == "Bash":
             cmd = inp.get("command", "")
@@ -440,7 +442,7 @@ def _scan_session_chunks(
 
             if msg_idx > main_mark:
                 # User messages (questions, directives)
-                user_text = extract_user_text(msg)
+                user_text = redact(extract_user_text(msg) or "")
                 if user_text and 15 < len(user_text) < 1000:
                     chunks.append(
                         ChunkIndex(
@@ -456,6 +458,7 @@ def _scan_session_chunks(
 
                 # Assistant text blocks (substantive content only)
                 for text in extract_assistant_text(msg):
+                    text = redact(text)
                     if len(text) < 50:
                         continue
                     if text.startswith("```") or text.startswith("{"):
@@ -518,6 +521,7 @@ def _scan_session_chunks(
 
                 if sub_idx > sub_mark:
                     for text in extract_assistant_text(msg):
+                        text = redact(text)
                         if (
                             len(text) < 50
                             or text.startswith("```")

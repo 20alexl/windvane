@@ -224,8 +224,20 @@ export function readReply(raw: unknown): Reply | undefined {
   return { text: r.text, isError: r.isError === true, ms: typeof r.ms === 'number' ? r.ms : undefined }
 }
 
+// A connection that never opened: nothing was sent, so no handler ran. A failed
+// fetch carries only a message: "... failed: ECONNREFUSED: Unable to connect ..."
+// on a dead port (seen on Claude Code 2.1.319), and ECONNRESET when the socket
+// closes, which can come after the daemon took the request. A host with no fetch
+// at all (the test kit, for a mock that throws) sent nothing either.
+export function neverConnected(err: unknown): boolean {
+  return /ECONNREFUSED|unable to connect|no implementation for http\.fetch/i.test(String(err))
+}
+
 // The daemon's answer; 'down' when no handler ran (the caller then runs the
-// subprocess), 'timeout' when the request may have run.
+// subprocess), 'timeout' when the request may have run. The subprocess repeats
+// a mutation, so 'down' takes proof: no connection, or a status the daemon
+// sends before it reads the request as a call (the 4xx rows, 501). A 5xx or a
+// reply that is no answer may follow a handler that finished.
 async function askDaemon(host: Host, store: string, request: Request): Promise<Asked> {
   let portText: string
   let token: string
@@ -245,10 +257,10 @@ async function askDaemon(host: Host, store: string, request: Request): Promise<A
   try {
     const res = await Promise.race([host.post(port, token, 'tool', JSON.stringify(request)), timeout])
     if (res === 'timeout') return 'timeout'
-    if (res.status !== 200) return 'down'
-    return readReply(JSON.parse(res.text)) ?? 'down'
-  } catch {
-    return 'down'
+    if (res.status !== 200) return (res.status >= 400 && res.status < 500) || res.status === 501 ? 'down' : 'timeout'
+    return readReply(JSON.parse(res.text)) ?? 'timeout'
+  } catch (err) {
+    return neverConnected(err) ? 'down' : 'timeout'
   } finally {
     timer?.cancel()
   }
@@ -292,7 +304,7 @@ export async function serve(host: Host, name: ToolShort, e: unknown, settings: S
   const asked = await askDaemon(host, store, request)
   if (asked === 'timeout') {
     reply = {
-      text: `${name}: the daemon did not answer within ${TOOL_TIMEOUT_MS / 1000} s and the call may still have run, so it was not repeated. Check its effect before calling again.`,
+      text: `${name}: the daemon did not confirm the call within ${TOOL_TIMEOUT_MS / 1000} s and it may still have run, so it was not repeated. Check its effect before calling again.`,
       isError: true,
     }
   } else if (asked === 'down') {

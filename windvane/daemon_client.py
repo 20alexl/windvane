@@ -94,7 +94,12 @@ def _dbg(msg: str) -> None:
 
 
 def _try_daemon(hook_type: str, payload: str) -> bool:
-    """One TCP round trip. True = response printed; False = use the fallback."""
+    """One TCP round trip. True = the daemon has it (its output printed, or
+    the outcome unknown); False = no handler ran, use the fallback. Once the
+    request is sent, a lost reply says nothing about the handler, which may
+    have finished, so it is not run a second time here: the event would be
+    recorded twice, on a machine already too busy to answer in time."""
+    sent = False
     port_file = os.path.join(_storage_dir(), "daemon_port")
     token_file = os.path.join(_storage_dir(), "daemon_token")
     try:
@@ -107,7 +112,10 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(0.25)
         sock.connect(("127.0.0.1", port))
-        sock.settimeout(1.5)  # handlers are ~5-30ms warm; headroom, not budget
+        # Handlers are ~5-30ms warm, and a busy daemon queues hooks behind one
+        # lock. Inside the shortest hook budget (3 s) with the connect above;
+        # nothing runs after this wait, so it can use what the fallback had.
+        sock.settimeout(2.5)
         request = {
             "token": token,
             "hook_event": hook_type,
@@ -116,6 +124,7 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
             # applies for the call (daemon.SESSION_ENV).
             "env": {k: os.environ.get(k, "") for k in SESSION_ENV},
         }
+        sent = True
         sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
         data = b""
         while b"\n" not in data:
@@ -127,7 +136,7 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
         response = json.loads(data.decode("utf-8").strip())
         if "output" not in response:
             _dbg(f"daemon error response: {str(response)[:120]}")
-            return False  # old daemon / error -- run the real handler instead
+            return bool(response.get("ran"))  # refused unrun: the real handler runs here
         out = response["output"]
         if out:
             sys.stdout.write(out)
@@ -135,8 +144,8 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
         _dbg("served by daemon")
         return True
     except Exception as e:
-        _dbg(f"daemon unreachable: {type(e).__name__}: {e}")
-        return False
+        _dbg(f"daemon unreachable: {type(e).__name__}: {e}" + (" (request sent, not repeated)" if sent else ""))
+        return sent
 
 
 def _run_fallback(hook_type: str, payload: str) -> None:

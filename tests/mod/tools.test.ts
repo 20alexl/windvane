@@ -9,6 +9,7 @@
 // a core event its result object.
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import { neverConnected } from '../../hooks/tools'
 
 const STORE = 'C:/tmp/windvane-tools-store'
 const SID = 'aaaaaaaa-0000-4000-8000-00000000000a'
@@ -173,11 +174,39 @@ test('no port file: nothing is fetched, the subprocess answers', async ($, on) =
   expect(JSON.parse(t.runs[0]?.init?.stdin ?? '{}').tool).toBe('deps')
 })
 
-test('a daemon that answers 500 or a body that is no answer falls back', async ($, on) => {
-  const t = engine(on, { daemon: { status: 500, body: 'boom' } })
-  expect((await $.tool.call({ tool: 'mcp__windvane__log', operation: 'decision', decision: 'sqlite' } as never)).result).toBe('from the subprocess')
+const LOG = { tool: 'mcp__windvane__log', operation: 'decision', decision: 'sqlite' } as never
+
+test('a daemon that refused the request before any handler falls back', async ($, on) => {
+  const t = engine(on, { daemon: { status: 403, body: { error: 'missing or wrong X-Windvane-Token header' } } })
+  expect((await $.tool.call(LOG)).result).toBe('from the subprocess')
   expect(t.runs).toHaveLength(1)
 })
+
+// The texts a real fetch failed with, recorded from Claude Code 2.1.319 against
+// a closed port and a server that closes without answering. The kit cannot
+// throw these through a mock: a hook that throws is passed over.
+test('only a connection that never opened counts as no handler having run', () => {
+  const refused = 'HooksError: windvane: $.http.fetch(http://127.0.0.1:9/tool) failed: ECONNREFUSED: ECONNREFUSED: Unable to connect. Is the computer able to access the url?'
+  const reset = 'HooksError: windvane: $.http.fetch(http://127.0.0.1:9/tool) failed: ECONNRESET: ECONNRESET: The socket connection was closed unexpectedly.'
+  expect(neverConnected(new Error(refused))).toBe(true)
+  expect(neverConnected(new Error(reset))).toBe(false)
+  expect(neverConnected(new SyntaxError('JSON Parse error: Unexpected identifier'))).toBe(false)
+})
+
+// A mutation that landed and then lost its reply ran a second time through
+// the subprocess: a memory stored twice, a decision logged twice.
+test('a daemon that answers 500 may have run the call: it is not repeated', async ($, on) => {
+  const t = engine(on, { daemon: { status: 500, body: 'boom' } })
+  expect((await $.tool.call(LOG)).deny).toContain('may still have run')
+  expect(t.runs).toHaveLength(0)
+})
+
+test('a reply that is no answer may follow a call that ran: it is not repeated', async ($, on) => {
+  const t = engine(on, { daemon: { status: 200, body: 'not json' } })
+  expect((await $.tool.call(LOG)).deny).toContain('may still have run')
+  expect(t.runs).toHaveLength(0)
+})
+
 
 test('the python option names the interpreter; WINDVANE_PYTHON wins over it', { options: { python: 'D:/py/python.exe' } }, async ($, on) => {
   const t = engine(on, { daemon: 'none' })

@@ -97,6 +97,55 @@ def _fake_daemon(tmp_path: Path, answer: dict):
     return srv, t, got
 
 
+def test_a_hook_the_daemon_may_have_run_is_not_run_again(client, tmp_path: Path, monkeypatch):
+    """A reply lost after the request was sent says nothing about the handler,
+    which may have finished. Running it again here recorded the same event
+    twice, on a machine already too busy to answer in time."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        conn.close()  # the request arrived; no answer comes
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    (tmp_path / "store" / "daemon_port").write_text(str(srv.getsockname()[1]))
+    (tmp_path / "store" / "daemon_token").write_text(TOKEN)
+    try:
+        assert client._try_daemon("post_edit_json", "{}") is True
+    finally:
+        t.join(5)
+        srv.close()
+
+
+def test_a_handler_that_raised_is_not_run_again_but_a_refused_request_is(client, tmp_path: Path):
+    srv, t, _ = _fake_daemon(tmp_path, {"error": "boom", "ran": True})
+    try:
+        assert client._try_daemon("post_edit_json", "{}") is True
+    finally:
+        t.join(5)
+        srv.close()
+    srv, t, _ = _fake_daemon(tmp_path, {"error": "unsupported hook_event"})
+    try:
+        assert client._try_daemon("post_edit_json", "{}") is False
+    finally:
+        t.join(5)
+        srv.close()
+
+
+def test_a_daemon_nobody_answers_at_falls_back(client, tmp_path: Path):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.close()  # nothing listens on this port any more
+    (tmp_path / "store" / "daemon_port").write_text(str(port))
+    (tmp_path / "store" / "daemon_token").write_text(TOKEN)
+    assert client._try_daemon("post_edit_json", "{}") is False
+
+
 def test_one_round_trip_prints_the_daemons_output(client, tmp_path: Path, monkeypatch):
     srv, t, got = _fake_daemon(tmp_path, {"output": "from the daemon\n"})
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/proj")
