@@ -119,15 +119,14 @@ def _headline(task: str, step: str, limit: int = 120) -> str:
     """The saved task and step, one line each clipped, for the save's reply."""
 
     def line(text: str) -> str:
-        text = " ".join(str(text or "").split())
-        text = text if len(text) <= limit else text[:limit].rstrip() + "..."
-        return text.rstrip(".")
+        text = " ".join(str(text or "").split()).rstrip(".")
+        return f"{text}." if len(text) <= limit else text[:limit].rstrip() + "..."
 
     out = ""
-    if line(task):
-        out += f" Task: {line(task)}."
-    if line(step):
-        out += f" Current step: {line(step)}."
+    if line(task).rstrip("."):
+        out += f" Task: {line(task)}"
+    if line(step).rstrip("."):
+        out += f" Current step: {line(step)}"
     return out
 
 
@@ -564,10 +563,11 @@ class ContextGuard:
         self._actual_verifications: list = []
 
     def _task_id(self) -> str:
-        """``task_<epoch seconds>_<random>``. Sessions share one store, and two
-        saving in one second could each look for the other's file before either
-        had written it, then share an id and a task file."""
-        return f"task_{int(time.time())}_{secrets.token_hex(3)}"
+        """``task_<epoch seconds><six random digits>``. Sessions share one store,
+        and two saving in one second could each look for the other's file before
+        either had written it, then share an id and a task file. Digits only:
+        rewind detection and older versions read an id as ``task_`` and digits."""
+        return f"task_{int(time.time())}{secrets.randbelow(1_000_000):06d}"
 
     def save_checkpoint(
         self,

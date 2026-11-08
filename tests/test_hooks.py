@@ -110,7 +110,7 @@ def test_hooks_json_registers_every_event_through_the_client():
     # 5 on the turn-level ones, 10 where a cold client may start the daemon.
     assert seen == {
         ("UserPromptSubmit", ""): ("prompt_json", 10),
-        ("PreToolUse", ""): ("pre_tool_json", 3),  # one process per call; it routes by the tool
+        ("PreToolUse", ""): ("pre_call_json", 3),  # one process per call; it routes by the tool
         ("Notification", ""): ("notification_json", 3),
         ("PostToolUse", "Bash|PowerShell"): ("bash_json", 3),
         ("PostToolUse", "Edit|Write"): ("post_edit_json", 3),
@@ -692,9 +692,13 @@ def test_the_halt_end_to_end(tmp_path: Path, monkeypatch):
     assert _run("pre_tool_json", dict(pre, tool_name="mcp__windvane__checkpoint", tool_input={"operation": "save"})) == {}
     assert _run("pre_tool_json", dict(pre, agent_id="sub-1")) == {}  # a subagent finishes and reports
     assert _state(store, sid)["stall"]["halted"]["denied"] == 2
-    bash = {"session_id": sid, "cwd": str(proj), "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_use_id": "t9", "permission_mode": "bypassPermissions"}
-    assert "windvane-halt" in _ctx(_run("pre_bash_json", bash))
-    assert "windvane-halt" not in _ctx(_run("pre_bash_json", dict(bash, tool_use_id="t10")))
+    # The route a halted call takes: denied, then the note at the next injection
+    # that is not a deny, once.
+    bash = {"session_id": sid, "cwd": str(proj), "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_use_id": "t9",
+            "tool_response": {"stdout": "x"}, "permission_mode": "bypassPermissions"}
+    assert _run("pre_call_json", bash)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "windvane-halt" in _ctx(_run("bash_json", bash))
+    assert "windvane-halt" not in _ctx(_run("bash_json", dict(bash, tool_use_id="t10")))
 
 
 def test_the_one_pre_tool_hook_runs_the_check_for_each_tool(tmp_path: Path, monkeypatch):
@@ -708,8 +712,17 @@ def test_the_one_pre_tool_hook_runs_the_check_for_each_tool(tmp_path: Path, monk
     for tool, expected in (("Edit", ["_hook_pre_edit"]), ("Write", ["_hook_pre_edit"]), ("Read", ["_hook_pre_read"]),
                            ("Bash", ["_hook_pre_bash"]), ("PowerShell", ["_hook_pre_bash"]), ("Grep", [])):
         ran.clear()
-        _run("pre_tool_json", dict(pre, tool_name=tool))
+        _run("pre_call_json", dict(pre, tool_name=tool))
         assert ran == expected, tool
+        # A session on an older hooks.json runs the checks beside this one.
+        ran.clear()
+        _run("pre_tool_json", dict(pre, tool_name=tool))
+        assert ran == [], tool
+
+
+def test_a_hook_input_that_is_not_an_object_answers_nothing():
+    assert events.dispatch("pre_call_json", "[]") in ("", None)
+    assert events.dispatch("pre_tool_json", "[]") in ("", None)
 
 
 def test_a_halted_session_denies_before_the_tool_check_runs(tmp_path: Path, monkeypatch):
@@ -722,10 +735,10 @@ def test_a_halted_session_denies_before_the_tool_check_runs(tmp_path: Path, monk
     monkeypatch.setattr(stall, "note_denied", lambda _s: None)
     monkeypatch.setattr(stall, "deny_reason", lambda _s, _t: "halted")
     pre = {"session_id": "s-route-halt", "cwd": str(tmp_path), "tool_name": "Edit", "tool_input": {}}
-    assert _run("pre_tool_json", pre)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert _run("pre_call_json", pre)["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert ran == []
     # A dispatched subagent finishes under a halt, its checks as before.
-    _run("pre_tool_json", dict(pre, agent_id="sub-1"))
+    _run("pre_call_json", dict(pre, agent_id="sub-1"))
     assert ran == ["edit"]
 
 
@@ -739,7 +752,7 @@ def test_a_failed_halt_read_still_runs_the_tool_check(tmp_path: Path, monkeypatc
     ran = []
     monkeypatch.setattr(pre_tool, "_hook_pre_bash", lambda _p: ran.append("bash"))
     monkeypatch.setattr(stall, "halted", boom)
-    _run("pre_tool_json", {"session_id": "s-route-fail", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}})
+    _run("pre_call_json", {"session_id": "s-route-fail", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}})
     assert ran == ["bash"]
 
 
@@ -1209,14 +1222,14 @@ def test_the_real_client_runs_the_shell_check_through_the_one_hook(tmp_path: Pat
     proj, _rid = _rule_project(tmp_path, monkeypatch)
     hooks = json.loads((Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8"))
     rows = hooks["hooks"]["PreToolUse"]
-    assert len(rows) == 1 and rows[0]["matcher"] == "" and rows[0]["hooks"][0]["command"].endswith("pre_tool_json")
+    assert len(rows) == 1 and rows[0]["matcher"] == "" and rows[0]["hooks"][0]["command"].endswith("pre_call_json")
     client = Path(__file__).resolve().parents[1] / "windvane" / "daemon_client.py"
     env = {**os.environ, "WINDVANE_DIR": str(tmp_path / "store"), "WINDVANE_NO_DAEMON": "1", "CLAUDE_PROJECT_DIR": str(proj)}
 
     def hook(tool: str, tool_input: dict, use: str) -> str:
         payload = {"session_id": "s-real-client", "cwd": str(proj), "hook_event_name": "PreToolUse", "tool_name": tool,
                    "tool_input": tool_input, "tool_use_id": use, "permission_mode": "bypassPermissions"}
-        r = subprocess.run([sys.executable, "-S", str(client), "pre_tool_json"], input=json.dumps(payload),
+        r = subprocess.run([sys.executable, "-S", str(client), "pre_call_json"], input=json.dumps(payload),
                            capture_output=True, text=True, env=env, timeout=120)
         assert r.returncode == 0, r.stderr
         return r.stdout

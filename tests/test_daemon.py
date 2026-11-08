@@ -119,8 +119,8 @@ def _line(request: dict, token: str = TOKEN) -> bytes:
 
 
 def test_a_line_past_the_limit_is_refused_before_it_is_read_whole(ss, listener, monkeypatch):
-    """The token is inside the line, so anything on the machine could fill the
-    daemon's memory by never sending a line end."""
+    """The token is inside the line, so anything on the machine could hold the
+    whole of what it sent in the daemon's memory by never sending a line end."""
     monkeypatch.setattr(ss, "HTTP_MAX_BODY", 200_000)
     with socket.create_connection(("127.0.0.1", listener), timeout=CLIENT_TIMEOUT) as s:
         s.sendall(b'{"hook_event": "pre_tool_json", "stdin": "' + b"x" * 300_000)
@@ -138,6 +138,30 @@ def test_a_line_past_the_limit_is_refused_before_it_is_read_whole(ss, listener, 
 def test_a_line_under_the_limit_is_served(ss, listener):
     reply = json.loads(_raw(listener, _line({"hook_event": "doctor_ping", "stdin": "x" * 300_000})))
     assert "unsupported hook_event" in reply["error"]
+
+
+def test_a_line_that_drips_past_the_deadline_is_refused(ss, listener, monkeypatch):
+    monkeypatch.setattr(ss, "LINE_DEADLINE_S", 0.2)
+    with socket.create_connection(("127.0.0.1", listener), timeout=CLIENT_TIMEOUT) as s:
+        s.sendall(b'{"hook_event": "pre_call_json", "stdin": "')
+        time.sleep(0.4)
+        s.sendall(b"xxxx")
+        assert b"too large" in s.recv(65536)
+
+
+def test_a_line_near_the_limit_reaches_the_handler_inside_the_clients_wait(ss, listener):
+    """Read 4 KB at a time and searched whole, a 14 MB line outran the client's
+    wait, and a hook that is not a guard then ran nowhere."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("wv_client_near_limit", Path(ss.__file__).parent / "daemon_client.py")
+    client = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(client)
+    (Path(os.environ["WINDVANE_DIR"]) / "daemon_port").write_text(str(listener))
+    (Path(os.environ["WINDVANE_DIR"]) / "daemon_token").write_text(TOKEN)
+    # Refused unrun, so False, and only once the whole line was read. A reply lost
+    # to the wait would read True: sent, and not to be run again.
+    assert client._try_daemon("doctor_ping", "x" * (15 * 1024 * 1024)) is False
 
 
 def _post(port: int, body: dict, headers: "dict | None" = None, path: str = "/hook", method: str = "POST"):

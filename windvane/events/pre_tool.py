@@ -8,8 +8,9 @@
 - Bash/PowerShell (``pre_bash_json``): rules with a detector are matched;
   a match is recorded and the rule injected before the command runs (or the
   call denied when the detector says so in autonomy mode).
-- Every tool (``pre_tool_json``, the one hook in hooks.json): the autonomy
+- Every tool (``pre_call_json``, the one hook in hooks.json): the autonomy
   halt (a one-read no-op unless halted), then the tool's check above.
+  ``pre_tool_json`` is the halt alone, for a session on an older hooks.json.
 
 Each injection point also delivers the context-pressure nudges.
 """
@@ -444,15 +445,30 @@ def _denied_by_the_halt(data: dict) -> bool:
 
 
 def _hook_pre_tool(project_dir: str) -> None:
-    """PreToolUse on every tool: the halt, then the tool's own check. One hook
-    routing by the tool costs one client process per call, where a hook per
-    matcher cost two on the tools called most."""
+    """The halt alone, for a session still on the hooks.json that ran a hook per
+    check beside it (see ``_hook_pre_call``)."""
     try:
         stdin_data = _read_stdin_with_timeout(0.5)
-        if not stdin_data:
-            return
-        data = json.loads(stdin_data)
+        if stdin_data:
+            _denied_by_the_halt(json.loads(stdin_data))
     except Exception:
+        pass
+
+
+def _hook_pre_call(project_dir: str) -> None:
+    """PreToolUse on every tool: the halt, then the tool's own check. One hook
+    routing by the tool costs one client process per call, where a hook per
+    matcher cost two on the tools called most.
+
+    A name of its own: the daemon outlives an update, and an older one answered
+    the old name with the halt alone, so every check would have gone missing,
+    denies included. It refuses this name unrun and the client runs it here."""
+    try:
+        stdin_data = _read_stdin_with_timeout(0.5)
+        data = json.loads(stdin_data) if stdin_data else None
+    except Exception:
+        return
+    if not isinstance(data, dict):
         return
     try:
         if _denied_by_the_halt(data):

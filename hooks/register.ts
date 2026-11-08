@@ -145,14 +145,12 @@ type Marks = { headsupAt: number; checkpointAt: number; triggerAt: number }
 // The computed defaults: the engine's own, with no knob set.
 function thresholds(window: number, point: number): Marks {
   const margin = window <= SMALL_WINDOW ? CHECKPOINT_MARGIN_SMALL : CHECKPOINT_MARGIN
-  let triggerAt = Math.floor(point - OUTPUT_RESERVE)
-  if (triggerAt <= 0) triggerAt = Math.floor(point / 2)
-  let checkpointAt = Math.floor(triggerAt - margin)
-  if (checkpointAt <= 0) checkpointAt = Math.floor(triggerAt / 2)
+  // A point small against the window leaves the margins no room, and a mark at
+  // or near zero would fire on every call: each stops at half the mark over it.
+  const triggerAt = Math.max(Math.floor(point - OUTPUT_RESERVE), Math.floor(point / 2))
+  const checkpointAt = Math.max(Math.floor(triggerAt - margin), Math.floor(triggerAt / 2))
   let headsupAt = Math.floor(point - HEADSUP_FRACTION * window)
   if (headsupAt >= checkpointAt) headsupAt = Math.floor(checkpointAt - (HEADSUP_FRACTION * window) / 2)
-  // A point small against the window leaves the margins no room: a mark at or
-  // below zero would fire on every call.
   headsupAt = Math.max(headsupAt, Math.floor(checkpointAt / 2))
   return { headsupAt, checkpointAt, triggerAt }
 }

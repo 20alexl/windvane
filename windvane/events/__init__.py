@@ -16,7 +16,8 @@ prompt_json            UserPromptSubmit                    prompt
 pre_edit_json          PreToolUse Edit|Write               pre_tool
 pre_read_json          PreToolUse Read                     pre_tool
 pre_bash_json          PreToolUse Bash|PowerShell          pre_tool
-pre_tool_json          PreToolUse (the halt, then routes)  pre_tool
+pre_call_json          PreToolUse (the halt, then routes)  pre_tool
+pre_tool_json          PreToolUse (the halt alone)         pre_tool
 bash_json              PostToolUse Bash                    post_tool
 post_edit_json         PostToolUse Edit|Write              post_tool
 post_milestone_json    PostToolUse ExitPlanMode|TaskUpdate post_tool
@@ -61,6 +62,7 @@ EVENTS = {
     "pre_read_json": ("pre_tool", "_hook_pre_read"),
     "pre_bash_json": ("pre_tool", "_hook_pre_bash"),
     "pre_tool_json": ("pre_tool", "_hook_pre_tool"),
+    "pre_call_json": ("pre_tool", "_hook_pre_call"),
     "bash_json": ("post_tool", "_hook_bash"),
     "post_edit_json": ("post_tool", "_hook_post_edit"),
     "post_milestone_json": ("post_tool", "_hook_post_milestone"),

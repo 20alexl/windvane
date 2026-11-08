@@ -169,6 +169,20 @@ def test_two_sessions_saving_in_one_second_never_share_an_id(tmp_path, monkeypat
     assert len(ids) == 3 and all(i.startswith("task_1800000000") for i in ids)
 
 
+def test_a_saved_id_is_one_rewind_detection_can_read(tmp_path, monkeypatch):
+    """A rewound branch's checkpoint is found by its id in the transcript's
+    tool results: an id that pattern cuts short is never found, and the
+    abandoned checkpoint comes back as the live one."""
+    import re
+
+    from windvane import transcript
+
+    guard = _guard_with_ring(tmp_path, monkeypatch, tmp_path / "ring")
+    saved = _save(guard)
+    tid = saved.data["task_id"]
+    assert re.search(transcript._TASK_ID, f"task_id: {tid}\n".encode()).group(1).decode() == tid
+
+
 def test_a_collapsed_record_restores_like_a_dual_vocabulary_one(tmp_path, monkeypatch):
     from windvane import checkpoints as ck
 

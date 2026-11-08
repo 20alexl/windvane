@@ -19,10 +19,7 @@ The store, `~/.windvane` or the folder `WINDVANE_DIR` names, is the only thing t
 | Event | Handler | Timeout |
 |---|---|---|
 | UserPromptSubmit | prompt | 10 s |
-| PreToolUse on Edit or Write | pre-edit check | 3 s |
-| PreToolUse on Read | pre-read orientation | 3 s |
-| PreToolUse on Bash or PowerShell | rule detectors | 3 s |
-| PreToolUse on every tool | the halt | 3 s |
+| PreToolUse on every tool | the halt, then by tool: pre-edit check, pre-read orientation, rule detectors | 3 s |
 | PostToolUse on Bash or PowerShell | test tracking, error logging | 3 s |
 | PostToolUse on Edit or Write | edit counting | 3 s |
 | PostToolUse on ExitPlanMode or TaskUpdate | milestone | 3 s |
@@ -36,7 +33,7 @@ The store, `~/.windvane` or the folder `WINDVANE_DIR` names, is the only thing t
 | Stop | handoff, draft, turn judgment | 5 s |
 | SessionEnd | run report, miner | 5 s |
 
-The timeouts are in seconds, as `hooks.json` states them. The client reads the hook's JSON on stdin. For the tool-path events (prompt, the three PreToolUse handlers, the halt, the post-edit and post-bash handlers, the failure handler and the batch handler) it makes one round trip to the daemon and prints the answer. For the lifecycle events, and whenever the daemon is down or answers with an error, it runs the real handler in its own process and then asks for a daemon to be started for the next call. The client is run with `python -S` and imports only the standard library, so a daemon round trip is far cheaper than a cold handler.
+The timeouts are in seconds, as `hooks.json` states them. The client reads the hook's JSON on stdin. For the tool-path events (prompt, the pre-tool handler, the post-edit and post-bash handlers, the failure handler and the batch handler) it makes one round trip to the daemon and prints the answer. For the lifecycle events, and whenever the daemon is down or answers with an error, it runs the real handler in its own process and then asks for a daemon to be started for the next call. The client is run with `python -S` and imports only the standard library, so a daemon round trip is far cheaper than a cold handler.
 
 The handlers never raise into Claude Code. A handler that fails produces no output.
 
@@ -94,7 +91,7 @@ Every tool result passes a door before it is stored and read. Text over the budg
 
 In an interactive session the mod can answer the classic events itself, with no hook process. For each event it reads which command hooks would fire, from the four settings sources and the enabled plugins' hooks, which it calls the census and refreshes every 60 seconds. If every hook that would fire is windvane's, and the daemon serves each of their types, the mod posts the event to the daemon and turns each handler's output into the event's result.
 
-In any other case it passes the event on and the command hooks run as before. A module that answered alone would stop every command hook beneath it, other plugins' included, so the bridge never does that when another hook is in play. It also passes the event on when hooks are disabled, when the daemon has no port file, or when a request fails before any handler ran. A request that may have run is not repeated through the command hooks: one that timed out, a connection closed after it opened, a handler that raised, a reply that is not an answer. After a timeout the next 30 seconds go to the command hooks while the daemon recovers. The session-end event is always left to its command hook, because a request may never be sent while Claude Code exits.
+In any other case it passes the event on and the command hooks run as before. A module that answered alone would stop every command hook beneath it, other plugins' included, so the bridge never does that when another hook is in play. It also passes the event on when hooks are disabled, when the daemon has no port file, or when a request fails before any handler ran. A request that may have run is not repeated through the command hooks: one that timed out, a connection closed after it opened, a handler that raised. After a timeout the next 30 seconds go to the command hooks while the daemon recovers. The session-end event is always left to its command hook, because a request may never be sent while Claude Code exits.
 
 The pre-tool event is not bridged either. `PreToolUse` is a permission check, and a mod's hook on one may only deny, ask, or pass the event on whole. The pre-tool handlers mostly answer with context and no decision, and passing that event on would run them a second time through the command hooks. So the halt and the pre-edit, pre-read and shell checks run through one command hook in every session, one client process per call, which routes by the tool.
 

@@ -40,12 +40,13 @@ DAEMON_EVENTS = {
     "post_batch_json",
     "pre_bash_json",
     "pre_tool_json",
+    "pre_call_json",
 }
 
 # The events whose answer can deny a tool call. Without an answer the call goes
 # ahead, so a lost reply falls back to the handler here: a repeat of a check
 # costs one more recorded denial at worst (compliance dedupes by tool call).
-GUARDS = {"pre_tool_json", "pre_bash_json", "pre_edit_json", "pre_read_json"}
+GUARDS = {"pre_call_json", "pre_tool_json", "pre_bash_json", "pre_edit_json", "pre_read_json"}
 
 # How long to wait for the reply, in seconds, inside each hook's budget in
 # hooks.json. A guard leaves its fallback room to run. Every other event is not

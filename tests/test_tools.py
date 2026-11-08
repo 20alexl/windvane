@@ -146,7 +146,7 @@ def test_the_save_reply_names_what_was_saved(warm, proj):
     assert "Task: Port the tools." in saved["text"] and "Current step: Step 2 of the port." in saved["text"]
     long = call(warm, "checkpoint", proj, operation="save", task_description="x" * 400, current_step="y\nz")
     first = long["text"].splitlines()[0]
-    assert len(first) < 400 and "y z" in first
+    assert len(first) < 400 and "x... Current step: y z." in first
 
 
 def _session_with_a_draft(tmp_path, monkeypatch, proj, sid):

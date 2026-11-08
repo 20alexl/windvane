@@ -183,6 +183,21 @@ test('a request refused unrun, an unrun error body and a connection that never o
   expect(t.logs.join('\n')).toContain('fetch failed')
 })
 
+// The daemon sends none of these. With its port reused by something else, every
+// prompt and stop would otherwise be answered with nothing until a reload.
+test('a reply that is not the daemon\'s takes next, and the port is read again', async ($, on) => {
+  let answer: Answer = { status: 500, text: 'boom' }
+  const t = engine(on, { answer: () => answer })
+  t.bottom('UserPromptSubmit', { additionalContext: ['settings'] })
+
+  expect((await $.classic.UserPromptSubmit({ prompt: 'a server error here' })).additionalContext).toEqual(['settings'])
+  answer = { status: 200, text: '<html>some other service</html>' }
+  expect((await $.classic.UserPromptSubmit({ prompt: 'a page from elsewhere' })).additionalContext).toEqual(['settings'])
+  answer = { status: 200, text: '{"status": "ok"}' }
+  expect((await $.classic.UserPromptSubmit({ prompt: 'some other json reply' })).additionalContext).toEqual(['settings'])
+  expect(t.reached.length).toBe(3)
+})
+
 // The settings hook would run the handler a second time: a prompt or a tool
 // result recorded twice.
 test('a handler that may have run is not repeated through the settings hooks', async ($, on) => {
@@ -191,10 +206,8 @@ test('a handler that may have run is not repeated through the settings hooks', a
   t.bottom('UserPromptSubmit', { additionalContext: ['settings'] })
 
   expect((await $.classic.UserPromptSubmit({ prompt: 'a handler that raised' })).additionalContext).toBe(undefined)
-  answer = { status: 500, text: 'boom' }
-  expect((await $.classic.UserPromptSubmit({ prompt: 'a server error here' })).additionalContext).toBe(undefined)
-  answer = { status: 200, text: 'not json' }
-  expect((await $.classic.UserPromptSubmit({ prompt: 'no answer in the reply' })).additionalContext).toBe(undefined)
+  answer = { status: 200, text: JSON.stringify({ error: 'it raised again', ran: true }) }
+  expect((await $.classic.UserPromptSubmit({ prompt: 'and again it raised' })).additionalContext).toBe(undefined)
   expect(t.reached.length).toBe(0)
   expect(t.logs.join('\n')).toContain('lost')
 })
@@ -204,7 +217,7 @@ test('a type that may have run keeps the settings hooks off the types after it',
   expect(readAnswer(200, JSON.stringify({ error: 'unsupported' }))).toEqual({ reason: 'daemon error: unsupported', ran: false })
   expect(readAnswer(413, '')).toEqual({ reason: 'daemon answered 413', ran: false })
   expect(readAnswer(501, '')).toEqual({ reason: 'daemon answered 501', ran: false })
-  expect(readAnswer(502, '')).toEqual({ reason: 'daemon answered 502', ran: true })
+  expect(readAnswer(502, '')).toEqual({ reason: 'daemon answered 502', ran: false })
   expect(readAnswer(200, JSON.stringify({ output: 'x' }))).toEqual({ output: 'x' })
 })
 

@@ -137,7 +137,19 @@ def test_a_handler_that_raised_is_not_run_again_but_a_refused_request_is(client,
         srv.close()
 
 
-GUARDS = ("pre_tool_json", "pre_bash_json", "pre_edit_json", "pre_read_json")
+GUARDS = ("pre_call_json", "pre_tool_json", "pre_bash_json", "pre_edit_json", "pre_read_json")
+
+
+def test_a_daemon_too_old_to_know_the_hook_leaves_it_to_run_here(client, tmp_path: Path):
+    """The daemon outlives an update. An older one answers the new name unrun,
+    and the check runs here: this is why it is a new name. Under the old name it
+    answered with the halt alone and every rule's deny went missing."""
+    srv, t, _ = _fake_daemon(tmp_path, {"error": "unsupported hook_event 'pre_call_json'"})
+    try:
+        assert client._try_daemon("pre_call_json", "{}") is False
+    finally:
+        t.join(5)
+        srv.close()
 
 
 @pytest.mark.parametrize("hook_type", GUARDS)
@@ -233,9 +245,9 @@ def test_each_event_waits_inside_its_own_budget(client, tmp_path: Path, monkeypa
     (tmp_path / "store" / "daemon_token").write_text(TOKEN)
     for event in client.DAEMON_EVENTS:
         client._try_daemon(event, "{}")
-        # The checks pre_tool_json routes to keep their names for a session
-        # still on an older hooks.json, and run inside its budget.
-        assert waits[event] + 0.25 < budgets.get(event, budgets["pre_tool_json"]), event
+        # The separate pre-tool hooks keep their names for a session still on an
+        # older hooks.json, and the same budget.
+        assert waits[event] + 0.25 < budgets.get(event, budgets["pre_call_json"]), event
     assert waits["prompt_json"] > 5
 
 

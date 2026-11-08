@@ -23,12 +23,11 @@
 // marker is needed.
 //
 // Any failure before a handler ran (no port or token file, a refused connection, a
-// status the daemon sends before it reads the request as a hook, an `error` body
-// without `ran`) also takes `next(e)`. A request that may have run does not, since
-// the settings hook would repeat it: a closed connection, a handler that raised, a
-// 5xx, a reply that is no answer. The event gets an empty answer, as a settings
-// hook that timed out gives. After a timeout the next 30 s go to the settings
-// hooks while the daemon recovers.
+// status other than 200, an `error` body without `ran`, a reply that is not the
+// daemon's) also takes `next(e)`. A request that may have run does not, since the
+// settings hook would repeat it: a closed connection, a handler that raised. The
+// event gets an empty answer, as a settings hook that timed out gives. After a
+// timeout the next 30 s go to the settings hooks while the daemon recovers.
 //
 // PreToolUse is not bridged. It is a permission check, and a mod's hook on
 // one may only deny, ask, or pass the event on whole (the plugin directory
@@ -47,7 +46,8 @@ import { normalizePath } from './ring'
 import { neverConnected } from './tools'
 
 // The hook types the bridge may ask the daemon for. The pre-tool types
-// (pre_edit_json, pre_read_json, pre_bash_json, pre_tool_json) are not here:
+// (pre_call_json and the older pre_edit_json, pre_read_json, pre_bash_json,
+// pre_tool_json) are not here:
 // PreToolUse is never bridged (see above). session_end_json is left to its
 // settings hook (it runs while Claude Code is exiting, where a mod's request
 // may never be sent).
@@ -247,22 +247,21 @@ export function foldClassic(results: readonly ClassicResult[]): ClassicResult {
   return out
 }
 
-// The daemon's HTTP answer: the handler's stdout, or why there is none. `ran`
-// false takes proof that no handler ran, and only then may the settings hooks
-// run instead: a status the daemon sends before it reads the request as a hook
-// (the 4xx rows, 501), or an error it reports as unrun. A 5xx or a reply that is
-// no answer may follow a handler that finished.
+// The daemon's HTTP answer: the handler's stdout, or why there is none. Only an
+// error the daemon marks `ran` follows a handler. Every other status it sends
+// comes before one, and it sends no 5xx and no body but these: such a reply is
+// something else on a reused port, and the settings hooks may run instead.
 export function readAnswer(status: number, body: string): { output: string } | { reason: string; ran: boolean } {
-  if (status !== 200) return { reason: `daemon answered ${status}`, ran: !((status >= 400 && status < 500) || status === 501) }
+  if (status !== 200) return { reason: `daemon answered ${status}`, ran: false }
   let v: unknown
   try {
     v = JSON.parse(body)
   } catch {
-    return { reason: 'daemon body is not JSON', ran: true }
+    return { reason: 'daemon body is not JSON', ran: false }
   }
-  if (!isRecord(v)) return { reason: 'daemon body is not an object', ran: true }
+  if (!isRecord(v)) return { reason: 'daemon body is not an object', ran: false }
   if (typeof v.error === 'string') return { reason: `daemon error: ${v.error.slice(0, 120)}`, ran: v.ran === true }
-  if (typeof v.output !== 'string') return { reason: 'daemon body has no output', ran: true }
+  if (typeof v.output !== 'string') return { reason: 'daemon body has no output', ran: false }
   return { output: v.output }
 }
 
@@ -389,7 +388,9 @@ async function post(host: Host, at: Daemon, type: string, stdin: Json, env: Sess
       timeout,
     ])
     if (res === 'timeout') return { timedOut: true }
-    return readAnswer(res.status, res.text)
+    const got = readAnswer(res.status, res.text)
+    if (!('output' in got)) daemon = undefined // re-read: the port may belong to something else now
+    return got
   } catch (err) {
     daemon = undefined // re-read: a restarted daemon writes a new port and token
     return { reason: `fetch failed: ${String(err).slice(0, 120)}`, ran: !neverConnected(err) }

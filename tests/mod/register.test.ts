@@ -429,8 +429,8 @@ test('after a compaction the fill reads stale until it changes: no band, no fill
 
 test('a point small against the window keeps the last call above zero, as the engine computes it', async ($, on) => {
   // 40K less the reserve and the margin is below zero: the band stood from the
-  // first call. The engine's thresholds() gives 4K here.
-  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, tokens: 3_000, point: 40_000 }
+  // first call. The engine's thresholds() gives 10K here.
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, tokens: 9_000, point: 40_000 }
   mock.clock(on)
   inBand(on, counters)
   await $.session.start(START)

@@ -164,6 +164,7 @@ _HOOK_EVENTS = {
     "post_batch_json",
     "pre_bash_json",
     "pre_tool_json",
+    "pre_call_json",
     "post_milestone_json",
     "session_start_json",
     "stop_json",
@@ -296,6 +297,7 @@ def _serve_hook_event(request: dict) -> dict:
 
 HTTP_MAX_HEAD = 64 * 1024
 HTTP_MAX_BODY = 16 * 1024 * 1024  # a hook's stdin: a PostToolUse with a big tool result
+LINE_DEADLINE_S = 30.0  # a client's hook budget is 10 s at most: past this it has gone
 _HTTP_REQUEST_LINE = re.compile(rb"^([A-Z]+) (\S+) HTTP/1\.[01]\r?\n")
 _HTTP_REASONS = {
     200: "OK",
@@ -561,21 +563,25 @@ def _handle_client(conn, holder):
     holder, or None when this daemon runs without the semantic tier."""
     try:
         conn.settimeout(5.0)
-        data = b""
-        while b"\n" not in data:
-            chunk = conn.recv(4096)
+        got = bytearray()
+        deadline = time.monotonic() + LINE_DEADLINE_S
+        while True:
+            chunk = conn.recv(65536)
             if not chunk:
                 break
-            data += chunk
-            if len(data) > HTTP_MAX_HEAD and not data.lstrip().startswith(b"{"):
+            got += chunk  # only the new bytes are searched: a 16 MB line took 5 s
+            if b"\n" in chunk:
+                break
+            if len(got) > HTTP_MAX_HEAD and not bytes(got[:64]).lstrip().startswith(b"{"):
                 break  # no line end in sight and not a JSON line: malformed
-            if len(data) > HTTP_MAX_BODY:
+            if len(got) > HTTP_MAX_BODY or time.monotonic() > deadline:
                 # The token is inside the line, so this comes before any check
                 # of who is asking. Nothing ran: a hook client runs it itself.
                 conn.sendall(b'{"error": "request too large"}\n')
                 _lingering_close(conn)
                 return
 
+        data = bytes(got)
         if not data:
             return
 

@@ -191,10 +191,20 @@ def test_compaction_point_precedence_and_defaults(tmp_path: Path, monkeypatch):
     (1_000_000, 60_000),  # below zero
     (1_000_000, 40_000),  # the last call would be below zero too
     (200_000, 20_000),  # so would the trigger
+    (1_000_000, 52_001),  # just over the cut: last call at 1, heads-up at 0
+    (200_000, 42_001),
+    (1_000_000, 32_001),  # the trigger at 1
 ])
 def test_a_small_point_on_a_large_window_keeps_every_mark_above_zero_in_order(window, point):
     th = cp.thresholds(window, point)
     assert 0 < th["headsup_at"] < th["checkpoint_at"] < th["trigger_at"] < point, th
+    assert th["headsup_at"] >= point / 16, th  # room, not just above zero
+
+
+def test_a_last_call_set_low_on_purpose_is_left_there(monkeypatch):
+    monkeypatch.setattr(cp, "_knob_percent", lambda key, _p="": 5 if key == "last_call_percent" else None)
+    th = cp.thresholds(1_000_000, 100_000)
+    assert th["checkpoint_at"] == 5_000 and 0 < th["headsup_at"] < 5_000
 
 
 def test_a_small_point_with_a_high_headsup_knob_pulled_under_the_last_call_stays_above_zero(monkeypatch):
