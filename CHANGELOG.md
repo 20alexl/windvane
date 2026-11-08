@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.21 (2026-11-08)
+
+What 1.0.20 left open, and what testing the untested parts turned up.
+
+- **A hook that may have run is not replayed.** A bridged hook whose handler raised, or whose connection closed after it opened, ran a second time through its command hook. It now takes proof that no handler ran. A reply that is not the daemon's, from something else on a reused port, hands over to the command hooks and the port is read again.
+- **One process per tool call.** Edit, Write, Read, Bash and PowerShell each started two client processes, one for the halt and one for the tool's own check. One hook now does both, under a new event name, so a new client facing a daemon older than this release runs the check itself and loses no deny. Tested against a real 1.0.20 daemon.
+- **Half an emoji no longer loses the memory.** Text clipped through a surrogate pair failed to store as a memory or a rule. The half is replaced on the way in.
+- **Two sessions saving in one second.** They could take one checkpoint id and one task file, and the second replaced the first. The id takes six random digits.
+- **A small compaction point.** A point small against the window, such as 100K on a 1M window, put the marks at or near zero, and the last call stood from the first call. Each computed mark now stops at half the mark over it. A mark set low by a setting stays where it was set.
+- **A hook near the size limit.** The daemon read a long request slowly enough that a hook of about 14 MB outran the client's wait and ran nowhere. It reads faster, and stops at 16 MB or after 30 s, before it checks who is asking. The client runs a longer hook itself.
+- **An alert ending in a backslash.** On Windows the backslash was lost and a quote came in. New tests send hostile messages through the machine's real shell, cmd.exe or sh, and nothing in them ran.
+- **The save's reply names what it saved.** It carries the task and the current step, so a wrong draft is seen when it is cheap to amend.
+- **Smaller.** A memory that fails to store reports an error. The doctor counts a daemon as answering only on the ping's own reply.
+
+Tests: the suite passes on Windows and, new here, on Linux. A real daemon under 20 clients at once served all 240 calls, slowest 729 ms, with every deny returned. Not tested: macOS, and a live Claude Code session under that load. Sessions already running need `/reload-plugins` to pick up the new hook.
+
 ## 1.0.20 (2026-11-08)
 
 Defects two outside reviews found in 1.0.19 and in these fixes, each reproduced or confirmed in the code, fixed by hand with small changes. The first review's larger proposals were left out.
