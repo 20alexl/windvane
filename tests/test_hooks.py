@@ -700,6 +700,18 @@ def test_the_halt_end_to_end(tmp_path: Path, monkeypatch):
     assert "windvane-halt" not in _ctx(_run("pre_bash_json", dict(bash, tool_use_id="t10")))
 
 
+def _wait_for(log: Path, text: str, seconds: float = 15.0) -> None:
+    """An alert goes out from its own process, after the hook has returned."""
+    import time
+
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if log.exists() and text in log.read_text(encoding="utf-8"):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"{text!r} never reached {log}")
+
+
 def test_alerts_through_the_hooks(tmp_path: Path, monkeypatch):
     proj = _proj(tmp_path)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
@@ -713,11 +725,11 @@ def test_alerts_through_the_hooks(tmp_path: Path, monkeypatch):
     assert not log.exists(), "outside autonomy mode notifications are silent"
     monkeypatch.setenv("WINDVANE_AUTONOMY", "1")
     _run("notification_json", dict(note, notification_type="permission_prompt", message="Allow Bash?"))
-    assert "waiting on you: permission_prompt" in log.read_text(encoding="utf-8")
+    _wait_for(log, "waiting on you: permission_prompt")
     _run("notification_json", dict(note, notification_type="auth_success"))
     assert "auth_success" not in log.read_text(encoding="utf-8")
     _run("stop_failure_json", {"session_id": sid, "cwd": str(proj), "hook_event_name": "StopFailure", "error_type": "rate_limit", "error": "limit"})
-    assert "stopped: rate_limit" in log.read_text(encoding="utf-8")
+    _wait_for(log, "stopped: rate_limit")
 
 
 def test_stop_failure_records_every_rate_limit_window(tmp_path: Path, monkeypatch):
@@ -798,6 +810,7 @@ def test_the_goal_bracket_end_to_end(tmp_path: Path, monkeypatch):
     _run("prompt_json", {"session_id": sid, "cwd": str(proj), "transcript_path": str(t), "hook_event_name": "UserPromptSubmit", "prompt": "thanks"})
     a = _state(store, sid)["run"]["auto"]
     assert a["status"] == "met" and "printed 3" in a["why"]
+    _wait_for(log, "goal met")
     alerts = log.read_text(encoding="utf-8").splitlines()
     assert len([x for x in alerts if "goal met" in x]) == 1, alerts
     reports = list(runs_dir(str(proj)).glob("*.md"))

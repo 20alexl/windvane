@@ -760,7 +760,24 @@ export const register: Register = (on, options) => {
     // switched off for the session.
     let sessionsReady = false
 
+    // One tick at a time: on a stalled machine a tick can outlast the interval,
+    // and each late one added its own reads and writes to the shared worker.
+    // A failed tick is logged and the next one tries again: an unhandled
+    // rejection here counts against the plugin.
+    let ticking = false
     const tick = async () => {
+      if (ticking) return
+      ticking = true
+      try {
+        await mirrorOnce()
+      } catch (err) {
+        $.ui.log(`${PLUGIN}: context mirror: ${String(err)}`, { to: 'debug' })
+      } finally {
+        ticking = false
+      }
+    }
+
+    const mirrorOnce = async () => {
       if (!sessionsReady) {
         if (!(await $.fs.exists(sessions))) return
         sessionsReady = true

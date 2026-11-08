@@ -326,6 +326,44 @@ test('a prompt typed over the running turn was delivered into it: the continue p
   expect(counters.prompts?.[0]).toBe('that idea needs ironing out')
 })
 
+test('a slow mirror tick is not overlapped by the next one', async ($, on) => {
+  const clock = mock.clock(on)
+  on('env.get', ($, e) => ({ value: e.name === 'WINDVANE_DIR' ? STORE : undefined }))
+  on('session.id', () => ({ value: SID }))
+  on('session.model', () => ({ value: 'claude-test' }))
+  on('session.root', () => ({ value: 'E:/demo' }))
+  on('session.cwd', () => ({ value: 'E:/demo/proj' }))
+  // The tick's last step before the status line is the mirror's write: hold
+  // that, and count how many ticks reach it.
+  let reached = 0
+  let holding = false
+  const waiting: Array<() => void> = []
+  on('session.usage', () => ({ value: usageAt(100_000) }))
+  on('fs.exists', ($, e) => ({ value: e.path.replace(/\\/g, '/').includes('/sessions') }))
+  on('fs.read', () => ({ value: '' }))
+  on('fs.write', async ($, e) => {
+    if (e.path.endsWith('.ctx.json')) {
+      reached += 1
+      if (holding) await new Promise<void>(resolve => waiting.push(resolve))
+    }
+    return { value: undefined }
+  })
+  on('ui.status', () => ({ value: undefined }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start(START)
+
+  holding = true
+  const before = reached
+  await clock.advance(10_000)
+  await clock.advance(10_000)
+  await clock.advance(10_000)
+  expect(reached).toBe(before + 1) // the slow tick is still running: nothing piled up
+  holding = false
+  for (const go of waiting) go()
+  await clock.advance(10_000)
+  expect(reached).toBe(before + 2) // and the mirror carries on after it
+})
+
 test('a compaction the engine refuses is asked for again at the next turn end, with nothing said', async ($, on) => {
   const counters: Counters = { compactions: 0, statuses: [], briefs: 0, refuse: true, logs: [] }
   const clock = mock.clock(on)

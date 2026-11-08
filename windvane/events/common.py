@@ -1671,7 +1671,7 @@ def _goal_bracket(state: dict, data: dict, project_dir: str, turn: bool) -> None
         try:
             from windvane import alerts as _alerts
 
-            _alerts.send(_ar.end_alert_text(a, _session_id), project_dir, kind=str(a.get("status") or "ended"), state=state)
+            _alerts.enqueue(_ar.end_alert_text(a, _session_id), project_dir, kind=str(a.get("status") or "ended"), state=state)
             save_state(state)
         except Exception:
             pass

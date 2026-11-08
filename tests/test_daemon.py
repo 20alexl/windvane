@@ -417,6 +417,58 @@ def test_post_tool_runs_the_real_tools(ss, listener, tmp_path: Path, monkeypatch
 # ── the process lock and the files ───────────────────────────────────────
 
 
+def test_the_slow_readers_run_outside_the_hook_lock(tmp_path, monkeypatch):
+    """A mine or deps call can take seconds on a large index, and every
+    session's hooks waited behind it: past the bridge's two seconds a hook is
+    dropped, and a stalled worker gets the plugin unloaded."""
+    from windvane import daemon
+
+    seen = {}
+
+    def fake(argv, **kw):
+        seen.update(argv=argv, locked=daemon._HOOK_LOCK.locked(), env=kw["env"], stdin=kw["input"], cwd=kw["cwd"], timeout=kw["timeout"])
+        return subprocess.CompletedProcess(argv, 0, stdout='noise\n{"text": "found", "isError": false, "ms": 3}\n', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    request = {"tool": "mine", "arguments": {"operation": "status"}, "env": {"CLAUDE_CODE_SESSION_ID": "s9", "NOT_ALLOWED": "x"}}
+    # A hook is running: the reader does not wait for it. On its own thread,
+    # so a reader that took the lock fails here and does not hang the suite.
+    answer: list = []
+    with daemon._HOOK_LOCK:
+        worker = threading.Thread(target=lambda: answer.append(daemon._serve_tool_call(request)), daemon=True)
+        worker.start()
+        worker.join(10)
+        assert answer, "the reader waited for the hook lock"
+    out = answer[0]
+    assert out == {"text": "found", "isError": False, "ms": 3}
+    assert seen["argv"][1:] == ["-m", "windvane.tools"] and json.loads(seen["stdin"]) == request
+    assert seen["env"]["CLAUDE_CODE_SESSION_ID"] == "s9" and "NOT_ALLOWED" not in seen["env"]
+    assert seen["cwd"] == str(daemon.ENGINE_DIR) and seen["timeout"] < 60  # the mod's own limit
+
+    def hung(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", hung)
+    late = daemon._serve_tool_call({**request, "tool": "deps"})
+    assert late["isError"] and "deps" in late["text"]
+
+    # Everything else still runs in the warm instance, under the lock.
+    assert daemon._SLOW_READERS == {"mine", "deps"}
+
+
+def test_a_slow_reader_answers_through_a_real_process(tmp_path):
+    """One pass with nothing mocked: the daemon's call reaches the engine."""
+    from windvane import daemon
+
+    out = daemon._serve_tool_call({
+        "tool": "mine",
+        "arguments": {"operation": "status", "project_path": str(tmp_path)},
+        "env": {"CLAUDE_PROJECT_DIR": str(tmp_path), "WINDVANE_DIR": str(tmp_path / "store"), "CLAUDE_CODE_SESSION_ID": "s1"},
+    })
+    assert isinstance(out, dict) and "text" in out and out["text"]
+    assert "read tool failed" not in out["text"]
+
+
 def test_inside_the_daemon_a_handler_never_probes_or_replaces_it(ss, monkeypatch):
     monkeypatch.setattr(ss, "_SERVING", True)
     monkeypatch.setattr(ss, "_daemon_alive", lambda: (_ for _ in ()).throw(AssertionError("probed")))

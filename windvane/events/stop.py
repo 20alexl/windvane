@@ -253,7 +253,7 @@ def _hook_stop(project_dir: str) -> None:
                             try:
                                 from windvane import alerts as _alerts
 
-                                _alerts.send(
+                                _alerts.enqueue(
                                     f"run {c._session_id[:8]} halted: no progress "
                                     f"{_stall.stall_state(_st)['strikes']}x, every tool denied; "
                                     "release with python -m windvane.stall release",
@@ -342,7 +342,7 @@ def _hook_stop_failure(project_dir: str) -> None:
                     reset = " -- 5h window resets " + time.strftime(
                         "%H:%M", time.localtime(float(rec["five_hour_resets_at"]))
                     )
-                _alerts.send(
+                _alerts.enqueue(
                     f"run {c._session_id[:8]} stopped: {rec['error_type']}{reset}",
                     project_dir,
                     kind="failure",
@@ -375,7 +375,7 @@ def _hook_notification(project_dir: str) -> None:
 
         msg = str(data.get("message") or "")[:120]
         text = f"run {c._session_id[:8]} waiting on you: {kind}" + (f" -- {msg}" if msg else "")
-        _alerts.send(text, project_dir, kind="needs_input", state=state)
+        _alerts.enqueue(text, project_dir, kind="needs_input", state=state)
         save_state(state)
     except Exception:
         pass

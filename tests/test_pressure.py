@@ -1199,6 +1199,52 @@ def test_alert_command_comes_from_config(tmp_path: Path, monkeypatch):
     assert alerts.alert_command(str(proj)) == "from-env"
 
 
+def test_a_hook_never_waits_for_an_alert_command(tmp_path: Path, monkeypatch):
+    """The command ran inside the hook, under the daemon's one lock, for up to
+    fifteen seconds: every session's hooks waited for a slow webhook."""
+    import time
+
+    log = tmp_path / "alert.log"
+    slow = tmp_path / "slow.py"
+    slow.write_text(f"import sys, time\ntime.sleep(1.5)\nopen({str(log)!r}, 'w', encoding='utf-8').write(sys.stdin.read())\n", encoding="utf-8")
+    monkeypatch.setenv("WINDVANE_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("WINDVANE_ALERT_COMMAND", f'"{sys.executable}" "{slow}"')
+    state: dict = {}
+    began = time.monotonic()
+    rec = alerts.enqueue("run halted, api_key = abcdEFGH1234abcdEFGH1234", str(tmp_path), kind="halt", state=state)
+    assert time.monotonic() - began < 1.0
+    assert rec["sent"] is False and "queued" in rec["detail"] and state["alerts"] == [rec]
+    assert "abcdEFGH1234" not in rec["message"]
+    end = time.monotonic() + 20
+    while time.monotonic() < end and not (log.exists() and log.read_text(encoding="utf-8")):
+        time.sleep(0.05)
+    assert log.read_text(encoding="utf-8").strip() == rec["message"]
+    # The outcome of the delivery is left where a person can find it.
+    last = tmp_path / "store" / "alert_last.json"
+    end = time.monotonic() + 5
+    while time.monotonic() < end and not last.exists():
+        time.sleep(0.05)
+    assert json.loads(last.read_text(encoding="utf-8"))["sent"] is True
+
+    monkeypatch.delenv("WINDVANE_ALERT_COMMAND")
+    assert alerts.enqueue("nobody listens", str(tmp_path))["detail"] == "no alert_command configured"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="cmd.exe quoting")
+def test_a_message_cannot_break_out_of_the_alert_command(tmp_path: Path):
+    """cmd.exe takes no backslash escape inside quotes: a quote in the message
+    ended the argument and the rest ran as a command."""
+    marker = tmp_path / "broke-out.txt"
+    sink = tmp_path / "sink.py"
+    out = tmp_path / "got.txt"
+    sink.write_text(f"import sys\nopen({str(out)!r}, 'w', encoding='utf-8').write(sys.argv[1])\n", encoding="utf-8")
+    rec = alerts.send(f'hi" & echo x > "{marker}" & rem %PATH%', command=f'"{sys.executable}" "{sink}" {{message}}')
+    assert rec["sent"], rec["detail"]
+    assert not marker.exists()
+    got = out.read_text(encoding="utf-8")
+    assert got.startswith("hi") and "%PATH%" not in got
+
+
 def test_an_alert_is_recorded_whether_sent_or_not(tmp_path: Path):
     state: dict = {}
     rec = alerts.send("halted:   needs a person", str(tmp_path), kind="halt", state=state)

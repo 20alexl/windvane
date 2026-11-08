@@ -470,6 +470,46 @@ def _serve_http(conn, data: bytes) -> None:
 
 _WARM = None  # the warm tools.Warm() instance behind POST /tool, built on first use
 
+# A search over a large index or a dependency scan can take seconds, and every
+# session's hooks wait behind the one lock: past the bridge's two seconds a hook
+# is dropped. The session environment is process-wide, so these cannot simply
+# run unlocked in this process. A process costs them the warm caches, and the
+# hooks nothing.
+_SLOW_READERS = {"mine", "deps"}
+_SLOW_READER_TIMEOUT_S = 55  # inside the mod's 60 s, so the reply says why
+
+
+def _serve_slow_reader(request: dict, env: dict) -> dict:
+    import subprocess
+
+    name = str(request.get("tool"))
+    child_env = dict(os.environ)
+    child_env.update({k: str(v) for k, v in env.items() if k in SESSION_ENV})
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    kwargs: dict = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "windvane.tools"],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_SLOW_READER_TIMEOUT_S,
+            cwd=str(ENGINE_DIR),
+            env=child_env,
+            **kwargs,
+        )
+        lines = done.stdout.strip().splitlines()
+        answer = json.loads(lines[-1]) if lines else None
+        if isinstance(answer, dict) and "text" in answer:
+            return answer
+        return {"text": f"{name} gave no answer: {done.stderr.strip()[-200:]}", "isError": True, "ms": 0}
+    except subprocess.TimeoutExpired:
+        return {"text": f"{name} did not finish within {_SLOW_READER_TIMEOUT_S} s. Narrow the call and try again.", "isError": True, "ms": 0}
+    except Exception as e:
+        return {"text": f"{name} failed to run: {str(e)[:200]}", "isError": True, "ms": 0}
+
 
 def _serve_tool_call(request: dict) -> dict:
     """Answer one plugin tool call (``windvane.tools.run``) in-process:
@@ -477,10 +517,12 @@ def _serve_tool_call(request: dict) -> dict:
     The session environment applies for the call the way it does for a hook
     event (the draft and the hook state are keyed by the session id); one
     ``tools.Warm()`` instance stays warm across calls, so a call costs the
-    work and not the imports."""
+    work and not the imports. The slow readers go to a process of their own."""
     global _WARM
     _env = request.get("env")
     env: dict = _env if isinstance(_env, dict) else {}
+    if request.get("tool") in _SLOW_READERS:
+        return _serve_slow_reader(request, env)
     with _HOOK_LOCK:
         from windvane import tools
 
