@@ -23,18 +23,20 @@
 // marker is needed.
 //
 // Any failure before a handler ran (no port or token file, a refused connection, a
-// non-200, an `error` body, a body that is not the daemon's) also takes
-// `next(e)`. A request that timed out may have run, so it does not: the
-// event gets an empty answer, as a settings hook that timed out gives, and
-// the next 30 s go to the settings hooks while the daemon recovers.
+// status the daemon sends before it reads the request as a hook, an `error` body
+// without `ran`) also takes `next(e)`. A request that may have run does not, since
+// the settings hook would repeat it: a closed connection, a handler that raised, a
+// 5xx, a reply that is no answer. The event gets an empty answer, as a settings
+// hook that timed out gives. After a timeout the next 30 s go to the settings
+// hooks while the daemon recovers.
 //
 // PreToolUse is not bridged. It is a permission check, and a mod's hook on
 // one may only deny, ask, or pass the event on whole (the plugin directory
 // reads nothing else there). The pre-tool handlers mostly answer with
 // context and no decision, and passing that event on would run them a
-// second time through the command hooks. So the pre-edit, pre-read and
-// shell checks and the halt run through their command hooks in every
-// session, one client process per call, as the session-end hook does.
+// second time through the command hooks. So the halt and the pre-edit,
+// pre-read and shell checks run through one command hook in every session,
+// one client process per call, as the session-end hook does.
 //
 // The pure helpers are exported for the tests. register.ts hooks each
 // classic event by name and asks bridgeDecision whether to answer or to
@@ -42,6 +44,7 @@
 import type { ClassicResult, Timer } from 'claude-code'
 import { PLUGIN, type Host } from './engine'
 import { normalizePath } from './ring'
+import { neverConnected } from './tools'
 
 // The hook types the bridge may ask the daemon for. The pre-tool types
 // (pre_edit_json, pre_read_json, pre_bash_json, pre_tool_json) are not here:
@@ -244,19 +247,22 @@ export function foldClassic(results: readonly ClassicResult[]): ClassicResult {
   return out
 }
 
-// The daemon's HTTP answer: the handler's stdout, or why there is none (in
-// which case no handler ran and the settings hooks may run instead).
-export function readAnswer(status: number, body: string): { output: string } | { reason: string } {
-  if (status !== 200) return { reason: `daemon answered ${status}` }
+// The daemon's HTTP answer: the handler's stdout, or why there is none. `ran`
+// false takes proof that no handler ran, and only then may the settings hooks
+// run instead: a status the daemon sends before it reads the request as a hook
+// (the 4xx rows, 501), or an error it reports as unrun. A 5xx or a reply that is
+// no answer may follow a handler that finished.
+export function readAnswer(status: number, body: string): { output: string } | { reason: string; ran: boolean } {
+  if (status !== 200) return { reason: `daemon answered ${status}`, ran: !((status >= 400 && status < 500) || status === 501) }
   let v: unknown
   try {
     v = JSON.parse(body)
   } catch {
-    return { reason: 'daemon body is not JSON' }
+    return { reason: 'daemon body is not JSON', ran: true }
   }
-  if (!isRecord(v)) return { reason: 'daemon body is not an object' }
-  if (typeof v.error === 'string') return { reason: `daemon error: ${v.error.slice(0, 120)}` }
-  if (typeof v.output !== 'string') return { reason: 'daemon body has no output' }
+  if (!isRecord(v)) return { reason: 'daemon body is not an object', ran: true }
+  if (typeof v.error === 'string') return { reason: `daemon error: ${v.error.slice(0, 120)}`, ran: v.ran === true }
+  if (typeof v.output !== 'string') return { reason: 'daemon body has no output', ran: true }
   return { output: v.output }
 }
 
@@ -370,7 +376,7 @@ async function daemonAt(host: Host, store: string): Promise<Daemon | undefined> 
   return daemon
 }
 
-type Posted = { output: string } | { reason: string; ran: false } | { timedOut: true }
+type Posted = { output: string } | { reason: string; ran: boolean } | { timedOut: true }
 
 async function post(host: Host, at: Daemon, type: string, stdin: Json, env: SessionEnv): Promise<Posted> {
   let timer: Timer | undefined
@@ -383,11 +389,10 @@ async function post(host: Host, at: Daemon, type: string, stdin: Json, env: Sess
       timeout,
     ])
     if (res === 'timeout') return { timedOut: true }
-    const got = readAnswer(res.status, res.text)
-    return 'output' in got ? got : { reason: got.reason, ran: false }
+    return readAnswer(res.status, res.text)
   } catch (err) {
     daemon = undefined // re-read: a restarted daemon writes a new port and token
-    return { reason: `fetch failed: ${String(err).slice(0, 120)}`, ran: false }
+    return { reason: `fetch failed: ${String(err).slice(0, 120)}`, ran: !neverConnected(err) }
   } finally {
     timer?.cancel()
   }
@@ -460,6 +465,7 @@ export async function bridgeDecision(host: Host, input: unknown): Promise<Bridge
 
   const outputs: HookOutput[] = []
   let timedOut = false
+  let mayHaveRun = false // a handler ran, or may have: the settings hooks would repeat it
   for (const type of types) {
     const got = await post(host, at, type, stdin, found.env)
     if ('timedOut' in got) {
@@ -471,16 +477,18 @@ export async function bridgeDecision(host: Host, input: unknown): Promise<Bridge
       break
     }
     if ('reason' in got) {
-      if (outputs.length === 0) {
+      mayHaveRun = mayHaveRun || got.ran
+      if (!mayHaveRun) {
         noteFallBack(`${type}: ${got.reason}`)
         return PASS
       }
-      // An earlier type already ran here: running the settings hooks now
-      // would run it twice. Keep what ran; this type is lost this once.
+      // This type or an earlier one ran here, or may have: running the settings
+      // hooks now would run it twice. Keep what ran; this type is lost this once.
       counts.partial += 1
       host.debug(`${PLUGIN}: bridge: ${event} ${type} lost: ${got.reason}`)
       continue
     }
+    mayHaveRun = true
     outputs.push(readOutput(got.output))
   }
 

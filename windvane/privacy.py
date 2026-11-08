@@ -31,7 +31,19 @@ _ASSIGNED_VALUE = re.compile(
 _SECRET_KEY = re.compile(r"api[_ -]?key|secret|token|password|passwd", re.I)
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def well_formed(text: str) -> str:
+    """Text with half a surrogate pair replaced. Text clipped through the middle
+    of an emoji arrives that way, and it cannot be encoded: hashing it for an
+    entry's id raised, and the memory was lost. A whole pair is one character
+    in a Python string, so only a half matches."""
+    return _LONE_SURROGATE.sub("�", text)
+
+
 def redact(text: str) -> str:
+    text = well_formed(text)
     text = _PEM_BLOCK.sub(REDACTED, text)
     text = _PREFIXED_KEY.sub(REDACTED, text)
     text = _JWT.sub(REDACTED, text)

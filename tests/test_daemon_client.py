@@ -164,6 +164,22 @@ def test_a_guard_whose_reply_was_lost_runs_here(client, tmp_path: Path, hook_typ
         srv.close()
 
 
+def test_a_line_the_daemon_would_refuse_is_not_sent(client, tmp_path: Path, monkeypatch):
+    """Sent, its reply would be lost to the reset when the daemon closes on the
+    unread rest, and a hook that is not a guard would then not run at all."""
+    from windvane import daemon
+
+    assert client.MAX_LINE_BYTES == daemon.HTTP_MAX_BODY
+    monkeypatch.setattr(client, "MAX_LINE_BYTES", 1_000)
+    srv, t, _ = _fake_daemon(tmp_path, {"output": "from the daemon"})
+    try:
+        assert client._try_daemon("bash_json", "x" * 2_000) is False  # the handler runs here
+        assert client._try_daemon("bash_json", "{}") is True  # the fake answers this one
+    finally:
+        t.join(5)
+        srv.close()
+
+
 def test_a_guard_that_raised_in_the_daemon_runs_here(client, tmp_path: Path):
     srv, t, _ = _fake_daemon(tmp_path, {"error": "boom", "ran": True})
     try:
@@ -217,7 +233,9 @@ def test_each_event_waits_inside_its_own_budget(client, tmp_path: Path, monkeypa
     (tmp_path / "store" / "daemon_token").write_text(TOKEN)
     for event in client.DAEMON_EVENTS:
         client._try_daemon(event, "{}")
-        assert waits[event] + 0.25 < budgets[event], event
+        # The checks pre_tool_json routes to keep their names for a session
+        # still on an older hooks.json, and run inside its budget.
+        assert waits[event] + 0.25 < budgets.get(event, budgets["pre_tool_json"]), event
     assert waits["prompt_json"] > 5
 
 

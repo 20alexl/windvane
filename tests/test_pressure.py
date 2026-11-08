@@ -186,6 +186,28 @@ def test_compaction_point_precedence_and_defaults(tmp_path: Path, monkeypatch):
     assert cp.compaction_point(1_000_000, str(proj), sid) == (300_000, "settings")
 
 
+@pytest.mark.parametrize("window,point", [
+    (1_000_000, 100_000),  # a tenth of the window is the whole point
+    (1_000_000, 60_000),  # below zero
+    (1_000_000, 40_000),  # the last call would be below zero too
+    (200_000, 20_000),  # so would the trigger
+])
+def test_a_small_point_on_a_large_window_keeps_every_mark_above_zero_in_order(window, point):
+    th = cp.thresholds(window, point)
+    assert 0 < th["headsup_at"] < th["checkpoint_at"] < th["trigger_at"] < point, th
+
+
+def test_a_small_point_with_a_high_headsup_knob_pulled_under_the_last_call_stays_above_zero(monkeypatch):
+    monkeypatch.setattr(cp, "_knob_percent", lambda key, _p="": 99 if key == "headsup_percent" else None)
+    th = cp.thresholds(1_000_000, 100_000)
+    assert 0 < th["headsup_at"] < th["checkpoint_at"]
+
+
+def test_a_heads_up_set_low_on_purpose_is_left_there(monkeypatch):
+    monkeypatch.setattr(cp, "_knob_percent", lambda key, _p="": 5 if key == "headsup_percent" else None)
+    assert cp.thresholds(1_000_000, 100_000)["headsup_at"] == 5_000
+
+
 def test_thresholds_and_their_knobs(tmp_path: Path, monkeypatch):
     th = cp.thresholds(1_000_000, 967_000)
     assert th["headsup_at"] == 867_000 and th["checkpoint_at"] == 915_000

@@ -118,6 +118,28 @@ def _line(request: dict, token: str = TOKEN) -> bytes:
     return json.dumps({**request, "token": token}).encode() + b"\n"
 
 
+def test_a_line_past_the_limit_is_refused_before_it_is_read_whole(ss, listener, monkeypatch):
+    """The token is inside the line, so anything on the machine could fill the
+    daemon's memory by never sending a line end."""
+    monkeypatch.setattr(ss, "HTTP_MAX_BODY", 200_000)
+    with socket.create_connection(("127.0.0.1", listener), timeout=CLIENT_TIMEOUT) as s:
+        s.sendall(b'{"hook_event": "pre_tool_json", "stdin": "' + b"x" * 300_000)
+        s.shutdown(socket.SHUT_WR)
+        out = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            out += chunk
+    reply = json.loads(out)
+    assert "too large" in reply["error"] and "ran" not in reply  # refused unrun: the client's own handler runs
+
+
+def test_a_line_under_the_limit_is_served(ss, listener):
+    reply = json.loads(_raw(listener, _line({"hook_event": "doctor_ping", "stdin": "x" * 300_000})))
+    assert "unsupported hook_event" in reply["error"]
+
+
 def _post(port: int, body: dict, headers: "dict | None" = None, path: str = "/hook", method: str = "POST"):
     import http.client
 

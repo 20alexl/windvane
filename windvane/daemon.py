@@ -380,9 +380,13 @@ def _http_reply(conn, status: int, body: dict) -> None:
         "Connection: close\r\n\r\n"
     ).encode("ascii")
     conn.sendall(head + payload)
-    # A lingering close: an answer sent before the request was read whole (a
-    # 404, a 413) would otherwise be lost to the reset that closing a socket
-    # with unread bytes sends on Windows. The client has the answer already.
+    _lingering_close(conn)
+
+
+def _lingering_close(conn) -> None:
+    """An answer sent before the request was read whole (a 404, a 413) would
+    otherwise be lost to the reset that closing a socket with unread bytes sends
+    on Windows. The client has the answer already."""
     try:
         conn.shutdown(socket.SHUT_WR)
         conn.settimeout(0.2)
@@ -565,6 +569,12 @@ def _handle_client(conn, holder):
             data += chunk
             if len(data) > HTTP_MAX_HEAD and not data.lstrip().startswith(b"{"):
                 break  # no line end in sight and not a JSON line: malformed
+            if len(data) > HTTP_MAX_BODY:
+                # The token is inside the line, so this comes before any check
+                # of who is asking. Nothing ran: a hook client runs it itself.
+                conn.sendall(b'{"error": "request too large"}\n')
+                _lingering_close(conn)
+                return
 
         if not data:
             return

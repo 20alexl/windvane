@@ -8,7 +8,7 @@
 // test's on('classic.<Event>') is reached only when the bridge called next.
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import { foldClassic, matcherMatches, plan, readOutput, toClassic } from '../../hooks/bridge'
+import { foldClassic, matcherMatches, plan, readAnswer, readOutput, toClassic } from '../../hooks/bridge'
 
 const STORE = 'C:/tmp/windvane-bridge-store'
 const PORT = 47123
@@ -167,8 +167,8 @@ test('a PostToolUse answer carries its context and a rewritten tool output', asy
   expect(t.fetched.map(f => f.hook)).toEqual(['bash_json'])
 })
 
-test('a 500, an error body, a refused connection and a missing port file each take next', async ($, on) => {
-  let answer: Answer = { status: 500, text: 'boom' }
+test('a request refused unrun, an unrun error body and a connection that never opened each take next', async ($, on) => {
+  let answer: Answer = { status: 403, text: JSON.stringify({ error: 'missing or wrong X-Windvane-Token header' }) }
   const t = engine(on, { answer: () => answer })
   t.bottom('UserPromptSubmit', { additionalContext: ['settings'] })
 
@@ -178,9 +178,34 @@ test('a 500, an error body, a refused connection and a missing port file each ta
   answer = 'throw'
   expect((await $.classic.UserPromptSubmit({ prompt: 'third prompt here' })).additionalContext).toEqual(['settings'])
   expect(t.reached.length).toBe(3)
-  expect(t.logs.join('\n')).toContain('daemon answered 500')
+  expect(t.logs.join('\n')).toContain('daemon answered 403')
   expect(t.logs.join('\n')).toContain('daemon error')
   expect(t.logs.join('\n')).toContain('fetch failed')
+})
+
+// The settings hook would run the handler a second time: a prompt or a tool
+// result recorded twice.
+test('a handler that may have run is not repeated through the settings hooks', async ($, on) => {
+  let answer: Answer = { status: 200, text: JSON.stringify({ error: 'handler raised', ran: true }) }
+  const t = engine(on, { answer: () => answer })
+  t.bottom('UserPromptSubmit', { additionalContext: ['settings'] })
+
+  expect((await $.classic.UserPromptSubmit({ prompt: 'a handler that raised' })).additionalContext).toBe(undefined)
+  answer = { status: 500, text: 'boom' }
+  expect((await $.classic.UserPromptSubmit({ prompt: 'a server error here' })).additionalContext).toBe(undefined)
+  answer = { status: 200, text: 'not json' }
+  expect((await $.classic.UserPromptSubmit({ prompt: 'no answer in the reply' })).additionalContext).toBe(undefined)
+  expect(t.reached.length).toBe(0)
+  expect(t.logs.join('\n')).toContain('lost')
+})
+
+test('a type that may have run keeps the settings hooks off the types after it', () => {
+  expect(readAnswer(200, JSON.stringify({ error: 'handler raised', ran: true }))).toEqual({ reason: 'daemon error: handler raised', ran: true })
+  expect(readAnswer(200, JSON.stringify({ error: 'unsupported' }))).toEqual({ reason: 'daemon error: unsupported', ran: false })
+  expect(readAnswer(413, '')).toEqual({ reason: 'daemon answered 413', ran: false })
+  expect(readAnswer(501, '')).toEqual({ reason: 'daemon answered 501', ran: false })
+  expect(readAnswer(502, '')).toEqual({ reason: 'daemon answered 502', ran: true })
+  expect(readAnswer(200, JSON.stringify({ output: 'x' }))).toEqual({ output: 'x' })
 })
 
 test('no port file: the settings hooks run and nothing is fetched', async ($, on) => {

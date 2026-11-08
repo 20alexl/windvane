@@ -546,18 +546,28 @@ def thresholds(window: int, point: int, project_dir: str = "") -> dict:
     knobs. Unset, each is computed: the last call a fixed margin under the
     trigger (20K, or 10K on a 200K window), the heads-up a tenth of the
     window under the point. A mark set at or above the one over it is
-    pulled under it, so the order always holds."""
+    pulled under it, so the order always holds. A point small against the
+    window (100K on a 1M window) leaves those margins no room, and a mark at or
+    below zero would fire on every call: a computed or pulled mark stops at half
+    the mark over it. A heads-up set low on purpose stays where it was set."""
     reserve = _knob_positive("output_reserve", OUTPUT_RESERVE, project_dir)
     margin = CHECKPOINT_MARGIN_SMALL if window <= SMALL_WINDOW else CHECKPOINT_MARGIN
     trigger_at = int(point - reserve)
+    if trigger_at <= 0:
+        trigger_at = int(point / 2)
     last = _knob_percent("last_call_percent", project_dir)
     checkpoint_at = int(point * last / 100) if last is not None else int(trigger_at - margin)
     if checkpoint_at >= trigger_at:
         checkpoint_at = int(trigger_at - margin)
+    if checkpoint_at <= 0:
+        checkpoint_at = int(trigger_at / 2)
     hu = _knob_percent("headsup_percent", project_dir)
     headsup_at = int(point * hu / 100) if hu is not None else int(point - HEADSUP_FRACTION * window)
-    if headsup_at >= checkpoint_at:
+    pulled = headsup_at >= checkpoint_at
+    if pulled:
         headsup_at = int(checkpoint_at - HEADSUP_FRACTION * window / 2)
+    if hu is None or pulled:
+        headsup_at = max(headsup_at, int(checkpoint_at / 2))
     return {
         "headsup_at": headsup_at,
         "checkpoint_at": checkpoint_at,

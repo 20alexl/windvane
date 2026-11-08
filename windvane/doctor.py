@@ -70,7 +70,9 @@ def _semantic_info():
 def _daemon_info(timeout=1.0):
     """Ask the daemon named by the port file for a cheap answer. A hook event
     no handler serves comes back at once with an error, which proves the
-    daemon reads and answers; nothing else is touched."""
+    daemon reads and answers; nothing else is touched. Only that error counts:
+    a refused token, or some other service on a reused port, is a daemon this
+    install's hooks cannot use."""
     from windvane import daemon
 
     try:
@@ -89,8 +91,8 @@ def _daemon_info(timeout=1.0):
                 break
             data += chunk
         sock.close()
-        json.loads(data.decode("utf-8").strip())
-        return {"answers": True, "port": port}
+        reply = json.loads(data.decode("utf-8").strip())
+        return {"answers": "unsupported hook_event" in str(reply.get("error", "")), "port": port}
     except Exception:
         return {"answers": False, "port": port}
 

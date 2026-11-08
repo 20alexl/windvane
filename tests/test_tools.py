@@ -120,6 +120,35 @@ def test_checkpoint_save_answers_with_the_fill_and_the_choice(tmp_path, monkeypa
     assert state["pressure"]["compact_pending"]["fill_pct"] == "59%"
 
 
+def test_half_a_surrogate_pair_is_stored_by_every_tool(warm, proj):
+    remembered = call(warm, "memory", proj, operation="remember", content="clipped \ud83d note about the build")
+    assert remembered["isError"] is False and "Remembered" in remembered["text"]
+    rule = call(warm, "memory", proj, operation="add_rule", content="always clip \ud83d with care", reason="half \udc00 a pair")
+    assert rule["isError"] is False
+    found = call(warm, "memory", proj, operation="search", query="clipped \ud83d note")
+    assert found["isError"] is False and "� note about the build" in found["text"]
+
+
+def test_a_memory_that_fails_to_store_is_an_error(warm, proj, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(warm.store, "remember_discovery", boom)
+    out = call(warm, "memory", proj, operation="remember", content="a note that will not land")
+    assert out["isError"] is True and "disk full" in out["text"]
+
+
+def test_the_save_reply_names_what_was_saved(warm, proj):
+    """The recorder drafts the task and the step, so the reply says what they
+    came to: a wrong draft is seen when it is saved, not after a compaction."""
+    saved = call(warm, "checkpoint", proj, operation="save", task_description="Port the tools", current_step="Step 2 of the port")
+    assert saved["isError"] is False
+    assert "Task: Port the tools." in saved["text"] and "Current step: Step 2 of the port." in saved["text"]
+    long = call(warm, "checkpoint", proj, operation="save", task_description="x" * 400, current_step="y\nz")
+    first = long["text"].splitlines()[0]
+    assert len(first) < 400 and "y z" in first
+
+
 def _session_with_a_draft(tmp_path, monkeypatch, proj, sid):
     """A session the recorder can draft from: a previous own checkpoint and a
     transcript with a typed prompt, an edit and a closing reply."""

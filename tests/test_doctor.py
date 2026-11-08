@@ -104,6 +104,38 @@ def test_a_daemon_that_answers_is_reported_with_its_port(tmp_path: Path):
     assert out["daemon"] == {"answers": False, "port": port}
 
 
+@pytest.mark.parametrize("reply", [
+    b'{"error": "missing or wrong token"}\n',  # another install's daemon, or a stale token file
+    b'{"score": 0.0, "text": ""}\n',  # a failure inside the handler
+    b'{"anything": "else"}\n',  # some other service on a reused port
+])
+def test_a_reply_that_is_not_the_pings_answer_does_not_count(tmp_path: Path, reply: bytes):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(2)
+    port = srv.getsockname()[1]
+
+    def answer():
+        conn, _ = srv.accept()
+        data = b""
+        while b"\n" not in data:
+            data += conn.recv(4096)
+        conn.sendall(reply)
+        conn.close()
+
+    t = threading.Thread(target=answer, daemon=True)
+    t.start()
+    (tmp_path / "store").mkdir()
+    (tmp_path / "store" / "daemon_port").write_text(str(port))
+    (tmp_path / "store" / "daemon_token").write_text("f" * 64)
+    try:
+        _, out = _run()
+    finally:
+        t.join(5)
+        srv.close()
+    assert out["daemon"] == {"answers": False, "port": port}
+
+
 def test_the_module_runs_as_a_command(tmp_path: Path):
     env = {**os.environ, "PYTHONPATH": str(ROOT), "WINDVANE_DIR": str(tmp_path / "store"), "WINDVANE_NO_DAEMON": "1"}
     r = subprocess.run([sys.executable, "-m", "windvane.doctor"], capture_output=True, text=True, env=env,

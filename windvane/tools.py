@@ -406,7 +406,7 @@ def _memory(warm: Warm, op: str, args: dict, raw: dict) -> str:
                 data={"category": category, "relevance": relevance},
             ).to_formatted_string()
         except Exception as e:
-            return Response(status="failed", confidence="high", reasoning=f"Failed to store memory: {e}").to_formatted_string()
+            raise ToolError(f"Failed to store memory: {e}")
 
     if op == "recall":
         got = store.recall(project_path=project_path) or {}
@@ -905,6 +905,7 @@ def run(request: dict, warm: Optional[Warm] = None) -> dict:
         arguments = {}
     if not isinstance(arguments, dict):
         return _done("arguments must be a JSON object", True)
+    arguments = _well_formed(arguments)
     own = warm is None
     try:
         if own:
@@ -931,6 +932,20 @@ def run(request: dict, warm: Optional[Warm] = None) -> dict:
     finally:
         if own and warm is not None:
             warm.close()
+
+
+def _well_formed(value):
+    """Every string of a call's arguments encodable, whatever the handler does
+    with it next (a search query, a tag, a path, a reason)."""
+    from windvane.privacy import well_formed
+
+    if isinstance(value, str):
+        return well_formed(value)
+    if isinstance(value, list):
+        return [_well_formed(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _well_formed(v) for k, v in value.items()}
+    return value
 
 
 def main() -> int:

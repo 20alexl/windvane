@@ -114,6 +114,22 @@ def session_id() -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
 
 
+def _headline(task: str, step: str, limit: int = 120) -> str:
+    """The saved task and step, one line each clipped, for the save's reply."""
+
+    def line(text: str) -> str:
+        text = " ".join(str(text or "").split())
+        text = text if len(text) <= limit else text[:limit].rstrip() + "..."
+        return text.rstrip(".")
+
+    out = ""
+    if line(task):
+        out += f" Task: {line(task)}."
+    if line(step):
+        out += f" Current step: {line(step)}."
+    return out
+
+
 class session_scope:
     """Point the hook modules' session (``windvane.events.common._session_id``,
     which ``load_state``/``save_state`` read) at ``sid`` for a block, and put
@@ -693,6 +709,9 @@ class ContextGuard:
         )
         if filed_to:
             reasoning += f" Filed under {filed_to}."
+        # What it came to: the recorder drafts these, and a wrong draft is cheap
+        # to amend now and costly after a compaction.
+        reasoning += _headline(checkpoint.task_description, checkpoint.current_step)
         if has_handoff:
             reasoning += " Includes handoff info for next session."
         suggestions = ["checkpoint(restore) at the next session start continues from here"]

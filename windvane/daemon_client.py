@@ -54,6 +54,10 @@ GUARD_WAIT_S = 1.5
 REPLY_WAIT_S = 2.5
 _LONG_REPLY_WAIT_S = {"prompt_json": 9.0}  # its budget is 10 s, and the reply is the banner
 
+# daemon.HTTP_MAX_BODY, copied (a test keeps the two in step). The daemon refuses
+# a longer line, so a hook with a result that large runs here without asking.
+MAX_LINE_BYTES = 16 * 1024 * 1024
+
 # daemon.SESSION_ENV, copied: this file imports nothing of the package's
 # (python -S). A test keeps the two in step.
 SESSION_ENV = (
@@ -123,12 +127,6 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
             token = f.read().strip()  # the daemon's secret; a request without it is refused
         if not token:
             return False
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.25)
-        sock.connect(("127.0.0.1", port))
-        # Handlers are ~5-30ms warm, and a busy daemon queues hooks behind one
-        # lock.
-        sock.settimeout(GUARD_WAIT_S if guard else _LONG_REPLY_WAIT_S.get(hook_type, REPLY_WAIT_S))
         request = {
             "token": token,
             "hook_event": hook_type,
@@ -137,8 +135,17 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
             # applies for the call (daemon.SESSION_ENV).
             "env": {k: os.environ.get(k, "") for k in SESSION_ENV},
         }
+        line = (json.dumps(request) + "\n").encode("utf-8")
+        if len(line) > MAX_LINE_BYTES:
+            return False
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.25)
+        sock.connect(("127.0.0.1", port))
+        # Handlers are ~5-30ms warm, and a busy daemon queues hooks behind one
+        # lock.
+        sock.settimeout(GUARD_WAIT_S if guard else _LONG_REPLY_WAIT_S.get(hook_type, REPLY_WAIT_S))
         sent = True
-        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        sock.sendall(line)
         data = b""
         while b"\n" not in data:
             chunk = sock.recv(65536)

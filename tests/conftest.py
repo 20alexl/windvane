@@ -15,3 +15,14 @@ def _machine_rows_pinned(monkeypatch):
     tests) replaces the rows reader instead."""
     monkeypatch.setenv("WINDVANE_SEMANTIC", "0")
     monkeypatch.setenv("WINDVANE_STRICT_PACK", "0")
+
+
+@pytest.fixture(autouse=True)
+def _no_session_left_behind(monkeypatch):
+    """The hook modules keep the session id in a module global, as one hook
+    process does. A test that points them at a session must not hand it to the
+    next test, which would find that session's own checkpoint in place of the
+    one it set up."""
+    from windvane.events import common
+
+    monkeypatch.setattr(common, "_session_id", "")

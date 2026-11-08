@@ -16,7 +16,7 @@ prompt_json            UserPromptSubmit                    prompt
 pre_edit_json          PreToolUse Edit|Write               pre_tool
 pre_read_json          PreToolUse Read                     pre_tool
 pre_bash_json          PreToolUse Bash|PowerShell          pre_tool
-pre_tool_json          PreToolUse (every tool: the halt)   pre_tool
+pre_tool_json          PreToolUse (the halt, then routes)  pre_tool
 bash_json              PostToolUse Bash                    post_tool
 post_edit_json         PostToolUse Edit|Write              post_tool
 post_milestone_json    PostToolUse ExitPlanMode|TaskUpdate post_tool

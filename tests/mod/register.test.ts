@@ -17,10 +17,10 @@ const START = { cwd: 'E:/demo/proj', surface: 'terminal' as const, isInteractive
 
 // The usage the mod reads: the fill, the window, the compaction point (the
 // breakdown's rawMaxTokens; the rest of the breakdown is not read).
-function usageAt(tokens: number): SessionUsage {
+function usageAt(tokens: number, point = 750_000): SessionUsage {
   return {
     startedAt: 0,
-    context: { tokens, window: 1_000_000, percent: Math.round(tokens / 10_000), breakdown: { rawMaxTokens: 750_000 } },
+    context: { tokens, window: 1_000_000, percent: Math.round(tokens / 10_000), breakdown: { rawMaxTokens: point }},
     rateLimits: [
       { kind: 'five_hour', percentUsed: 9, resetsAt: '2026-10-04T06:20:00.000Z' },
       { kind: 'seven_day', percentUsed: 30, resetsAt: '2026-10-09T00:00:00.000Z' },
@@ -166,6 +166,7 @@ test('writes the mirror from usage; a save never compacts, compact_now does once
 // A session in the band, the store's sessions folder present, the engine
 // answering every tool call and every brief.
 type Counters = {
+  point?: number
   compactions: number
   statuses: string[]
   briefs: number
@@ -200,7 +201,7 @@ function inBand(
   on('session.model', () => ({ value: 'claude-test' }))
   on('session.root', () => ({ value: 'E:/demo' }))
   on('session.cwd', () => ({ value: 'E:/demo/proj' }))
-  on('session.usage', () => ({ value: { ...usageAt(counters.tokens ?? tokens), ...(counters.cost === undefined ? {} : { cost: { usd: counters.cost } }) } }))
+  on('session.usage', () => ({ value: { ...usageAt(counters.tokens ?? tokens, counters.point),...(counters.cost === undefined ? {} : { cost: { usd: counters.cost } }) } }))
   on('session.compact', async () => {
     if (counters.refuse) throw new Error('$.session.compact: a turn is running (t9); the conversation compacts between turns')
     if (counters.hold) await counters.hold
@@ -424,6 +425,16 @@ test('after a compaction the fill reads stale until it changes: no band, no fill
   expect(mirror().total_input_tokens).toBe(120_000)
   expect(mirror().stale_after_compaction).toBe(undefined)
   expect(counters.statuses.at(-1)).toContain('ctx 16%')
+})
+
+test('a point small against the window keeps the last call above zero, as the engine computes it', async ($, on) => {
+  // 40K less the reserve and the margin is below zero: the band stood from the
+  // first call. The engine's thresholds() gives 4K here.
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, written: {}, tokens: 3_000, point: 40_000 }
+  mock.clock(on)
+  inBand(on, counters)
+  await $.session.start(START)
+  expect(counters.statuses.at(-1)).not.toContain('checkpoint now')
 })
 
 test('the band stands where the engine\'s marks say: the knobs move the last call, the mod reads it', async ($, on) => {

@@ -8,8 +8,8 @@
 - Bash/PowerShell (``pre_bash_json``): rules with a detector are matched;
   a match is recorded and the rule injected before the command runs (or the
   call denied when the detector says so in autonomy mode).
-- Every tool (``pre_tool_json``): the autonomy halt (a one-read no-op
-  unless halted).
+- Every tool (``pre_tool_json``, the one hook in hooks.json): the autonomy
+  halt (a one-read no-op unless halted), then the tool's check above.
 
 Each injection point also delivers the context-pressure nudges.
 """
@@ -419,31 +419,50 @@ def _hook_pre_bash(project_dir: str) -> None:
 # ============================================================================
 
 
+def _denied_by_the_halt(data: dict) -> bool:
+    """The halt. Fast path when nothing is halted (one state read, no output).
+    Halted: deny everything but the calls that let the model leave a record;
+    the reason is shown to the model."""
+    from windvane import stall as _stall
+
+    state = load_state()
+    if not _stall.halted(state):
+        return False
+    tool_name = str(data.get("tool_name") or "")
+    if tool_name in _stall.HALT_ALLOWED_TOOLS:
+        return False
+    if data.get("agent_id"):
+        # A subagent shares the session id. The halt starves the MAIN
+        # loop (Agent itself is denied there); an agent already
+        # dispatched finishes and reports. Denying it left it with no
+        # way to say so (its SendMessage to the parent included).
+        return False
+    _stall.note_denied(state)
+    save_state(state)
+    emit_deny(_stall.deny_reason(state, tool_name))
+    return True
+
+
 def _hook_pre_tool(project_dir: str) -> None:
-    """PreToolUse on every tool: the halt. Fast path when nothing is halted
-    (one state read, no output). Halted: deny everything but the calls that
-    let the model leave a record; the reason is shown to the model."""
+    """PreToolUse on every tool: the halt, then the tool's own check. One hook
+    routing by the tool costs one client process per call, where a hook per
+    matcher cost two on the tools called most."""
     try:
         stdin_data = _read_stdin_with_timeout(0.5)
         if not stdin_data:
             return
         data = json.loads(stdin_data)
-        from windvane import stall as _stall
-
-        state = load_state()
-        if not _stall.halted(state):
-            return
-        tool_name = str(data.get("tool_name") or "")
-        if tool_name in _stall.HALT_ALLOWED_TOOLS:
-            return
-        if data.get("agent_id"):
-            # A subagent shares the session id. The halt starves the MAIN
-            # loop (Agent itself is denied there); an agent already
-            # dispatched finishes and reports. Denying it left it with no
-            # way to say so (its SendMessage to the parent included).
-            return
-        _stall.note_denied(state)
-        save_state(state)
-        emit_deny(_stall.deny_reason(state, tool_name))
     except Exception:
-        pass
+        return
+    try:
+        if _denied_by_the_halt(data):
+            return
+    except Exception:
+        pass  # an unreadable state must not cost the tool's own check
+    tool_name = str(data.get("tool_name") or "")
+    if tool_name in ("Edit", "Write"):
+        _hook_pre_edit(project_dir)
+    elif tool_name == "Read":
+        _hook_pre_read(project_dir)
+    elif tool_name in ("Bash", "PowerShell"):
+        _hook_pre_bash(project_dir)

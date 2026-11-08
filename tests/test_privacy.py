@@ -42,6 +42,15 @@ def test_source_that_names_a_secret_is_not_one(text):
     assert redact(text) == text
 
 
+def test_half_a_surrogate_pair_becomes_the_replacement_character():
+    """Text clipped through the middle of an emoji arrives with half a pair,
+    which cannot be encoded: the store's id hash raised on it, and the memory
+    was lost."""
+    assert redact("clipped \ud83d here") == "clipped � here"
+    assert redact("whole \U0001f600 emoji") == "whole \U0001f600 emoji"
+    assert clean({"a": ["x\udc00"]}) == {"a": ["x�"]}
+
+
 def test_structured_values_are_cleaned_by_their_key_and_their_text():
     out = clean({"password": "hunter2", "notes": [f"api_key={LONG}"], "token": 5, "tokens": "many", "n": None})
     assert out == {"password": "[redacted]", "notes": ["api_key=[redacted]"], "token": 5, "tokens": "many", "n": None}
