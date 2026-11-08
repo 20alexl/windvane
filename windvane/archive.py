@@ -33,6 +33,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
+from windvane import atomic
+
 ARCHIVE_WRITE_FAILED = "the archive could not be written, so nothing was moved"
 
 
@@ -47,29 +49,51 @@ class ArchiveMixin:
         """Lazy-load the archive. Only archive operations call this."""
         if self._archive_loaded:
             return
-        from windvane.store import ProjectMemory
-
-        if self.archive_file.exists():
-            try:
-                data = json.loads(self.archive_file.read_text(encoding="utf-8"))
-                for path, proj_data in data.get("projects", {}).items():
-                    norm_path = self._normalize_path(path)
-                    proj_data["project_path"] = norm_path
-                    proj_data.setdefault("project_name", Path(norm_path).name)
-                    self._archive_projects[norm_path] = ProjectMemory.from_dict(proj_data)
-            except Exception:
-                pass  # the archive is best-effort
+        try:
+            stamp = self._disk_stamp(self.archive_file)  # before the read, as for a project
+            for path, proj in self._read_archive_projects().items():
+                self._archive_projects[path] = proj
+            self._archive_stamp = stamp
+        except Exception:
+            pass  # unreadable now; _save_archive reads again before it writes
         self._archive_loaded = True
 
+    def _read_archive_projects(self) -> dict:
+        """The projects in archive.json. A corrupt file is moved aside, so the
+        next save starts a new one and never writes over it; a file that cannot
+        be read raises."""
+        from windvane.store import ProjectMemory
+
+        data = atomic.read_json(self.archive_file, {}) or {}
+        out = {}
+        for path, proj_data in data.get("projects", {}).items():
+            norm_path = self._normalize_path(path)
+            proj_data["project_path"] = norm_path
+            proj_data.setdefault("project_name", Path(norm_path).name)
+            out[norm_path] = ProjectMemory.from_dict(proj_data)
+        return out
+
     def _save_archive(self) -> bool:
-        data = {
-            "version": 2,
-            "projects": {path: proj.model_dump() for path, proj in self._archive_projects.items()},
-        }
+        """Write the archive, first taking in any entry another writer put
+        there since this process read it, as _save_project does for a project.
+        That can bring back an entry the other writer just restored; it can
+        never lose one."""
         try:
-            temp_file = self.archive_file.with_suffix(".json.tmp")
-            temp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            temp_file.replace(self.archive_file)
+            with atomic.locked(self.archive_file):
+                if self._disk_stamp(self.archive_file) != self._archive_stamp:
+                    for path, disk in self._read_archive_projects().items():
+                        ours = self._archive_projects.get(path)
+                        if ours is None:
+                            self._archive_projects[path] = disk
+                            continue
+                        seen = {e.id for e in ours.entries}
+                        ours.entries.extend(e for e in disk.entries if e.id and e.id not in seen)
+                data = {
+                    "version": 2,
+                    "projects": {path: proj.model_dump() for path, proj in self._archive_projects.items()},
+                }
+                atomic.write_json(self.archive_file, data, indent=2)
+                self._archive_stamp = self._disk_stamp(self.archive_file)
             return True
         except Exception:
             return False

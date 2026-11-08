@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from windvane import atomic
+
 # Relevance at or above this never ages out of the hot tier, however long it
 # sits untouched. It must stay ABOVE every default, or the exemption stops
 # meaning "someone marked this important" and starts meaning "it exists":
@@ -341,6 +343,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         # taken at first touch and, on its next save, overwrites what a CLI
         # or a hook wrote in the meantime.
         self._project_stamps: dict[str, tuple[int, int]] = {}
+        self._unreadable_projects: set[str] = set()
+        self._archive_stamp: tuple[int, int] = (0, 0)
         self._manifest_stamp: tuple[int, int] = (0, 0)
         self._global_entries: list[MemoryEntry] = []
         self._load_error: Optional[str] = None
@@ -384,25 +388,40 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         """Load one project from its directory."""
         pdir = self._project_dir(norm_path)
         mem_file = pdir / "memory.json"
-        if mem_file.exists():
-            try:
-                proj_data = json.loads(mem_file.read_text(encoding="utf-8"))
-                proj_data["project_path"] = norm_path
-                proj_data.setdefault("project_name", Path(norm_path).name)
-                proj = ProjectMemory.from_dict(proj_data)
-                dirty = False
-                for entry in proj.entries:
-                    if not entry.id:
-                        entry.id = self._generate_entry_id(entry.content, project_path=norm_path)
-                        dirty = True
-                if dirty:
-                    self._projects[norm_path] = proj
-                    self._save_project(norm_path)
-                self._merge_pending_embeddings(norm_path)
-                return proj
-            except Exception:
-                pass
-        return ProjectMemory(project_path=norm_path, project_name=Path(norm_path).name)
+        empty = ProjectMemory(project_path=norm_path, project_name=Path(norm_path).name)
+        if not mem_file.exists():
+            return empty
+        # A file that does not parse is moved aside, so the next save starts a
+        # new one and never writes over it. One that could not be read now is
+        # not an empty project: _save_project looks again before it writes.
+        try:
+            proj_data = atomic.read_json(mem_file)
+        except OSError:
+            self._unreadable_projects.add(norm_path)
+            return empty
+        if proj_data is None:
+            return empty
+        try:
+            proj_data["project_path"] = norm_path
+            proj_data.setdefault("project_name", Path(norm_path).name)
+            proj = ProjectMemory.from_dict(proj_data)
+        except Exception:
+            atomic.quarantine(mem_file)
+            return empty
+        try:
+            dirty = False
+            for entry in proj.entries:
+                if not entry.id:
+                    entry.id = self._generate_entry_id(entry.content, project_path=norm_path)
+                    dirty = True
+            if dirty:
+                self._projects[norm_path] = proj
+                self._project_stamps[norm_path] = self._disk_stamp(mem_file)  # this load is current
+                self._save_project(norm_path)
+            self._merge_pending_embeddings(norm_path)
+        except Exception:
+            pass
+        return proj
 
     def _merge_pending_embeddings(self, norm_path: str):
         """Merge a project's pending vectors into its main vectors.
@@ -465,18 +484,14 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                     tmp_npy = pdir / "embeddings_tmp"
                     self._np.save(str(tmp_npy), matrix)  # writes embeddings_tmp.npy
                     (pdir / "embeddings_tmp.npy").replace(npy_file)
-                    temp = index_file.with_suffix(".json.tmp")
-                    temp.write_text(json.dumps({"ids": ids, "model": sig}), encoding="utf-8")
-                    temp.replace(index_file)
+                    atomic.write_json(index_file, {"ids": ids, "model": sig})
             else:
                 emb_file = pdir / "embeddings.json"
                 existing = {}
                 if emb_file.exists():
                     existing = json.loads(emb_file.read_text(encoding="utf-8"))
                 existing.update(pending)
-                temp = emb_file.with_suffix(".json.tmp")
-                temp.write_text(json.dumps(existing), encoding="utf-8")
-                temp.replace(emb_file)
+                atomic.write_json(emb_file, existing)
             pending_file.unlink(missing_ok=True)
         except Exception:
             pass
@@ -544,9 +559,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 pdir = self._project_dir(norm_path)
                 proj_data = proj.model_dump()
                 proj_data.pop("project_path", None)
-                temp = (pdir / "memory.json").with_suffix(".json.tmp")
-                temp.write_text(json.dumps(proj_data, indent=2), encoding="utf-8")
-                temp.replace(pdir / "memory.json")
+                atomic.write_json(pdir / "memory.json", proj_data, indent=2)
                 proj_emb_ids, proj_emb_vecs = [], []
                 for entry in proj.entries:
                     if entry.id in legacy_embeddings:
@@ -681,11 +694,17 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         if not self._manifest_dirty:
             return
         try:
-            temp = self._manifest_file.with_suffix(".json.tmp")
-            temp.write_text(json.dumps(self._manifest, indent=2), encoding="utf-8")
-            temp.replace(self._manifest_file)
-            self._manifest_dirty = False
-            self._manifest_stamp = self._disk_stamp(self._manifest_file)
+            with atomic.locked(self._manifest_file):
+                # A project another writer registered since this one read the
+                # file stays registered.
+                if self._disk_stamp(self._manifest_file) != self._manifest_stamp:
+                    disk = atomic.read_json(self._manifest_file, {}) or {}
+                    ours = self._manifest.setdefault("projects", {})
+                    for path, row in (disk.get("projects") or {}).items():
+                        ours.setdefault(path, row)
+                atomic.write_json(self._manifest_file, self._manifest, indent=2)
+                self._manifest_dirty = False
+                self._manifest_stamp = self._disk_stamp(self._manifest_file)
         except Exception as e:
             self._save_error = f"Failed to save manifest: {e}"
 
@@ -694,9 +713,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             return
         data = {"entries": [e.model_dump() for e in self._global_entries]}
         try:
-            temp = self._global_file.with_suffix(".json.tmp")
-            temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            temp.replace(self._global_file)
+            atomic.write_json(self._global_file, data, indent=2)
         except Exception as e:
             self._save_error = f"Failed to save global: {e}"
 
@@ -713,26 +730,34 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         proj = self._projects.get(norm_path)
         if not proj:
             return False
-        if norm_path in self._project_stamps and self._project_stale(norm_path):
-            if norm_path not in self._dirty_projects:
-                return True
-            try:
-                disk = self._load_project(norm_path)
-                seen = {e.id for e in proj.entries}
-                added = [e for e in disk.entries if e.id and e.id not in seen]
-                if added:
-                    proj.entries.extend(added)
-                    self._rebuild_indexes(proj)
-            except Exception:
-                pass
         try:
             pdir = self._project_dir(norm_path)
-            proj_data = proj.model_dump()
-            proj_data.pop("project_path", None)
-            temp = (pdir / "memory.json").with_suffix(".json.tmp")
-            temp.write_text(json.dumps(proj_data, indent=2), encoding="utf-8")
-            temp.replace(pdir / "memory.json")
-            self._project_stamps[norm_path] = self._disk_stamp(pdir / "memory.json")
+            with atomic.locked(pdir / "memory.json"):
+                # Loaded as empty because the file could not be read: this copy
+                # must not replace it, so it counts as stale.
+                unread = norm_path in self._unreadable_projects
+                # A project this process created has no stamp: a file there now
+                # is another writer's first save, stale like any other.
+                if unread or self._project_stale(norm_path):
+                    if not unread and norm_path not in self._dirty_projects:
+                        return True
+                    self._unreadable_projects.discard(norm_path)
+                    try:
+                        disk = self._load_project(norm_path)
+                        seen = {e.id for e in proj.entries}
+                        added = [e for e in disk.entries if e.id and e.id not in seen]
+                        if added:
+                            proj.entries.extend(added)
+                            self._rebuild_indexes(proj)
+                    except Exception:
+                        pass
+                    if norm_path in self._unreadable_projects:
+                        self._save_error = f"memory.json of {norm_path} could not be read; not written"
+                        return False
+                proj_data = proj.model_dump()
+                proj_data.pop("project_path", None)
+                atomic.write_json(pdir / "memory.json", proj_data, indent=2)
+                self._project_stamps[norm_path] = self._disk_stamp(pdir / "memory.json")
             return True
         except Exception as e:
             self._save_error = f"Failed to save project {norm_path}: {e}"
@@ -789,8 +814,12 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         return stamp != self._project_stamps.get(norm_path, (0, 0))
 
     def _load_project_tracked(self, norm_path: str) -> ProjectMemory:
+        # The stamp first: a write landing during the read then reads as stale
+        # at the next save. Taken after, it paired the old contents with the
+        # new stamp, and that save wrote over the other writer's entry.
+        stamp = self._disk_stamp(self._project_dir(norm_path) / "memory.json")
         proj = self._load_project(norm_path)
-        self._project_stamps[norm_path] = self._disk_stamp(self._project_dir(norm_path) / "memory.json")
+        self._project_stamps[norm_path] = stamp
         return proj
 
     # ------------------------------------------------------------------
@@ -1385,14 +1414,10 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         if self._np is not None and vecs:
             matrix = self._np.array(vecs, dtype=self._np.float32)
             self._np.save(str(pdir / "embeddings.npy"), matrix)
-            temp = (pdir / "embeddings_index.json").with_suffix(".json.tmp")
-            temp.write_text(json.dumps({"ids": ids, "model": sig}), encoding="utf-8")
-            temp.replace(pdir / "embeddings_index.json")
+            atomic.write_json(pdir / "embeddings_index.json", {"ids": ids, "model": sig})
         elif vecs:
             emb_dict = {mid: vec for mid, vec in zip(ids, vecs)}
-            temp = (pdir / "embeddings.json").with_suffix(".json.tmp")
-            temp.write_text(json.dumps(emb_dict), encoding="utf-8")
-            temp.replace(pdir / "embeddings.json")
+            atomic.write_json(pdir / "embeddings.json", emb_dict)
 
     def _load_project_embeddings(self, norm_path: str) -> tuple:
         """(ids, matrix or dict) for a project; ([], None) when there are none,
@@ -1441,9 +1466,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
 
     def _save_embeddings(self):
         try:
-            temp = self._embeddings_file.with_suffix(".json.tmp")
-            temp.write_text(json.dumps(self._embeddings), encoding="utf-8")
-            temp.replace(self._embeddings_file)
+            atomic.write_json(self._embeddings_file, self._embeddings)
         except Exception:
             pass
 
@@ -1536,9 +1559,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                     sig, _legacy = _embed_signature()
                     vectors = raw.get("vectors", {}) if isinstance(raw, dict) and "vectors" in raw else dict(raw)
                     vectors[memory_id] = emb
-                    temp = pending_file.with_suffix(".json.tmp")
-                    temp.write_text(json.dumps({"model": sig, "vectors": vectors}), encoding="utf-8")
-                    temp.replace(pending_file)
+                    atomic.write_json(pending_file, {"model": sig, "vectors": vectors})
                     return
                 except Exception:
                     pass

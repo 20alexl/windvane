@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
+from windvane import atomic
+
 from windvane.store import Response, WorkLog
 
 HISTORY_FILENAME = "handoff_history.json"
@@ -266,17 +268,17 @@ def is_trivial_auto(h: dict) -> bool:
 
 
 def _read_json(path: Path) -> Optional[dict]:
+    """None for no file, a file that cannot be read, and a corrupt one, which
+    is moved aside: one bad history must not stop every save in every project,
+    nor be written over by the next one."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return atomic.read_json(path)
     except Exception:
         return None
 
 
 def _atomic_write(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic.write_json(path, data, indent=2)
 
 
 def _load_history(dir_path: Path) -> list:
@@ -326,27 +328,30 @@ def write_handoff(
     for d in target_dirs:
         if d is None:
             continue
-        history = _load_history(d)
-        history_changed = False
-        # Seed the history from a single-slot record written before the ring
-        # existed, so nothing that was there is silently dropped.
-        if not history:
-            seed = _read_json(d / LATEST_FILENAME)
-            if seed:
-                history = [seed]
+        # The global ring is shared by every project: two saves at once read
+        # the same history, and the later write dropped the other's record.
+        with atomic.locked(d / HISTORY_FILENAME):
+            history = _load_history(d)
+            history_changed = False
+            # Seed the history from a single-slot record written before the ring
+            # existed, so nothing that was there is silently dropped.
+            if not history:
+                seed = _read_json(d / LATEST_FILENAME)
+                if seed:
+                    history = [seed]
+                    history_changed = True
+            if handoff.get("kind") == "manual":
+                history.append(handoff)
                 history_changed = True
-        if handoff.get("kind") == "manual":
-            history.append(handoff)
-            history_changed = True
-        if len(history) > history_limit:
-            history = history[-history_limit:]
-            history_changed = True
-        if history_changed:
-            _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
-            report["appended"].append(str(d))
-        if _should_promote(handoff, _read_json(d / LATEST_FILENAME), stale_hours=stale_hours):
-            _atomic_write(d / LATEST_FILENAME, handoff)
-            report["promoted"].append(str(d))
+            if len(history) > history_limit:
+                history = history[-history_limit:]
+                history_changed = True
+            if history_changed:
+                _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
+                report["appended"].append(str(d))
+            if _should_promote(handoff, _read_json(d / LATEST_FILENAME), stale_hours=stale_hours):
+                _atomic_write(d / LATEST_FILENAME, handoff)
+                report["promoted"].append(str(d))
     return report
 
 
@@ -362,12 +367,13 @@ def replace_handoff(entry: dict, target_dirs: Sequence[Optional[Path]]) -> dict:
     for d in target_dirs:
         if d is None:
             continue
-        history = _load_history(d)
-        at = [i for i, h in enumerate(history) if str((h or {}).get("task_id") or "") == tid]
-        if at:
-            history[at[-1]] = entry
-            _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
-            report["replaced"].append(str(d))
+        with atomic.locked(d / HISTORY_FILENAME):
+            history = _load_history(d)
+            at = [i for i, h in enumerate(history) if str((h or {}).get("task_id") or "") == tid]
+            if at:
+                history[at[-1]] = entry
+                _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
+                report["replaced"].append(str(d))
         ptr = _read_json(d / LATEST_FILENAME)
         if ptr and str(ptr.get("task_id") or "") == tid:
             _atomic_write(d / LATEST_FILENAME, entry)
@@ -607,9 +613,7 @@ class ContextGuard:
         except Exception:
             pass
 
-        temp_file = checkpoint_file.with_suffix(".json.tmp")
-        temp_file.write_text(json.dumps(checkpoint_data, indent=2), encoding="utf-8")
-        temp_file.replace(checkpoint_file)
+        atomic.write_json(checkpoint_file, checkpoint_data, indent=2)
 
         ring = {k: v for k, v in checkpoint_data.items() if k not in RING_ALIAS_TWINS}
         ring["kind"] = "manual"

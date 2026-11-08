@@ -24,6 +24,8 @@ import threading
 import time
 from pathlib import Path
 
+from windvane import atomic
+
 # Cached once per hook invocation: the raw stdin payload and the Claude Code
 # session id parsed from it. State is keyed by this id so two sessions from the
 # same workspace don't clobber each other's working state (see get_state_file).
@@ -231,9 +233,7 @@ def save_state(state: dict):
     state_file = get_state_file()
     state_file.parent.mkdir(parents=True, exist_ok=True)
     try:
-        tmp = state_file.parent / f"{state_file.name}.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(state, indent=2))
-        tmp.replace(state_file)
+        atomic.write_json(state_file, state, indent=2)
     except Exception:
         pass
 
@@ -1112,31 +1112,34 @@ def _append_memory_entry(project_dir: str, entry: dict, skip_if=None) -> bool:
         manifest.setdefault("version", 3)
         manifest_file = storage / "manifest.json"
         storage.mkdir(parents=True, exist_ok=True)
-        tmp = manifest_file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(manifest, indent=2))
-        tmp.replace(manifest_file)
+        try:
+            with atomic.locked(manifest_file):
+                # What others registered since this process read it stays.
+                disk = atomic.read_json(manifest_file, {}) or {}
+                for path, row in (disk.get("projects") or {}).items():
+                    projects.setdefault(path, row)
+                atomic.write_json(manifest_file, manifest, indent=2)
+        except OSError:
+            pass  # the hash is deterministic: the next writer registers it
 
     pdir = storage / "projects" / projects[norm_dir]["hash"]
     mem_file = pdir / "memory.json"
-    proj_data = {}
-    if mem_file.exists():
-        try:
-            proj_data = json.loads(mem_file.read_text())
-        except Exception:
-            proj_data = {}
-
-    existing = proj_data.get("entries", [])
-    if any(e.get("content") == entry["content"] for e in existing):
+    try:
+        with atomic.locked(mem_file):
+            # A corrupt file is moved aside and a new one started. One that
+            # cannot be read now is no empty project: nothing is written, and
+            # the hook's entry is the only thing lost.
+            proj_data = atomic.read_json(mem_file, {}) or {}
+            existing = proj_data.get("entries", [])
+            if any(e.get("content") == entry["content"] for e in existing):
+                return False
+            if skip_if and skip_if(existing):
+                return False
+            proj_data.setdefault("entries", []).append(entry)
+            proj_data["last_updated"] = time.time()
+            atomic.write_json(mem_file, proj_data, indent=2)
+    except OSError:
         return False
-    if skip_if and skip_if(existing):
-        return False
-
-    proj_data.setdefault("entries", []).append(entry)
-    proj_data["last_updated"] = time.time()
-    pdir.mkdir(parents=True, exist_ok=True)
-    tmp = mem_file.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(proj_data, indent=2))
-    tmp.replace(mem_file)
 
     # Embed to pending file (fast, no full store load); merged on next load.
     # Stamped with the embedding signature so a model change between write
@@ -1158,9 +1161,7 @@ def _append_memory_entry(project_dir: str, entry: dict, skip_if=None) -> bool:
                 elif isinstance(raw, dict) and LEGACY_SIGNATURE == sig:
                     vectors = raw
             vectors[entry["id"]] = emb
-            etmp = pending_file.with_suffix(".json.tmp")
-            etmp.write_text(json.dumps({"model": sig, "vectors": vectors}))
-            etmp.replace(pending_file)
+            atomic.write_json(pending_file, {"model": sig, "vectors": vectors})
     except Exception:
         pass
     return True
@@ -1389,10 +1390,7 @@ def _record_test_command(project_dir: str, command: str, passed: bool, files: "l
                 reverse=True,
             )[:30]
             data["commands"] = dict(keep)
-        pdir.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        atomic.write_json(path, data, indent=2)
     except Exception:
         pass
 

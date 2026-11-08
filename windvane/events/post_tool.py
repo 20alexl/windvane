@@ -22,6 +22,7 @@ import re
 import time
 from pathlib import Path
 
+from windvane import atomic
 from windvane.events.common import (
     _append_memory_entry,
     _command_can_run_tests,
@@ -129,8 +130,8 @@ def _auto_log_detected_mistake_with_files(
             if manifest.get("projects") and norm_dir in manifest["projects"]:
                 pdir = get_project_memory_dir(project_dir)
                 mem_file = pdir / "memory.json"
-                if mem_file.exists():
-                    data = json.loads(mem_file.read_text())
+                with atomic.locked(mem_file):
+                    data = atomic.read_json(mem_file, {}) or {}
                     entries = data.get("entries", [])
                     if entries:
                         # Patch the most recent entry (just added)
@@ -139,9 +140,7 @@ def _auto_log_detected_mistake_with_files(
                         existing.update(related_files)
                         last["related_files"] = sorted(existing)[:10]
                         data["entries"] = entries
-                        temp = mem_file.with_suffix(".json.tmp")
-                        temp.write_text(json.dumps(data, indent=2))
-                        temp.replace(mem_file)
+                        atomic.write_json(mem_file, data, indent=2)
         except Exception:
             pass
     return result
