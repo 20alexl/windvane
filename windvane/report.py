@@ -567,7 +567,7 @@ def collect(session_id: str, project_dir: str, state: Optional[dict] = None) -> 
         "compliance": compliance,
         "end_reason": str(run.get("end_reason") or ""),
         "failures": [f for f in (run.get("failures") or []) if isinstance(f, dict)],
-        "alerts": [a for a in (state.get("alerts") or []) if isinstance(a, dict)],
+        "alerts": _alerts_summary(state),
         "autorun": _goal_summary(state),
         "not_measured": not_measured,
         "transcript_path": str(transcript_path) if transcript_path else "",
@@ -841,7 +841,12 @@ def render_md(r: dict) -> str:
                 at_s = time.strftime("%H:%M", time.localtime(float(a.get("at") or 0)))
             except Exception:
                 at_s = "?"
-            sent = "yes" if a.get("sent") else f"no ({str(a.get('detail', ''))[:40].replace('|', '/')})"
+            if a.get("sent"):
+                sent = "yes"
+            elif a.get("detail") == "queued":
+                sent = "queued"
+            else:
+                sent = f"no ({str(a.get('detail', ''))[:40].replace('|', '/')})"
             lines.append(f"| {at_s} | {a.get('kind', '')} | {sent} | {str(a.get('message', '')).replace('|', '/')[:120]} |")
         lines.append("")
 
@@ -852,6 +857,15 @@ def render_md(r: dict) -> str:
     lines.append("")
     lines.append(f"_Generated {r['generated_at']} by windvane report schema {r['schema']}._")
     return "\n".join(lines) + "\n"
+
+
+def _alerts_summary(state: dict) -> list:
+    try:
+        from windvane import alerts
+
+        return alerts.summary(state)
+    except Exception:
+        return [a for a in (state.get("alerts") or []) if isinstance(a, dict)]
 
 
 def _goal_summary(state: dict) -> Optional[dict]:

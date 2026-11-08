@@ -19,7 +19,14 @@ from windvane.paths import (
 )
 
 
-_NEGATION = re.compile(r"\b(?:never|not|no|don'?t|dont|cannot|can'?t|won'?t|mustn'?t|shouldn'?t|avoid)\b")
+# Not a word inside a flag: --no-verify and no-op say nothing about the instruction.
+_NEGATION = re.compile(r"(?<![-\w])(?:never|not|no|don'?t|dont|cannot|can'?t|won'?t|mustn'?t|shouldn'?t|avoid)(?![-\w])")
+# Why a rule exists is no part of what it asks.
+_REASON_TAIL = re.compile(r"\s*\((?:reason|promoted to rule):.*\)\s*$", re.I | re.S)
+_CLAUSE_BREAK = re.compile(r"[.;:!?]+(?:\s+|$)|,\s+|\n")
+# The words that carry a clause's polarity, so they are not what it is about.
+# Apostrophes split in _significant_words, which leaves the stems.
+_POLARITY_WORDS = {"always", "avoid", "can", "cannot", "don", "dont", "mustn", "never", "not", "shouldn", "won"}
 
 
 def says_not(text: str) -> bool:
@@ -27,11 +34,22 @@ def says_not(text: str) -> bool:
     duplicate check uses cannot see this: "never use rm here" and "always use
     rm here" share all but one word. A heuristic, enough to keep two opposite
     instructions apart; a double negative reads as a negative."""
-    return bool(_NEGATION.search(str(text).lower().replace("’", "'")))
+    return bool(_NEGATION.search(_REASON_TAIL.sub("", str(text)).lower().replace("’", "'")))
 
 
 def _significant_words(text: str) -> set:
     return {w for w in re.findall(r"[a-z0-9_>-]+", text.lower()) if len(w) > 2}
+
+
+def _clauses(text: str) -> list:
+    """(what it is about, whether it says not) per clause: polarity read over a
+    whole rule set "Be direct. No filler." against a line that says "Be direct."."""
+    out = []
+    for part in _CLAUSE_BREAK.split(text):
+        words = _significant_words(part) - _POLARITY_WORDS
+        if words:
+            out.append((words, says_not(part)))
+    return out
 
 
 def _claude_md_text(project_dir: str) -> str:
@@ -53,23 +71,31 @@ def _claude_md_text(project_dir: str) -> str:
     return "\n".join(texts)
 
 
-def _opposed_by_a_line(words: set, negative: bool, lines: list) -> bool:
-    """True when the line closest to the rule says the opposite. The closest
-    line decides, and agreement wins a tie: a file that states the rule and
-    elsewhere mentions the same words the other way still covers it."""
-    best = 0.0
-    opposed = False
-    for line_words, line_negative in lines:
-        share = len(words & line_words) / len(words)
-        if share < 0.5 or share < best:
+def _opposed_by_a_line(clauses: list, md_clauses: list) -> bool:
+    """True when the file's closest clause to some clause of the rule says the
+    opposite. The closest decides, and agreement wins a tie: a file that states
+    the rule and elsewhere mentions the same words the other way still covers
+    it. In a rule of several clauses a one-word clause is no evidence: "not
+    os.path" in "Use pathlib, not os.path" names the thing to avoid."""
+    least = 1 if len(clauses) == 1 else 2
+    for words, negative in clauses:
+        if len(words) < least:
             continue
-        agrees = line_negative == negative
-        if share > best:
-            opposed = not agrees
-        elif agrees:
-            opposed = False
-        best = share
-    return opposed
+        best = 0.0
+        opposed = False
+        for line_words, line_negative in md_clauses:
+            share = len(words & line_words) / len(words)
+            if share < 0.6 or share < best:
+                continue
+            agrees = line_negative == negative
+            if share > best:
+                opposed = not agrees
+            elif agrees:
+                opposed = False
+            best = share
+        if opposed:
+            return True
+    return False
 
 
 def filter_rules_in_claude_md(rules: list, project_dir: str) -> list:
@@ -81,23 +107,22 @@ def filter_rules_in_claude_md(rules: list, project_dir: str) -> list:
     covered when >=70% of its significant words appear in CLAUDE.md; the
     "(Reason: ...)" tail is not compared, CLAUDE.md states rules without
     one. Rules are still enforced and listable; only banner display is
-    deduped. A rule the closest CLAUDE.md line contradicts is not covered:
+    deduped. A rule the closest CLAUDE.md clause contradicts is not covered:
     hiding it would leave the model only the opposite.
     """
     text = _claude_md_text(project_dir)
     md_words = _significant_words(text)
     if not md_words:
         return rules
-    lines = None
+    md_clauses = None
     kept = []
     for r in rules:
-        content = (r.get("content", "") if isinstance(r, dict) else str(r)).lower()
-        content = re.sub(r"\s*\(reason:.*\)\s*$", "", content, flags=re.DOTALL)
+        content = _REASON_TAIL.sub("", (r.get("content", "") if isinstance(r, dict) else str(r))).lower()
         words = _significant_words(content)
         if words and len(words & md_words) / len(words) >= 0.7:
-            if lines is None:
-                lines = [(_significant_words(ln), says_not(ln)) for ln in text.splitlines() if ln.strip()]
-            if not _opposed_by_a_line(words, says_not(content), lines):
+            if md_clauses is None:
+                md_clauses = _clauses(text)
+            if not _opposed_by_a_line(_clauses(content), md_clauses):
                 continue
         kept.append(r)
     return kept

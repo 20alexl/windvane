@@ -39,7 +39,11 @@ function engine(on: On, setup: { daemon: Daemon; reply?: ReturnType<typeof ran> 
   on('env.get', ($, e) => ({ value: env[e.name] }))
   on('session.cwd', () => ({ value: 'E:\\demo\\proj' }))
   on('session.id', () => ({ value: SID }))
-  on('ui.log', () => ({ value: undefined }))
+  const logged: string[] = []
+  on('ui.log', ($, e) => {
+    logged.push(JSON.stringify(e))
+    return { value: undefined }
+  })
   on('ui.toast', () => ({ value: undefined }))
   on('fs.read', ($, e) => {
     const p = e.path.replace(/\\/g, '/')
@@ -61,7 +65,7 @@ function engine(on: On, setup: { daemon: Daemon; reply?: ReturnType<typeof ran> 
     if (r === 'throws') throw new Error('ENOENT')
     return r
   })
-  return { runs, fetched, clock }
+  return { runs, fetched, clock, logged }
 }
 
 test('session.start declares the six tools', async ($, on) => {
@@ -203,8 +207,11 @@ test('a daemon that answers 500 may have run the call: it is not repeated', asyn
 
 test('a reply that is no answer may follow a call that ran: it is not repeated', async ($, on) => {
   const t = engine(on, { daemon: { status: 200, body: 'not json' } })
+  // The cause goes to the debug log: this is also how a dead daemon would read
+  // if Claude Code's wording for a refused connection ever changed.
   expect((await $.tool.call(LOG)).deny).toContain('may still have run')
   expect(t.runs).toHaveLength(0)
+  expect(t.logged.join('\n')).toContain('not repeated')
 })
 
 

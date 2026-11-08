@@ -50,7 +50,11 @@ def test_structured_values_are_cleaned_by_their_key_and_their_text():
 def test_the_door_and_the_engine_redact_alike():
     """The two copies of the patterns, kept in step by hand: the door runs in
     the mod and the engine has no TypeScript."""
+    from windvane import privacy
+
     door = (Path(__file__).resolve().parent.parent / "hooks" / "door.ts").read_text(encoding="utf-8")
+    assert f"/{privacy._PREFIXED_KEY.pattern}/g" in door
+    assert f"/{privacy._PEM_BLOCK.pattern}/g" in door
     assert r"""\b((?:api[_ -]?key|secret|token|password|passwd)\b["']?\s*[:=]\s*["']?|bearer\s+)""" in door
     assert r"""[A-Za-z0-9_\-/+=]{16,}(?:\.[A-Za-z0-9_\-/+=]+)*""" in door
     assert r"""\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}""" in door
@@ -102,3 +106,53 @@ def test_a_banked_checkpoint_stores_no_secret(store, tmp_path):
     assert LONG not in disk and "hunter2" not in disk
     assert record["task_description"].endswith("[redacted]")
     assert json.loads(next(ring.glob("*.json")).read_text(encoding="utf-8"))
+
+
+def test_the_task_file_of_a_saved_checkpoint_is_redacted_too(tmp_path, monkeypatch):
+    """The ring was cleaned on its way in, and the per-task file written just
+    before it was not."""
+    from windvane import checkpoints as ck
+
+    monkeypatch.setenv("WINDVANE_DIR", str(tmp_path / "store"))
+    guard = ck.ContextGuard()
+    secret = "password = " + "abcdefghijklmnopqrstuvwx"
+    guard.save_checkpoint(
+        task_description=f"Rotate the login, {secret}",
+        current_step=f"Step 1, {secret}",
+        completed_steps=[f"found {secret}"],
+        pending_steps=[f"remove {secret}"],
+        files_involved=["auth.py"],
+        key_decisions=[f"keep {secret} out"],
+        project_path=str(tmp_path / "p"),
+        handoff_summary=f"left {secret}",
+        handoff_context_needed=[secret],
+        handoff_warnings=[secret],
+    )
+    written = list((tmp_path / "store").rglob("task_*.json"))
+    assert written
+    for path in written:
+        assert "abcdefgh" not in path.read_text(encoding="utf-8")
+    everything = "\n".join(p.read_text(encoding="utf-8") for p in (tmp_path / "store").rglob("*") if p.is_file())
+    assert "abcdefgh" not in everything  # the rings and HANDOFF.md too
+
+
+def test_every_other_way_in_is_redacted(tmp_path, store):
+    from windvane import checkpoints as ck
+
+    secret = "password = " + "abcdefghijklmnopqrstuvwx"
+    project = str(tmp_path / "p")
+    store.add_priority(f"remember {secret}", project)
+    store.remember_discovery(project, "a fact to change later on", auto_embed=False)
+    target = next(e for e in store.get_project(project).entries if "change later" in e.content)
+    assert store.modify_memory(project_path=project, memory_id=target.id, content=f"changed, {secret}")[0]
+    plain = store.remember_discovery(project, "a fact to promote into a rule", auto_embed=False)
+    assert plain[0]
+    other = next(e for e in store.get_project(project).entries if "promote" in e.content)
+    assert store.promote_to_rule(project, other.id, reason=f"since {secret}")[0]
+    ring = tmp_path / "ring"
+    ring.mkdir()
+    ck.write_handoff({"kind": "manual", "task_id": "t1", "summary": "first"}, [ring])
+    ck.replace_handoff({"task_id": "t1", "summary": f"amended, {secret}"}, [ring])
+    everything = _on_disk(tmp_path)
+    assert "amended" in everything and "changed" in everything
+    assert "abcdefgh" not in everything

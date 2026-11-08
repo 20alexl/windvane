@@ -316,6 +316,8 @@ class RulesMixin:
         proj.last_updated = time.time()
         self._dirty_projects.add(proj.project_path)
         self._save()
+        if proj.project_path in self._dirty_projects:
+            return (False, f"Not saved: {self._save_error}")  # as remember_discovery
         return (True, f"Rule added with id={entry.id}")
 
     def set_detector(self, project_path: str, memory_id: str, detector: Optional[dict]) -> tuple[bool, str]:

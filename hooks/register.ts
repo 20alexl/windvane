@@ -763,17 +763,36 @@ export const register: Register = (on, options) => {
     // One tick at a time: on a stalled machine a tick can outlast the interval,
     // and each late one added its own reads and writes to the shared worker.
     // A failed tick is logged and the next one tries again: an unhandled
-    // rejection here counts against the plugin.
-    let ticking = false
+    // rejection here counts against the plugin. A call that never settles would
+    // hold the slot for the whole session, so a tick passed over this many
+    // times in a row goes ahead beside it.
+    const TICK_STALL_SKIPS = 6
+    const note = (text: string) => {
+      try {
+        void Promise.resolve($.ui.log(`${PLUGIN}: context mirror: ${text}`, { to: 'debug' })).catch(() => {})
+      } catch {
+        // nowhere left to say it
+      }
+    }
+    let inFlight = 0 // the tick holding the slot; 0 for none
+    let started = 0
+    let skipped = 0
     const tick = async () => {
-      if (ticking) return
-      ticking = true
+      if (inFlight !== 0) {
+        skipped += 1
+        if (skipped < TICK_STALL_SKIPS) return
+        note(`a tick has not finished after ${skipped} intervals; going on without it`)
+      }
+      skipped = 0
+      started += 1
+      const mine = started
+      inFlight = mine
       try {
         await mirrorOnce()
       } catch (err) {
-        $.ui.log(`${PLUGIN}: context mirror: ${String(err)}`, { to: 'debug' })
+        note(String(err))
       } finally {
-        ticking = false
+        if (inFlight === mine) inFlight = 0
       }
     }
 

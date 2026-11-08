@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -134,6 +135,90 @@ def test_a_handler_that_raised_is_not_run_again_but_a_refused_request_is(client,
     finally:
         t.join(5)
         srv.close()
+
+
+GUARDS = ("pre_tool_json", "pre_bash_json", "pre_edit_json", "pre_read_json")
+
+
+@pytest.mark.parametrize("hook_type", GUARDS)
+def test_a_guard_whose_reply_was_lost_runs_here(client, tmp_path: Path, hook_type):
+    """A guard's answer is its output: without one the call it should have
+    denied goes ahead. Running a read-mostly check twice costs little."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        conn.close()  # the request arrived; no answer comes
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    (tmp_path / "store" / "daemon_port").write_text(str(srv.getsockname()[1]))
+    (tmp_path / "store" / "daemon_token").write_text(TOKEN)
+    try:
+        assert client._try_daemon(hook_type, "{}") is False
+    finally:
+        t.join(5)
+        srv.close()
+
+
+def test_a_guard_that_raised_in_the_daemon_runs_here(client, tmp_path: Path):
+    srv, t, _ = _fake_daemon(tmp_path, {"error": "boom", "ran": True})
+    try:
+        assert client._try_daemon("pre_tool_json", "{}") is False
+    finally:
+        t.join(5)
+        srv.close()
+
+
+def test_a_guard_leaves_its_fallback_the_time_to_run(client, tmp_path: Path, monkeypatch):
+    """A silent daemon took the whole hook budget, so the fallback that would
+    have denied the call was killed at the timeout."""
+    assert client.GUARD_WAIT_S + 0.25 <= 2.0  # of the three seconds a tool hook has
+    monkeypatch.setattr(client, "GUARD_WAIT_S", 0.1)
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)  # accepts in the backlog and never answers
+    (tmp_path / "store" / "daemon_port").write_text(str(srv.getsockname()[1]))
+    (tmp_path / "store" / "daemon_token").write_text(TOKEN)
+    began = time.monotonic()
+    try:
+        assert client._try_daemon("pre_bash_json", "{}") is False
+    finally:
+        srv.close()
+    assert time.monotonic() - began < 1.0
+
+
+def test_each_event_waits_inside_its_own_budget(client, tmp_path: Path, monkeypatch):
+    """One fixed limit dropped the prompt's banner at 2.5 s with 7.5 s of its
+    budget left."""
+    hooks = json.loads((Path(__file__).resolve().parent.parent / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    budgets = {}
+    for rows in hooks["hooks"].values():
+        for row in rows:
+            for hook in row["hooks"]:
+                budgets[hook["command"].rsplit(" ", 1)[-1]] = hook["timeout"]
+    waits = {}
+
+    class Sock:
+        def settimeout(self, s):
+            waits[event] = s
+
+        def connect(self, addr):
+            pass
+
+        def sendall(self, data):
+            raise ConnectionResetError
+
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: Sock())
+    (tmp_path / "store" / "daemon_port").write_text("1")
+    (tmp_path / "store" / "daemon_token").write_text(TOKEN)
+    for event in client.DAEMON_EVENTS:
+        client._try_daemon(event, "{}")
+        assert waits[event] + 0.25 < budgets[event], event
+    assert waits["prompt_json"] > 5
 
 
 def test_a_daemon_nobody_answers_at_falls_back(client, tmp_path: Path):

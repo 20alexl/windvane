@@ -417,6 +417,56 @@ def test_post_tool_runs_the_real_tools(ss, listener, tmp_path: Path, monkeypatch
 # ── the process lock and the files ───────────────────────────────────────
 
 
+def test_a_slow_reader_answers_what_the_warm_path_answers(tmp_path, monkeypatch):
+    """Through a real process. A line separator in the answer cut the printed
+    line for its reader, and a lone surrogate could not be printed at all."""
+    from windvane import daemon, tools
+
+    monkeypatch.setenv("WINDVANE_DIR", str(tmp_path / "store"))
+    monkeypatch.setattr(daemon, "_BASE_ENV", None)
+    for odd in ("a b", "a\u0085b"):
+        # A tool whose answer echoes the text, so the answer holds the character.
+        request = {"tool": "memory", "arguments": {"operation": "remember", "content": f"a note, {odd}", "project_path": str(tmp_path)}}
+        out = daemon._serve_slow_reader(request, {})
+        assert not out["isError"] and odd in out["text"]
+        assert out["text"] == tools.run(request)["text"]
+    # No tool echoes a lone surrogate, which the store refuses: the printing alone.
+    code = (
+        "import sys; from windvane import tools; "
+        "tools.run = lambda r: {'text': 'a\\ud800b', 'isError': False, 'ms': 0}; "
+        "sys.exit(tools.main())"
+    )
+    done = subprocess.run([sys.executable, "-c", code], input="{}", capture_output=True, text=True, encoding="utf-8", cwd=str(daemon.ENGINE_DIR), timeout=30)
+    assert done.returncode == 0, done.stderr[-300:]
+    assert json.loads(done.stdout.strip())["text"] == "a\ud800b"
+
+
+def test_a_slow_reader_does_not_inherit_a_session_the_call_did_not_name(monkeypatch):
+    """The child's environment began from the daemon's, so a call that named no
+    session was answered as whichever session last started the daemon."""
+    from windvane import daemon
+
+    seen = {}
+
+    def fake(argv, **kw):
+        seen.update(kw["env"])
+        return subprocess.CompletedProcess(argv, 0, stdout='{"text": "ok", "isError": false, "ms": 1}\n', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(daemon, "_BASE_ENV", None)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "the-daemons-own")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/the/daemons/own")
+    out = daemon._serve_slow_reader({"tool": "mine"}, {"CLAUDE_PROJECT_DIR": ""})
+    assert out["text"] == "ok"
+    assert "CLAUDE_CODE_SESSION_ID" not in seen
+    assert "CLAUDE_PROJECT_DIR" not in seen
+
+    seen.clear()
+    daemon._serve_slow_reader({"tool": "mine"}, {"CLAUDE_CODE_SESSION_ID": "s9"})
+    assert seen["CLAUDE_CODE_SESSION_ID"] == "s9"
+    assert os.environ["CLAUDE_CODE_SESSION_ID"] == "the-daemons-own"  # the daemon's own stays as it was
+
+
 def test_the_slow_readers_run_outside_the_hook_lock(tmp_path, monkeypatch):
     """A mine or deps call can take seconds on a large index, and every
     session's hooks waited behind it: past the bridge's two seconds a hook is

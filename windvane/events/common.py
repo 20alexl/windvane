@@ -178,14 +178,21 @@ def _prune_session_states(max_age_days: float = 7.0):
             pass
 
 
+# State files that could not be read at their last load: writing the defaults
+# load_state answered then would replace a session's state with an empty one.
+_unread_state: set = set()
+
+
 def load_state() -> dict:
-    """Load hook state."""
+    """Load hook state. A corrupt file is moved aside and started over."""
     state_file = get_state_file()
-    if state_file.exists():
-        try:
-            return json.loads(state_file.read_text())
-        except Exception:
-            pass
+    _unread_state.discard(str(state_file))
+    try:
+        data = atomic.read_json(state_file)
+        if data is not None:
+            return data
+    except OSError:
+        _unread_state.add(str(state_file))
     return {
         "prompts_without_session": 0,
         "prompts_this_session": 0,  # Track prompts within active session
@@ -231,6 +238,8 @@ def save_state(state: dict):
     A pid-tagged temp file + os.replace makes each write all-or-nothing.
     """
     state_file = get_state_file()
+    if str(state_file) in _unread_state:
+        return
     state_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         atomic.write_json(state_file, state, indent=2)
@@ -1127,8 +1136,9 @@ def _append_memory_entry(project_dir: str, entry: dict, skip_if=None) -> bool:
     try:
         with atomic.locked(mem_file):
             # A corrupt file is moved aside and a new one started. One that
-            # cannot be read now is no empty project: nothing is written, and
-            # the hook's entry is the only thing lost.
+            # cannot be read now is no empty project, and a lock another writer
+            # kept is no licence to write: nothing is written, and the hook's
+            # entry is the only thing lost.
             proj_data = atomic.read_json(mem_file, {}) or {}
             existing = proj_data.get("entries", [])
             if any(e.get("content") == entry["content"] for e in existing):

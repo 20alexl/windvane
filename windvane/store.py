@@ -345,6 +345,11 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         self._project_stamps: dict[str, tuple[int, int]] = {}
         self._unreadable_projects: set[str] = set()
         self._archive_stamp: tuple[int, int] = (0, 0)
+        # What this process took out, until a write says so: a merge with the
+        # disk reads anything missing here as new, and would bring these back.
+        self._archive_removed: set[str] = set()
+        self._archive_removed_projects: set[str] = set()
+        self._manifest_removed: set[str] = set()
         self._manifest_stamp: tuple[int, int] = (0, 0)
         self._global_entries: list[MemoryEntry] = []
         self._load_error: Optional[str] = None
@@ -384,29 +389,37 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         proj_dir.mkdir(parents=True, exist_ok=True)
         return proj_dir
 
-    def _load_project(self, norm_path: str) -> ProjectMemory:
-        """Load one project from its directory."""
+    def _load_project(self, norm_path: str, saving: bool = False) -> ProjectMemory:
+        """Load one project from its directory. ``saving``: the caller holds
+        this file's lock and writes next, so a repair is not saved from here."""
         pdir = self._project_dir(norm_path)
         mem_file = pdir / "memory.json"
         empty = ProjectMemory(project_path=norm_path, project_name=Path(norm_path).name)
+        self._unreadable_projects.discard(norm_path)
         if not mem_file.exists():
             return empty
         # A file that does not parse is moved aside, so the next save starts a
         # new one and never writes over it. One that could not be read now is
-        # not an empty project: _save_project looks again before it writes.
+        # not an empty project: _save_project looks again before it writes, and
+        # the next read looks again too.
+        moved_aside = f"memory.json of {norm_path} was damaged and moved aside as memory.json.corrupt-*"
         try:
             proj_data = atomic.read_json(mem_file)
         except OSError:
             self._unreadable_projects.add(norm_path)
             return empty
         if proj_data is None:
+            self._load_error = moved_aside
             return empty
         try:
             proj_data["project_path"] = norm_path
             proj_data.setdefault("project_name", Path(norm_path).name)
             proj = ProjectMemory.from_dict(proj_data)
         except Exception:
-            atomic.quarantine(mem_file)
+            if atomic.quarantine(mem_file):
+                self._load_error = moved_aside
+            else:
+                self._unreadable_projects.add(norm_path)
             return empty
         try:
             dirty = False
@@ -414,7 +427,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 if not entry.id:
                     entry.id = self._generate_entry_id(entry.content, project_path=norm_path)
                     dirty = True
-            if dirty:
+            if dirty and not saving:
                 self._projects[norm_path] = proj
                 self._project_stamps[norm_path] = self._disk_stamp(mem_file)  # this load is current
                 self._save_project(norm_path)
@@ -696,14 +709,16 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         try:
             with atomic.locked(self._manifest_file):
                 # A project another writer registered since this one read the
-                # file stays registered.
+                # file stays registered; one forgotten here stays forgotten.
                 if self._disk_stamp(self._manifest_file) != self._manifest_stamp:
                     disk = atomic.read_json(self._manifest_file, {}) or {}
                     ours = self._manifest.setdefault("projects", {})
                     for path, row in (disk.get("projects") or {}).items():
-                        ours.setdefault(path, row)
+                        if path not in self._manifest_removed:
+                            ours.setdefault(path, row)
                 atomic.write_json(self._manifest_file, self._manifest, indent=2)
                 self._manifest_dirty = False
+                self._manifest_removed.clear()
                 self._manifest_stamp = self._disk_stamp(self._manifest_file)
         except Exception as e:
             self._save_error = f"Failed to save manifest: {e}"
@@ -734,24 +749,35 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             pdir = self._project_dir(norm_path)
             with atomic.locked(pdir / "memory.json"):
                 # Loaded as empty because the file could not be read: this copy
-                # must not replace it, so it counts as stale.
+                # holds only what was added since and must not replace the file.
                 unread = norm_path in self._unreadable_projects
                 # A project this process created has no stamp: a file there now
                 # is another writer's first save, stale like any other.
-                if unread or self._project_stale(norm_path):
-                    if not unread and norm_path not in self._dirty_projects:
+                if self._project_stale(norm_path):
+                    if norm_path not in self._dirty_projects:
                         return True
-                    self._unreadable_projects.discard(norm_path)
                     try:
-                        disk = self._load_project(norm_path)
-                        seen = {e.id for e in proj.entries}
-                        added = [e for e in disk.entries if e.id and e.id not in seen]
-                        if added:
-                            proj.entries.extend(added)
+                        disk = self._load_project(norm_path, saving=True)
+                        if unread:
+                            # The file is the base: this copy has no summary,
+                            # language or key files of its own to keep. In place,
+                            # since a caller may be holding this object.
+                            mine = list(proj.entries)
+                            have = {e.id for e in disk.entries}
+                            vars(proj).update(vars(disk))
+                            proj.entries = disk.entries + [e for e in mine if e.id not in have]
                             self._rebuild_indexes(proj)
+                        else:
+                            seen = {e.id for e in proj.entries}
+                            added = [e for e in disk.entries if e.id and e.id not in seen]
+                            if added:
+                                proj.entries.extend(added)
+                                self._rebuild_indexes(proj)
                     except Exception:
                         pass
                     if norm_path in self._unreadable_projects:
+                        if not unread:
+                            self._unreadable_projects.discard(norm_path)  # this copy is whole; only the merge waits
                         self._save_error = f"memory.json of {norm_path} could not be read; not written"
                         return False
                 proj_data = proj.model_dump()
@@ -765,14 +791,23 @@ class MemoryStore(RulesMixin, ArchiveMixin):
 
     def _save(self) -> bool:
         """Save the dirty projects (all loaded ones when none is marked, for
-        callers that do not mark), the global entries and the manifest."""
+        callers that do not mark), the global entries and the manifest. A
+        project that was not written stays dirty: this copy is the only one of
+        its change, and the next save tries again. ``_save_error`` says what
+        the last save could not do."""
         ok = True
+        self._save_error = None
         try:
             projects_to_save = self._dirty_projects if self._dirty_projects else set(self._projects.keys())
             for norm_path in list(projects_to_save):
-                if not self._save_project(norm_path):
+                if self._save_project(norm_path):
+                    self._dirty_projects.discard(norm_path)
+                else:
                     ok = False
-            self._dirty_projects.clear()
+                    if norm_path in self._projects:
+                        self._dirty_projects.add(norm_path)
+                    else:
+                        self._dirty_projects.discard(norm_path)
             self._save_global()
             self._save_manifest()
             return ok
@@ -809,7 +844,10 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             self._manifest_stamp = stamp
 
     def _project_stale(self, norm_path: str) -> bool:
-        """Has memory.json changed on disk since this process loaded it?"""
+        """Has memory.json changed on disk since this process loaded it? A file
+        that could not be read then is unknown, so stale: look again."""
+        if norm_path in self._unreadable_projects:
+            return True
         stamp = self._disk_stamp(self._project_dir(norm_path) / "memory.json")
         return stamp != self._project_stamps.get(norm_path, (0, 0))
 
@@ -840,7 +878,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         disk is newer than the copy held here."""
         project_path = self._normalize_path(project_path)
         if project_path in self._projects:
-            if self._project_stale(project_path):
+            # A copy still waiting to be written is not dropped for the disk's:
+            # its save merges the two.
+            if project_path not in self._dirty_projects and self._project_stale(project_path):
                 self._projects[project_path] = self._load_project_tracked(project_path)
             return self._projects.get(project_path)
         if project_path not in self._manifest.get("projects", {}):
@@ -937,6 +977,10 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         proj.last_updated = time.time()
         self._dirty_projects.add(proj.project_path)
         self._save()
+        if proj.project_path in self._dirty_projects:
+            # This object keeps it for its next save; a process that ends first
+            # does not, so "added" would be a promise it may not keep.
+            return (False, f"Not saved: {self._save_error}")
 
         if auto_embed:
             try:
@@ -947,6 +991,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
 
     def add_priority(self, content: str, project_path: Optional[str] = None, relevance: int = 8):
         """A priority note (something important to remember)."""
+        from windvane.privacy import redact
+
+        content = redact(content)
         entry = MemoryEntry(content=content, category="priority", relevance=relevance)
         if project_path:
             proj = self.remember_project(project_path)
@@ -1011,6 +1058,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         self._projects.pop(norm, None)
         self._project_stamps.pop(norm, None)
         self._dirty_projects.discard(norm)
+        self._unreadable_projects.discard(norm)
+        if not self._manifest_dirty:
+            self._refresh_manifest_if_changed()  # another writer may have registered it
         if norm in self._manifest.get("projects", {}):
             hash_id = self._manifest["projects"][norm]["hash"]
             proj_dir = self._projects_dir / hash_id
@@ -1022,13 +1072,18 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 except Exception:
                     pass
             del self._manifest["projects"][norm]
+            self._manifest_removed.add(norm)
             self._manifest_dirty = True
             self._save_manifest()
         # The archive keeps its own rows per project; forgetting a project
-        # forgets what was archived from it too.
+        # forgets what was archived from it too, also a row another writer
+        # added since this process read the file.
         self._load_archive()
-        if self._archive_projects.pop(norm, None) is not None:
-            self._save_archive()
+        popped = self._archive_projects.pop(norm, None)
+        if popped is not None or self._disk_stamp(self.archive_file) != self._archive_stamp:
+            self._archive_removed_projects.add(norm)
+            if not self._save_archive():
+                self._save_error = f"archive.json could not be written; the archived rows of {norm} remain"
 
     def clear_all(self):
         """Clear every loaded memory (use with caution)."""
@@ -1256,6 +1311,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             return (False, f"Memory {memory_id} not found")
         changes = []
         if content is not None:
+            from windvane.privacy import redact
+
+            content = redact(content)
             entry.content = content
             entry.tags = self._extract_tags(content)
             entry.related_files = self._extract_file_refs(content)
@@ -1329,7 +1387,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         if "rule" not in entry.tags:
             entry.tags.append("rule")
         if reason:
-            entry.content = f"{entry.content} (Promoted to rule: {reason})"
+            from windvane.privacy import redact
+
+            entry.content = f"{entry.content} (Promoted to rule: {redact(reason)})"
         self._dirty_projects.add(proj.project_path)
         self._save()
         return (True, f"Promoted {memory_id} to rule")

@@ -721,15 +721,24 @@ def test_alerts_through_the_hooks(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WINDVANE_ALERT_COMMAND", f'"{sys.executable}" "{sink}" {{message}} "{log}"')
     sid = "s-alerts"
     note = {"session_id": sid, "cwd": str(proj), "hook_event_name": "Notification", "notification_type": "agent_needs_input"}
+    # A delivery runs after the hook, so what was not sent is read from the
+    # state: a look at the log right after the hook would pass either way.
+    def alerted() -> list:
+        if not (tmp_path / "store" / "sessions" / f"{sid}.json").exists():
+            return []
+        return [a["message"] for a in _state(tmp_path / "store", sid).get("alerts") or []]
+
     _run("notification_json", note)
-    assert not log.exists(), "outside autonomy mode notifications are silent"
+    assert alerted() == [], "outside autonomy mode notifications are silent"
     monkeypatch.setenv("WINDVANE_AUTONOMY", "1")
     _run("notification_json", dict(note, notification_type="permission_prompt", message="Allow Bash?"))
     _wait_for(log, "waiting on you: permission_prompt")
+    assert len(alerted()) == 1
     _run("notification_json", dict(note, notification_type="auth_success"))
-    assert "auth_success" not in log.read_text(encoding="utf-8")
+    assert len(alerted()) == 1
     _run("stop_failure_json", {"session_id": sid, "cwd": str(proj), "hook_event_name": "StopFailure", "error_type": "rate_limit", "error": "limit"})
     _wait_for(log, "stopped: rate_limit")
+    assert "auth_success" not in log.read_text(encoding="utf-8")
 
 
 def test_stop_failure_records_every_rate_limit_window(tmp_path: Path, monkeypatch):

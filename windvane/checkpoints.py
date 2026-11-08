@@ -281,8 +281,11 @@ def _atomic_write(path: Path, data) -> None:
     atomic.write_json(path, data, indent=2)
 
 
-def _load_history(dir_path: Path) -> list:
-    data = _read_json(dir_path / HISTORY_FILENAME)
+def _load_history(dir_path: Path, for_write: bool = False) -> list:
+    """The ring's records. ``for_write``: raises OSError for a file that could
+    not be read, which is not an empty ring, and the next write would replace it."""
+    path = dir_path / HISTORY_FILENAME
+    data = atomic.read_json(path) if for_write else _read_json(path)
     if isinstance(data, dict):
         return data.get("handoffs", []) or []
     if isinstance(data, list):
@@ -315,13 +318,15 @@ def write_handoff(
     an automatic one only contends for the pointer (a per-turn automatic
     entry in the history would evict real checkpoints from the capped ring).
     A trivial automatic record is skipped entirely. ``None`` dirs are
-    ignored. Returns {"skipped", "appended", "promoted"}."""
+    ignored. A ring whose files could not be read now is left as it is, for
+    this save only, and named in "unread": writing would replace its records.
+    Returns {"skipped", "appended", "promoted", "unread"}."""
     from windvane.privacy import clean
 
     handoff.update(clean(handoff))
     handoff.setdefault("created", time.time())
     handoff.setdefault("kind", "auto")
-    report: dict = {"skipped": False, "appended": [], "promoted": []}
+    report: dict = {"skipped": False, "appended": [], "promoted": [], "unread": []}
     if is_trivial_auto(handoff):
         report["skipped"] = True
         return report
@@ -329,16 +334,22 @@ def write_handoff(
         if d is None:
             continue
         # The global ring is shared by every project: two saves at once read
-        # the same history, and the later write dropped the other's record.
-        with atomic.locked(d / HISTORY_FILENAME):
-            history = _load_history(d)
+        # the same history, and the later write dropped the other's record. A
+        # bank must land, since it is what a compaction keeps: past the wait it
+        # goes ahead, and the worst a lost race costs is one neighbour's record.
+        with atomic.locked(d / HISTORY_FILENAME, must_land=True):
+            try:
+                history = _load_history(d, for_write=True)
+                latest = atomic.read_json(d / LATEST_FILENAME)
+            except OSError:
+                report["unread"].append(str(d))
+                continue
             history_changed = False
             # Seed the history from a single-slot record written before the ring
             # existed, so nothing that was there is silently dropped.
             if not history:
-                seed = _read_json(d / LATEST_FILENAME)
-                if seed:
-                    history = [seed]
+                if latest:
+                    history = [latest]
                     history_changed = True
             if handoff.get("kind") == "manual":
                 history.append(handoff)
@@ -349,7 +360,7 @@ def write_handoff(
             if history_changed:
                 _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
                 report["appended"].append(str(d))
-            if _should_promote(handoff, _read_json(d / LATEST_FILENAME), stale_hours=stale_hours):
+            if _should_promote(handoff, latest, stale_hours=stale_hours):
                 _atomic_write(d / LATEST_FILENAME, handoff)
                 report["promoted"].append(str(d))
     return report
@@ -360,6 +371,9 @@ def replace_handoff(entry: dict, target_dirs: Sequence[Optional[Path]]) -> dict:
     ``task_id`` in each target ring, the ``latest`` pointer where it names
     that task, and the per-task file. Nothing is appended, so the ring's
     order and count stay. Returns {"replaced", "promoted", "task_file"}."""
+    from windvane.privacy import clean
+
+    entry.update(clean(entry))
     report: dict = {"replaced": [], "promoted": [], "task_file": ""}
     tid = str(entry.get("task_id") or "")
     if not tid:
@@ -367,7 +381,7 @@ def replace_handoff(entry: dict, target_dirs: Sequence[Optional[Path]]) -> dict:
     for d in target_dirs:
         if d is None:
             continue
-        with atomic.locked(d / HISTORY_FILENAME):
+        with atomic.locked(d / HISTORY_FILENAME, must_land=True):
             history = _load_history(d)
             at = [i for i, h in enumerate(history) if str((h or {}).get("task_id") or "") == tid]
             if at:
@@ -613,6 +627,9 @@ class ContextGuard:
         except Exception:
             pass
 
+        from windvane.privacy import clean
+
+        checkpoint_data = clean(checkpoint_data)
         atomic.write_json(checkpoint_file, checkpoint_data, indent=2)
 
         ring = {k: v for k, v in checkpoint_data.items() if k not in RING_ALIAS_TWINS}
@@ -634,11 +651,13 @@ class ContextGuard:
             proj_dir = project_ring_dir(project_path) if project_path else None
             if project_path and proj_dir is None:
                 proj_dir = register_project_ring(project_path)
-            write_handoff(ring, [proj_dir, global_ring_dir()])
-            # Only a store that could not be opened leaves a project without
-            # a ring of its own: worth saying, since a project-scoped restore
-            # does not look in the global folder first.
-            filed_to = Path(project_path).name if (project_path and proj_dir) else "global checkpoints"
+            written = write_handoff(ring, [proj_dir, global_ring_dir()])
+            # Only a store that could not be opened, or a ring that could not
+            # be read just now, leaves a project without this record in a ring
+            # of its own: worth saying, since a project-scoped restore does not
+            # look in the global folder first.
+            in_own = project_path and proj_dir and str(proj_dir) not in written["unread"]
+            filed_to = Path(project_path).name if in_own else "global checkpoints"
         except Exception:
             pass
 
@@ -988,7 +1007,9 @@ class ContextGuard:
             md_lines.extend(["", "## Context Needed"] + [f"- {c}" for c in context_needed])
         if warnings:
             md_lines.extend(["", "## Warnings"] + [f"- {w}" for w in warnings])
-        text = "\n".join(md_lines)
+        from windvane.privacy import redact
+
+        text = redact("\n".join(md_lines))
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         global_md = self.storage_dir / "HANDOFF.md"
         global_md.write_text(text, encoding="utf-8")

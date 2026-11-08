@@ -260,7 +260,11 @@ async function askDaemon(host: Host, store: string, request: Request): Promise<A
     if (res.status !== 200) return (res.status >= 400 && res.status < 500) || res.status === 501 ? 'down' : 'timeout'
     return readReply(JSON.parse(res.text)) ?? 'timeout'
   } catch (err) {
-    return neverConnected(err) ? 'down' : 'timeout'
+    if (neverConnected(err)) return 'down'
+    // Matched by its wording, which Claude Code may change: visible here if a
+    // dead daemon ever starts to read as a call that may have run.
+    host.debug(`${PLUGIN}: daemon call failed, not repeated: ${String(err)}`)
+    return 'timeout'
   } finally {
     timer?.cancel()
   }

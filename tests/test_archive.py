@@ -146,6 +146,18 @@ def test_archive_moves_old_entries_and_restore_brings_one_back(tmp_path):
     assert s.search_archive(proj) == []
 
 
+def test_stale_mistakes_that_could_not_be_moved_are_not_reported_as_archived(tmp_path, monkeypatch):
+    s = _ms()
+    proj = str(tmp_path / "p")
+    s.remember_discovery(proj, "MISTAKE: TypeError: one-off typo in the loader", category="mistake", source="auto-detected", relevance=7, auto_embed=False)
+    _age(s, proj, 30)
+    with monkeypatch.context() as m:
+        m.setattr(s, "_save_archive", lambda: False)
+        rep = s.archive_stale_mistakes(proj, dry_run=False)
+    assert rep["archived_count"] == 0 and rep["entries"] == [] and rep["error"]
+    assert len(s.get_project(proj).entries) == 1
+
+
 def test_stale_machine_mistakes_archive_but_manual_and_recurring_stay(tmp_path):
     s = _ms()
     proj = str(tmp_path / "p")

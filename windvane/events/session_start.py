@@ -66,6 +66,21 @@ def _autonomy_line(project_dir: str) -> str:
         return ""
 
 
+def _damaged_memory_lines(project_dir: str) -> list:
+    """A damaged memory file is moved aside and a new one started, so the rules
+    and memories in it are gone from view: said here until a person deals with it."""
+    try:
+        moved = sorted(c.get_project_memory_dir(project_dir).glob("memory.json.corrupt-*"))
+    except Exception:
+        return []
+    if not moved:
+        return []
+    return [
+        f"WARNING: this project's memory file was damaged and moved aside, so rules and memories may be missing: {moved[-1]}"
+        " (look through it for what to keep, then delete it)."
+    ]
+
+
 def _last_session_lines(project_dir: str, work_project: str, resume_files: list, source: str = "startup") -> list:
     """Session mining: the last session's context (read-only, no building),
     the bootstrap of a project with history but no index, and the schema
@@ -306,6 +321,7 @@ def _hook_session_start(project_dir: str) -> None:
                 lines.extend(_format_restored_context(restored))
 
         lines.extend(_last_session_lines(project_dir, work_project, resume_files, str(source or "startup")))
+        lines.extend(_damaged_memory_lines(work_project))
 
         # Never set hookSpecificOutput.sessionTitle here. The session name
         # belongs to Claude Code and the user's /rename; this hook also fires

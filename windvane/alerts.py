@@ -33,7 +33,8 @@ from typing import Optional
 ALERT_TIMEOUT = 15.0
 KEEP = 50
 MAX_DELIVERIES = 2
-LAST_FILE = "alert_last.json"  # in the store: how the last delivery went
+QUEUED = "queued"
+OUTCOMES_FILE = "alert_outcomes.json"  # in the store: how the last KEEP deliveries went
 
 
 def alert_command(project_dir: str = "") -> str:
@@ -55,6 +56,13 @@ def _quote(s: str) -> str:
     return shlex.quote(s)
 
 
+def _text(message: str) -> str:
+    """The one line that goes out and into the session state."""
+    from windvane.privacy import redact
+
+    return redact(" ".join(str(message or "").split()))[:200]
+
+
 def send(
     message: str,
     project_dir: str = "",
@@ -66,7 +74,7 @@ def send(
     ({at, kind, message, sent, detail}); appends it to state["alerts"] when a
     state dict is given. ``command`` overrides the configured one. Never
     raises."""
-    message = " ".join(str(message or "").split())[:200]
+    message = _text(message)
     rec = {"at": time.time(), "kind": kind, "message": message, "sent": False, "detail": ""}
     cmd = (command or "").strip() or alert_command(project_dir)
     if not cmd:
@@ -93,15 +101,13 @@ def enqueue(message: str, project_dir: str = "", kind: str = "info", state: Opti
     """``send`` for a hook: the command runs in a process of its own and the
     hook goes on. It ran inside the hook, under the daemon's one lock, for up
     to ALERT_TIMEOUT: every session's hooks waited for a slow webhook. The
-    record says queued; the delivery's outcome lands in LAST_FILE. Never
-    raises."""
-    from windvane.privacy import redact
-
+    record says queued; the delivery's outcome lands in OUTCOMES_FILE, and
+    ``summary`` joins the two. Never raises."""
     cmd = alert_command(project_dir)
     if not cmd:
         return send(message, project_dir, kind, state)
-    text = redact(" ".join(str(message or "").split()))[:200]
-    rec = {"at": time.time(), "kind": kind, "message": text, "sent": False, "detail": "queued"}
+    text = _text(message)
+    rec = {"at": time.time(), "kind": kind, "message": text, "sent": False, "detail": QUEUED}
     try:
         kwargs: dict = {"stdin": subprocess.PIPE, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
                         "cwd": str(Path(__file__).resolve().parent.parent)}
@@ -110,7 +116,7 @@ def enqueue(message: str, project_dir: str = "", kind: str = "info", state: Opti
         else:
             kwargs["start_new_session"] = True
         child = subprocess.Popen([sys.executable, "-m", "windvane.alerts"], **kwargs)
-        child.stdin.write(json.dumps({"message": text, "command": cmd, "kind": kind}).encode("utf-8"))
+        child.stdin.write(json.dumps({"message": text, "command": cmd, "kind": kind, "at": rec["at"]}).encode("utf-8"))
         child.stdin.close()
     except Exception as e:
         rec["detail"] = f"could not queue: {str(e)[:150]}"
@@ -137,11 +143,36 @@ def _deliver() -> None:
     else:
         rec = {"at": time.time(), "kind": request.get("kind", "info"), "message": request["message"],
                "sent": False, "detail": f"not sent: {MAX_DELIVERIES} alerts already going out"}
-    atomic.write_json(store / LAST_FILE, rec, indent=2)
+    rec["queued_at"] = request.get("at")
+    path = store / OUTCOMES_FILE
+    with atomic.locked(path, wait=5.0, must_land=True):  # no hook waits on this process
+        atomic.write_json(path, {"outcomes": ([*_outcomes(), rec])[-KEEP:]}, indent=2)
+
+
+def _outcomes() -> list:
+    from windvane import atomic
+    from windvane.config import store_dir
+
+    try:
+        data = atomic.read_json(Path(store_dir()) / OUTCOMES_FILE)
+        rows = data.get("outcomes") if isinstance(data, dict) else None
+        return [o for o in rows if isinstance(o, dict)] if isinstance(rows, list) else []
+    except OSError:
+        return []
 
 
 def summary(state: dict) -> list[dict]:
-    return [a for a in (state.get("alerts") or []) if isinstance(a, dict)]
+    """The session's alerts, each queued one with how its delivery went once it
+    has gone out."""
+    rows = [a for a in (state.get("alerts") or []) if isinstance(a, dict)]
+    if not any(a.get("detail") == QUEUED for a in rows):
+        return rows
+    done = {o.get("queued_at"): o for o in _outcomes()}
+    out = []
+    for a in rows:
+        o = done.get(a.get("at")) if a.get("detail") == QUEUED else None
+        out.append({**a, "sent": bool(o.get("sent")), "detail": o.get("detail", "")} if o else a)
+    return out
 
 
 if __name__ == "__main__":

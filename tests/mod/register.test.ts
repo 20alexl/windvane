@@ -362,6 +362,16 @@ test('a slow mirror tick is not overlapped by the next one', async ($, on) => {
   for (const go of waiting) go()
   await clock.advance(10_000)
   expect(reached).toBe(before + 2) // and the mirror carries on after it
+
+  // A tick that never settles does not stop the mirror for the session.
+  holding = true
+  const stuck = reached
+  await clock.advance(10_000)
+  expect(reached).toBe(stuck + 1)
+  for (let i = 0; i < 6; i += 1) await clock.advance(10_000)
+  expect(reached).toBe(stuck + 2)
+  holding = false
+  for (const go of waiting) go()
 })
 
 test('a compaction the engine refuses is asked for again at the next turn end, with nothing said', async ($, on) => {

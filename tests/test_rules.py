@@ -222,6 +222,15 @@ def test_the_detector_helpers_are_reachable_from_rules():
     assert rules.rules_with_detectors is compliance.rules_with_detectors
 
 
+def test_a_reason_or_a_flag_does_not_read_as_the_opposite(tmp_path):
+    """A "not" in the reason, or the "no" in --no-verify, made a new rule of a
+    duplicate, and took two opposite rules for the same one."""
+    from windvane.rules import similar
+
+    assert similar("Keep LF endings everywhere in the tree", "Keep LF endings everywhere in the tree (Reason: not CRLF)")
+    assert not similar("Always pass --no-verify to the commit", "Never pass --no-verify to the commit")
+
+
 def test_a_rule_saying_the_opposite_is_kept_apart(tmp_path):
     """The word overlap and the anchors cannot see a "never": the opposite of
     a stored rule was dropped as a duplicate of it."""

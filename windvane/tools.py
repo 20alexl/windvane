@@ -915,7 +915,15 @@ def run(request: dict, warm: Optional[Warm] = None) -> dict:
         # The session this call belongs to: the id Claude Code exports (the
         # daemon applies the caller's environment for the call).
         with session_scope(os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()):
-            return _done(_answer(tool, arguments, warm), False)
+            writes = tool in ("memory", "log")
+            if writes:
+                warm.store._save_error = None
+            text = _answer(tool, arguments, warm)
+            if writes and warm.store._save_error:
+                # The store held on to the change, which a later process knows
+                # nothing of: an answer of success would be a promise it may not keep.
+                return _done(f"{text}\n\nNot saved: {warm.store._save_error}. Call this again in a moment.", True)
+            return _done(text, False)
     except ToolError as e:
         return _done(str(e), True)
     except Exception as e:  # the model reads the reason
@@ -936,11 +944,10 @@ def main() -> int:
         print(json.dumps({"text": "stdin must be a JSON object", "isError": True, "ms": 0}))
         return 1
     out = run(request)
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    print(json.dumps(out, ensure_ascii=False))
+    # Pure ASCII: one line on any code page, whatever the answer holds. A line
+    # separator in it split the line for a reader, and a lone surrogate could
+    # not be printed.
+    print(json.dumps(out))
     return 1 if out["isError"] else 0
 
 

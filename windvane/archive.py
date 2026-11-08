@@ -59,41 +59,52 @@ class ArchiveMixin:
         self._archive_loaded = True
 
     def _read_archive_projects(self) -> dict:
-        """The projects in archive.json. A corrupt file is moved aside, so the
-        next save starts a new one and never writes over it; a file that cannot
-        be read raises."""
+        """The projects in archive.json. A corrupt file, or one of the wrong
+        shape, is moved aside, so the next save starts a new one and never
+        writes over it; a file that cannot be read or moved raises."""
         from windvane.store import ProjectMemory
 
         data = atomic.read_json(self.archive_file, {}) or {}
         out = {}
-        for path, proj_data in data.get("projects", {}).items():
-            norm_path = self._normalize_path(path)
-            proj_data["project_path"] = norm_path
-            proj_data.setdefault("project_name", Path(norm_path).name)
-            out[norm_path] = ProjectMemory.from_dict(proj_data)
+        try:
+            for path, proj_data in data.get("projects", {}).items():
+                norm_path = self._normalize_path(path)
+                proj_data["project_path"] = norm_path
+                proj_data.setdefault("project_name", Path(norm_path).name)
+                out[norm_path] = ProjectMemory.from_dict(proj_data)
+        except Exception:
+            if not atomic.quarantine(self.archive_file):
+                raise OSError("archive.json has the wrong shape and could not be moved aside") from None
+            return {}
         return out
 
     def _save_archive(self) -> bool:
         """Write the archive, first taking in any entry another writer put
-        there since this process read it, as _save_project does for a project.
-        That can bring back an entry the other writer just restored; it can
-        never lose one."""
+        there since this process read it, as _save_project does for a project,
+        but not one this process took out. That can bring back an entry the
+        other writer just restored; it can never lose one."""
         try:
             with atomic.locked(self.archive_file):
                 if self._disk_stamp(self.archive_file) != self._archive_stamp:
                     for path, disk in self._read_archive_projects().items():
+                        if path in self._archive_removed_projects:
+                            continue
+                        new = [e for e in disk.entries if e.id and e.id not in self._archive_removed]
                         ours = self._archive_projects.get(path)
                         if ours is None:
+                            disk.entries = new
                             self._archive_projects[path] = disk
                             continue
                         seen = {e.id for e in ours.entries}
-                        ours.entries.extend(e for e in disk.entries if e.id and e.id not in seen)
+                        ours.entries.extend(e for e in new if e.id not in seen)
                 data = {
                     "version": 2,
                     "projects": {path: proj.model_dump() for path, proj in self._archive_projects.items()},
                 }
                 atomic.write_json(self.archive_file, data, indent=2)
                 self._archive_stamp = self._disk_stamp(self.archive_file)
+                self._archive_removed.clear()
+                self._archive_removed_projects.clear()
             return True
         except Exception:
             return False
@@ -284,13 +295,15 @@ class ArchiveMixin:
         }
         if not dry_run and to_archive:
             if self._move_entries_to_archive(proj, to_archive) is None:
-                report.update(error=ARCHIVE_WRITE_FAILED)
+                report.update(archived_count=0, entries=[], error=ARCHIVE_WRITE_FAILED)
                 return report
             self._save()
         return report
 
     def restore_from_archive(self, project_path: str, memory_id: str) -> tuple[bool, str]:
-        """Move a memory from the archive back to the hot tier."""
+        """Move a memory from the archive back to the hot tier, the hot tier
+        first: if it cannot be written the entry stays archived. A crash between
+        the writes leaves it in both, which the next restore puts right."""
         self._load_archive()
         archive_proj = self._archive_projects.get(self._normalize_path(project_path))
         if not archive_proj:
@@ -298,15 +311,24 @@ class ArchiveMixin:
         entry = self._get_entry_by_id(archive_proj, memory_id)
         if not entry:
             return (False, f"Memory {memory_id} not found in archive")
-        entry.archived_at = None
-        entry.last_accessed = time.time()
-        entry.access_count += 1
         proj = self.remember_project(project_path)
-        proj.entries.append(entry)
-        self._update_indexes(proj, entry)
+        if self._get_entry_by_id(proj, memory_id) is None:
+            was = (entry.archived_at, entry.last_accessed, entry.access_count)
+            entry.archived_at = None
+            entry.last_accessed = time.time()
+            entry.access_count += 1
+            proj.entries.append(entry)
+            self._update_indexes(proj, entry)
+            self._dirty_projects.add(proj.project_path)
+            if not self._save():
+                # Taken back, so nothing waits to be written for an answer of no.
+                why = self._save_error or "the project could not be written"
+                proj.entries = [e for e in proj.entries if e is not entry]
+                self._rebuild_indexes(proj)
+                entry.archived_at, entry.last_accessed, entry.access_count = was
+                return (False, f"Memory {memory_id} stays archived: {why}")
         archive_proj.entries = [e for e in archive_proj.entries if e.id != memory_id]
-        self._dirty_projects.add(proj.project_path)
-        self._save()
+        self._archive_removed.add(memory_id)
         self._save_archive()
         return (True, f"Restored memory {memory_id} to active")
 

@@ -42,6 +42,18 @@ DAEMON_EVENTS = {
     "pre_tool_json",
 }
 
+# The events whose answer can deny a tool call. Without an answer the call goes
+# ahead, so a lost reply falls back to the handler here: a repeat of a check
+# costs one more recorded denial at worst (compliance dedupes by tool call).
+GUARDS = {"pre_tool_json", "pre_bash_json", "pre_edit_json", "pre_read_json"}
+
+# How long to wait for the reply, in seconds, inside each hook's budget in
+# hooks.json. A guard leaves its fallback room to run. Every other event is not
+# run a second time, so it can use what the fallback would have had.
+GUARD_WAIT_S = 1.5
+REPLY_WAIT_S = 2.5
+_LONG_REPLY_WAIT_S = {"prompt_json": 9.0}  # its budget is 10 s, and the reply is the banner
+
 # daemon.SESSION_ENV, copied: this file imports nothing of the package's
 # (python -S). A test keeps the two in step.
 SESSION_ENV = (
@@ -95,10 +107,12 @@ def _dbg(msg: str) -> None:
 
 def _try_daemon(hook_type: str, payload: str) -> bool:
     """One TCP round trip. True = the daemon has it (its output printed, or
-    the outcome unknown); False = no handler ran, use the fallback. Once the
-    request is sent, a lost reply says nothing about the handler, which may
-    have finished, so it is not run a second time here: the event would be
-    recorded twice, on a machine already too busy to answer in time."""
+    the outcome unknown); False = use the fallback. Once the request is sent, a
+    lost reply says nothing about the handler, which may have finished, so it
+    is not run a second time here: the event would be recorded twice, on a
+    machine already too busy to answer in time. A guard is the exception: it
+    has no answer without its output, and no answer lets the tool call through."""
+    guard = hook_type in GUARDS
     sent = False
     port_file = os.path.join(_storage_dir(), "daemon_port")
     token_file = os.path.join(_storage_dir(), "daemon_token")
@@ -113,9 +127,8 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
         sock.settimeout(0.25)
         sock.connect(("127.0.0.1", port))
         # Handlers are ~5-30ms warm, and a busy daemon queues hooks behind one
-        # lock. Inside the shortest hook budget (3 s) with the connect above;
-        # nothing runs after this wait, so it can use what the fallback had.
-        sock.settimeout(2.5)
+        # lock.
+        sock.settimeout(GUARD_WAIT_S if guard else _LONG_REPLY_WAIT_S.get(hook_type, REPLY_WAIT_S))
         request = {
             "token": token,
             "hook_event": hook_type,
@@ -136,7 +149,7 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
         response = json.loads(data.decode("utf-8").strip())
         if "output" not in response:
             _dbg(f"daemon error response: {str(response)[:120]}")
-            return bool(response.get("ran"))  # refused unrun: the real handler runs here
+            return bool(response.get("ran")) and not guard  # refused unrun: the real handler runs here
         out = response["output"]
         if out:
             sys.stdout.write(out)
@@ -144,8 +157,9 @@ def _try_daemon(hook_type: str, payload: str) -> bool:
         _dbg("served by daemon")
         return True
     except Exception as e:
-        _dbg(f"daemon unreachable: {type(e).__name__}: {e}" + (" (request sent, not repeated)" if sent else ""))
-        return sent
+        repeat = guard or not sent
+        _dbg(f"daemon unreachable: {type(e).__name__}: {e}" + ("" if repeat else " (request sent, not repeated)"))
+        return not repeat
 
 
 def _run_fallback(hook_type: str, payload: str) -> None:

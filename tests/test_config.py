@@ -602,6 +602,36 @@ def test_rules_counts_and_the_claude_md_filter(tmp_path):
     # as covered, as does a line that agrees in other words.
     (proj / "CLAUDE.md").write_bytes(b"- Do not use rm when cleaning temp files in the build folder.\n")
     assert storage.filter_rules_in_claude_md(opposite, str(proj)) == []
+    # A rule of several clauses is read clause by clause: a "no" in one sentence
+    # says nothing about a line that states another.
+    (proj / "CLAUDE.md").write_bytes(
+        b"- Be direct. No filler. No emojis.\n- Have opinions. Disagree when appropriate.\n"
+        b"- Search first (qmd), then read only relevant files. Don't read whole folders.\n"
+        b"- Use pathlib instead of os.path.\n"
+    )
+    covered = [
+        {"id": "r5", "content": "Be direct. No filler. No emojis. Have opinions. Disagree when appropriate."},
+        {"id": "r6", "content": "Search first (qmd/grep), then read only relevant files. Don't read whole folders when a search works."},
+        {"id": "r7", "content": "Use pathlib, not os.path."},
+    ]
+    assert storage.filter_rules_in_claude_md(covered, str(proj)) == []
+    # One clause of several that the file contradicts is still shown.
+    (proj / "CLAUDE.md").write_bytes(b"- Be direct and say so.\n- Always use rm when cleaning temp files.\n")
+    mixed = [{"id": "r8", "content": "Be direct and say so. Never use rm when cleaning temp files."}]
+    assert storage.filter_rules_in_claude_md(mixed, str(proj)) == mixed
+    # Short rules that say the opposite stay apart too.
+    (proj / "CLAUDE.md").write_bytes(b"- Always push.\n")
+    assert storage.filter_rules_in_claude_md([{"id": "r9", "content": "Never push."}], str(proj)) != []
+
+
+def test_says_not_reads_the_instruction_and_not_its_flags_or_reason():
+    from windvane.storage import says_not
+
+    assert says_not("Never pass --no-verify") and not says_not("Always pass --no-verify")
+    assert not says_not("Run cargo build --no-default-features")
+    assert not says_not("Keep LF endings (Reason: not CRLF, it breaks the diff)")
+    assert not says_not("Keep LF endings (Promoted to rule: no CRLF)")
+    assert says_not("Don’t squash") and says_not("avoid rm") and says_not("Do not push")
 
 
 def _register(store: Path, projects: dict) -> None:

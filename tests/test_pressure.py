@@ -1219,12 +1219,13 @@ def test_a_hook_never_waits_for_an_alert_command(tmp_path: Path, monkeypatch):
     while time.monotonic() < end and not (log.exists() and log.read_text(encoding="utf-8")):
         time.sleep(0.05)
     assert log.read_text(encoding="utf-8").strip() == rec["message"]
-    # The outcome of the delivery is left where a person can find it.
-    last = tmp_path / "store" / "alert_last.json"
+    # The outcome of the delivery reaches the session's alerts, and the report.
+    outcomes = tmp_path / "store" / alerts.OUTCOMES_FILE
     end = time.monotonic() + 5
-    while time.monotonic() < end and not last.exists():
+    while time.monotonic() < end and not outcomes.exists():
         time.sleep(0.05)
-    assert json.loads(last.read_text(encoding="utf-8"))["sent"] is True
+    assert json.loads(outcomes.read_text(encoding="utf-8"))["outcomes"][-1]["sent"] is True
+    assert alerts.summary(state)[0]["sent"] is True and state["alerts"][0]["detail"] == "queued"
 
     monkeypatch.delenv("WINDVANE_ALERT_COMMAND")
     assert alerts.enqueue("nobody listens", str(tmp_path))["detail"] == "no alert_command configured"
@@ -1243,6 +1244,40 @@ def test_a_message_cannot_break_out_of_the_alert_command(tmp_path: Path):
     assert not marker.exists()
     got = out.read_text(encoding="utf-8")
     assert got.startswith("hi") and "%PATH%" not in got
+
+
+def test_the_run_report_tells_queued_from_failed(tmp_path: Path, monkeypatch):
+    """Every enqueued alert read "no (queued)", delivered or not."""
+    monkeypatch.setenv("WINDVANE_DIR", str(tmp_path / "store"))
+    (tmp_path / "store").mkdir()
+    state = {"alerts": [
+        {"at": 1.0, "kind": "halt", "message": "delivered", "sent": False, "detail": "queued"},
+        {"at": 2.0, "kind": "halt", "message": "dropped", "sent": False, "detail": "queued"},
+        {"at": 3.0, "kind": "halt", "message": "waiting", "sent": False, "detail": "queued"},
+        {"at": 4.0, "kind": "halt", "message": "plain", "sent": False, "detail": "no alert_command configured"},
+    ]}
+    (tmp_path / "store" / alerts.OUTCOMES_FILE).write_text(json.dumps({"outcomes": [
+        {"queued_at": 1.0, "sent": True, "detail": "ok"},
+        {"queued_at": 2.0, "sent": False, "detail": "not sent: 2 alerts already going out"},
+    ]}), encoding="utf-8")
+    rows = alerts.summary(state)
+    assert [(a["sent"], a["detail"][:6]) for a in rows] == [(True, "ok"), (False, "not se"), (False, "queued"), (False, "no ale")]
+    assert state["alerts"][0]["sent"] is False  # read through, the state stays as it was
+    markdown = rr.render_md(rr.collect("s-alerts", str(tmp_path), state))
+    assert "| yes | delivered" in markdown and "| queued | waiting" in markdown and "| no (not sent" in markdown
+
+
+def test_an_alert_is_redacted_on_every_path(tmp_path: Path, monkeypatch):
+    """With no command set the record went into the session state as written."""
+    secret = "api_key = " + "abcdefghijklmnopqrstuvwx"
+    state: dict = {}
+    assert "abcdefgh" not in alerts.send(f"halted, {secret}", str(tmp_path), state=state)["message"]
+    assert "abcdefgh" not in alerts.enqueue(f"halted, {secret}", str(tmp_path), state=state)["message"]
+    assert "abcdefgh" not in json.dumps(state)
+    got = tmp_path / "got.txt"
+    code = f"import sys; open({str(got)!r}, 'w').write(sys.stdin.read())"
+    rec = alerts.send(f"halted, {secret}", command=f'"{sys.executable}" -c "{code}"')
+    assert rec["sent"] and "abcdefgh" not in got.read_text(encoding="utf-8")
 
 
 def test_an_alert_is_recorded_whether_sent_or_not(tmp_path: Path):

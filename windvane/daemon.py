@@ -52,7 +52,7 @@ hooks module, which reaches the daemon through ``$.http.fetch``:
 Entry point: ``python -m windvane.daemon``.
 """
 
-from typing import Any
+from typing import Any, Optional
 import hmac
 import json
 import os
@@ -205,17 +205,23 @@ _SERVING = False
 _HOOK_LOCK = threading.Lock()
 
 
-def _apply_session_env(env: dict) -> dict:
-    """Set the call's session environment; returns the values to restore."""
-    old_env = {k: os.environ.get(k) for k in SESSION_ENV}
+def _set_session_env(target, env: dict) -> None:
+    """Put a call's session environment in ``target``: what the call names, and
+    no value left over for a key that is per call."""
     for key in SESSION_ENV:
         if key not in env and key not in PER_CALL_ENV:
             continue
         value = env.get(key)
         if isinstance(value, str) and value:
-            os.environ[key] = value
+            target[key] = value
         else:
-            os.environ.pop(key, None)
+            target.pop(key, None)
+
+
+def _apply_session_env(env: dict) -> dict:
+    """Set the call's session environment; returns the values to restore."""
+    old_env = {k: os.environ.get(k) for k in SESSION_ENV}
+    _set_session_env(os.environ, env)
     return old_env
 
 
@@ -479,12 +485,17 @@ _SLOW_READERS = {"mine", "deps"}
 _SLOW_READER_TIMEOUT_S = 55  # inside the mod's 60 s, so the reply says why
 
 
+_BASE_ENV: Optional[dict] = None  # set when the daemon starts serving
+
+
 def _serve_slow_reader(request: dict, env: dict) -> dict:
     import subprocess
 
     name = str(request.get("tool"))
-    child_env = dict(os.environ)
-    child_env.update({k: str(v) for k, v in env.items() if k in SESSION_ENV})
+    # Copied from what the daemon started with: this runs outside the hook lock,
+    # and a hook in flight has its own session's values in os.environ.
+    child_env = dict(os.environ if _BASE_ENV is None else _BASE_ENV)
+    _set_session_env(child_env, env)
     child_env["PYTHONIOENCODING"] = "utf-8"
     kwargs: dict = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
     try:
@@ -601,6 +612,8 @@ def serve():
     served from the first millisecond, while embedding/scoring requests wait
     on the background model load (and degrade to their callers' fallbacks
     until it finishes). Without the semantic tier no model is ever loaded."""
+    global _BASE_ENV
+    _BASE_ENV = dict(os.environ)
     # Single instance: the process lock, not the port file. Whoever holds it
     # is the daemon; a spawn that finds it held has nothing to add, whatever
     # the files say and whether or not the holder answers a connect right now.
