@@ -149,10 +149,7 @@ class ArchiveMixin:
             "dry_run": dry_run,
         }
         if not dry_run and to_archive:
-            if self._move_entries_to_archive(proj, to_archive) is None:
-                report.update(archived_count=0, entries=[], error=ARCHIVE_WRITE_FAILED)
-                return report
-            why = self._save_move(proj, {e.id for e in to_archive})
+            why = self._move_entries_to_archive(proj, to_archive)
             if why:
                 report.update(archived_count=0, entries=[], error=why)
         return report
@@ -176,34 +173,46 @@ class ArchiveMixin:
         archive_proj.entries = before
         return False
 
-    def _move_entries_to_archive(self, proj, entries: list) -> Optional[int]:
-        """Move entries from a hot project into the archive: the archive is
-        written here, the caller saves the hot tier. None when the archive
-        could not be written, with nothing moved. A crash between the two
-        writes leaves a duplicate, never a loss; the next move or restore
-        reconciles it by id."""
-        if not self._copy_into_archive(proj, entries):
-            return None
+    def _queue_for_archive(self, proj, entries: list) -> None:
+        """Take entries out of the copy held here, for the project's next save
+        to write to the archive."""
+        self._pending_archive.setdefault(proj.project_path, {}).update({e.id: copy.deepcopy(e) for e in entries})
         gone = {e.id for e in entries}
         proj.entries = [e for e in proj.entries if e.id not in gone]
         self._rebuild_indexes(proj)
         self._dirty_projects.add(proj.project_path)
-        return len(gone)
 
-    def _save_move(self, proj, moved_ids: set) -> Optional[str]:
-        """The hot tier's half of a move into the archive; why it was not
-        saved, or None. A move another writer's edit refused comes back out of
-        the archive, since the hot copy now read holds the current text. One
-        waiting on a lock stays there: the copy waiting no longer holds them."""
+    def _write_queued_to_archive(self, norm_path: str, proj, on_file: Optional[set]) -> bool:
+        """The archive's half of a move, called by the project's save under the
+        project's lock, once its merge has passed: another writer's edit has by
+        then refused the move with nothing written, and a row this copy read
+        before that writer moved or deleted it (``on_file``: the ids on the file
+        now, None when this copy is current) is left out, since it would replace
+        theirs. False, with the rows back in the copy, when the archive could
+        not be written. A crash before the hot write leaves a duplicate, never a
+        loss; the next move or restore reconciles it by id."""
+        queued = self._pending_archive.pop(norm_path, None)
+        if not queued:
+            return True
+        rows = [row for row_id, row in queued.items() if on_file is None or row_id in on_file]
+        if not rows or self._copy_into_archive(proj, rows):
+            return True
+        proj.entries.extend(rows)
+        self._rebuild_indexes(proj)
+        self._save_error = ARCHIVE_WRITE_FAILED
+        return False
+
+    def _move_entries_to_archive(self, proj, entries: list) -> Optional[str]:
+        """Move entries from a hot project into the archive and save; why it
+        did not land, or None."""
+        waiting = proj.project_path in self._dirty_projects
+        self._queue_for_archive(proj, entries)
         self._save()
         if proj.project_path not in self._dirty_projects:
             return None
         why = self._save_error or "the project could not be written"
-        if moved_ids and proj.project_path in self._conflicted_projects:
-            archive_proj = self._archive_project_for(self._normalize_path(proj.project_path), proj.project_name)
-            archive_proj.entries = [e for e in archive_proj.entries if e.id not in moved_ids]
-            self._archive_removed.update(moved_ids)
-            self._save_archive()
+        if why == ARCHIVE_WRITE_FAILED and not waiting:
+            self._dirty_projects.discard(proj.project_path)  # the rows are back: nothing waits to be written
         return why
 
     def archive_memory(self, project_path: str, memory_id: str) -> tuple[bool, str]:
@@ -212,9 +221,9 @@ class ArchiveMixin:
         entry = self._get_entry_by_id(proj, memory_id) if proj else None
         if not proj or not entry:
             return (False, f"Memory {memory_id} not found in this project")
-        if self._move_entries_to_archive(proj, [entry]) is None:
-            return (False, f"Memory {memory_id} stays active: {ARCHIVE_WRITE_FAILED}")
-        why = self._save_move(proj, {memory_id})
+        why = self._move_entries_to_archive(proj, [entry])
+        if why == ARCHIVE_WRITE_FAILED:
+            return (False, f"Memory {memory_id} stays active: {why}")
         if why:
             return (False, f"Not saved: {why}")
         return (True, f"Archived memory {memory_id}; memory(restore, memory_id='{memory_id}') brings it back")
@@ -315,10 +324,7 @@ class ArchiveMixin:
             "dry_run": dry_run,
         }
         if not dry_run and to_archive:
-            if self._move_entries_to_archive(proj, to_archive) is None:
-                report.update(archived_count=0, entries=[], error=ARCHIVE_WRITE_FAILED)
-                return report
-            why = self._save_move(proj, {e.id for e in to_archive})
+            why = self._move_entries_to_archive(proj, to_archive)
             if why:
                 report.update(archived_count=0, entries=[], error=why)
         return report
@@ -578,9 +584,15 @@ class ArchiveMixin:
             self._apply_cleanup(proj, report)
             proj.last_cleanup = time.time()
             self._dirty_projects.add(proj.project_path)
-            why = self._save_move(proj, {a["entry_id"] for a in report.get("archived", [])})
-            if why:
-                report["error"] = f"Not saved: {why}"
+            self._save()
+            if proj.project_path in self._dirty_projects:
+                if self._save_error == ARCHIVE_WRITE_FAILED:
+                    # The rows are back in the copy. The rest of the cleanup still goes.
+                    report["archived"] = []
+                    report["error"] = ARCHIVE_WRITE_FAILED
+                    self._save()
+                else:
+                    report["error"] = f"Not saved: {self._save_error}"
         return report
 
     def _is_broken_memory(self, content: str) -> Optional[str]:
@@ -628,12 +640,7 @@ class ArchiveMixin:
 
         if report.get("archived"):
             found = [self._get_entry_by_id(proj, a["entry_id"]) for a in report["archived"]]
-            leaving = [e for e in found if e]
-            if self._copy_into_archive(proj, leaving):
-                ids_to_remove.update(e.id for e in leaving)
-            else:
-                report["archived"] = []
-                report["error"] = ARCHIVE_WRITE_FAILED
+            self._queue_for_archive(proj, [e for e in found if e])
 
         for decay_info in report["decayed"]:
             entry = self._get_entry_by_id(proj, decay_info["entry_id"])

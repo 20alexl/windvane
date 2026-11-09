@@ -397,6 +397,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         self._project_stamps: dict[str, tuple[int, int]] = {}
         self._unreadable_projects: set[str] = set()
         self._moved_aside_projects: set[str] = set()
+        self._pending_archive: dict[str, dict] = {}  # project -> rows its next save moves to the archive
         # What each project held when loaded or last written: a save on a stale
         # copy then carries only what changed here. Fingerprints, not copies: a
         # store holds every project a daemon has touched.
@@ -888,6 +889,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             self._dirty_projects.discard(norm_path)
             self._projects.pop(norm_path, None)
             self._project_bases.pop(norm_path, None)
+            self._pending_archive.pop(norm_path, None)
         self._conflicted_projects.clear()
 
     def _save_project(self, norm_path: str) -> bool:
@@ -907,6 +909,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 # Loaded as empty because the file could not be read: this copy
                 # holds only what was added since and must not replace the file.
                 unread = norm_path in self._unreadable_projects
+                on_file = None
                 # A project this process created has no stamp: a file there now
                 # is another writer's first save, stale like any other.
                 if self._project_stale(norm_path):
@@ -917,11 +920,14 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                     # was deleted: this copy is whole, and starts the new file.
                     if norm_path not in self._unreadable_projects and norm_path not in self._moved_aside_projects:
                         self._merge_onto_disk(norm_path, proj, disk)
+                        on_file = {e.id for e in disk.entries}
                     if norm_path in self._unreadable_projects:
                         if not unread:
                             self._unreadable_projects.discard(norm_path)  # this copy is whole; only the merge waits
                         self._save_error = f"memory.json of {norm_path} could not be read; not written"
                         return False
+                if not self._write_queued_to_archive(norm_path, proj, on_file):
+                    return False
                 proj_data = proj.model_dump()
                 proj_data.pop("project_path", None)
                 atomic.write_json(pdir / "memory.json", proj_data, indent=2)
@@ -1230,6 +1236,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         """Clear a project's memory: its directory and its manifest row."""
         norm = self._normalize_path(project_path)
         self._projects.pop(norm, None)
+        self._pending_archive.pop(norm, None)
         self._project_stamps.pop(norm, None)
         self._dirty_projects.discard(norm)
         self._unreadable_projects.discard(norm)

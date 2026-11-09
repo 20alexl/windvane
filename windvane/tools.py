@@ -617,9 +617,7 @@ def _memory(warm: Warm, op: str, args: dict, raw: dict) -> str:
         if entry:
             # A real move into the archive: hook readers see hot entries
             # only, and the entry stays restorable.
-            if store._move_entries_to_archive(proj, [entry]) is None:
-                raise ToolError(f"Mistake [{mid}] stays active: the archive could not be written")
-            why = store._save_move(proj, {mid})
+            why = store._move_entries_to_archive(proj, [entry])
             if why:
                 raise ToolError(f"Mistake [{mid}] was not acknowledged. Not saved: {why}")
             return Response(

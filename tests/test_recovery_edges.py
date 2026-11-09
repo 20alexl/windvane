@@ -390,6 +390,80 @@ def test_a_refused_cleanup_takes_its_rows_back_out_of_the_archive(tmp_path, monk
     assert not MemoryStore().search_archive(project)
 
 
+def test_a_stale_move_does_not_replace_a_newer_archive_row(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, (a, _b) = _two(project)
+    second = MemoryStore()
+    find, landed = second._get_entry_by_id, []
+
+    def read_then_the_other_writer_lands(proj, memory_id):
+        found = find(proj, memory_id)
+        if not landed:
+            landed.append(1)
+            assert first.modify_memory(project, a, content="the corrected text")[0]
+            assert first.archive_memory(project, a)[0]
+        return found
+
+    monkeypatch.setattr(second, "_get_entry_by_id", read_then_the_other_writer_lands)
+    second.archive_memory(project, a)
+    assert [e.content for e in MemoryStore().search_archive(project)] == ["the corrected text"]
+    assert a not in _entries(project)
+
+
+def test_a_refused_cleanup_leaves_another_writers_archive_row(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, (a, b) = _two(project)
+    for entry in first.get_project(project).entries:
+        entry.last_accessed = 1.0
+        entry.relevance = 4
+    first._dirty_projects.add(first._normalize_path(project))
+    assert first._save()
+    second = MemoryStore()
+
+    def other_writer():
+        assert first.modify_memory(project, a, content="their correction")[0]
+        assert first.archive_memory(project, b)[0]
+
+    with monkeypatch.context() as m:
+        _landing_first(m, second, other_writer)
+        report = second.cleanup_memories(project, dry_run=False, min_relevance=0)
+    assert "another writer" in report["error"]
+    assert [e.id for e in MemoryStore().search_archive(project)] == [b]
+    assert _entries(project)[a].content == "their correction" and b not in _entries(project)
+
+
+def test_a_refused_move_writes_nothing_to_the_archive(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, (a, _b) = _two(project)
+    second = MemoryStore()
+    second.get_project(project)
+    copied = []
+    monkeypatch.setattr(second, "_copy_into_archive", lambda *_a: copied.append(1) or True)
+    _landing_first(monkeypatch, second, lambda: first.modify_memory(project, a, content="their edit"))
+    assert not second.archive_memory(project, a)[0]
+    assert not copied
+
+
+def test_a_move_whose_hot_write_failed_finishes_at_the_next_save(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    store, (a, _b) = _two(project)
+    real_write = atomic.write_json
+
+    def write(path, data, **kwargs):
+        if Path(path).name == "memory.json":
+            raise OSError("disk full")
+        return real_write(path, data, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(atomic, "write_json", write)
+        ok, message = store.archive_memory(project, a)
+    assert not ok and "Not saved" in message
+    assert [e.id for e in MemoryStore().search_archive(project)] == [a]
+    assert store._save()
+    assert a not in _entries(project)
+    assert [e.id for e in MemoryStore().search_archive(project)] == [a]
+
+
 def _refreshable(monkeypatch, replaced: dict):
     monkeypatch.setattr(draft, "_hook", lambda _name: lambda *_a: ({"task_id": "t", "trigger": "manual"}, []))
     monkeypatch.setattr(draft, "merge_into_deliberate", lambda own, _record: (own, ["handoff_summary"]))
