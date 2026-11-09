@@ -72,6 +72,16 @@ def _known(cls, data: dict) -> dict:
     return {k: v for k, v in data.items() if k in names}
 
 
+def _floats_or_default(row: dict, *keys: str) -> None:
+    """Numbers as numbers: a key that holds anything else is left to its field's default."""
+    for key in keys:
+        if key in row:
+            try:
+                row[key] = float(row[key])
+            except (TypeError, ValueError):
+                row.pop(key)
+
+
 @dataclass
 class MemoryEntry:
     """A single memory entry."""
@@ -103,12 +113,11 @@ class MemoryEntry:
             d["relevance"] = int(d.get("relevance", 5))
         except (TypeError, ValueError):
             d["relevance"] = 5
-        for k in ("created_at", "last_accessed"):
-            if k in d:
-                try:
-                    d[k] = float(d[k])
-                except (TypeError, ValueError):
-                    d.pop(k)
+        try:
+            d["access_count"] = int(d.get("access_count", 1))
+        except (TypeError, ValueError):
+            d["access_count"] = 1
+        _floats_or_default(d, "created_at", "last_accessed")
         return cls(**d)
 
     def model_dump(self) -> dict:
@@ -170,6 +179,7 @@ class ProjectMemory:
         for k in ("key_files", "key_directories", "file_memory_index", "tag_memory_index"):
             d[k] = dict(d.get(k) or {})
         d["recent_searches"] = list(d.get("recent_searches") or [])
+        _floats_or_default(d, "last_updated", "last_cleanup")
         return cls(**d)
 
     def model_dump(self) -> dict:
@@ -298,15 +308,38 @@ class _Conflict(OSError):
     """Two writers changed the same entry: keeping either loses the other."""
 
 
-# Counters of use, which merge on their own and are no one's edit.
-_ENTRY_USE_FIELDS = ("access_count", "last_accessed")
+# No one's edit: the counters of use merge on their own, and nothing changes a
+# creation time, which a row without one is given anew at each load.
+_NOT_AN_EDIT = ("access_count", "last_accessed", "created_at")
 # Not a project's own settings: the entries merge one by one, the rest is derived.
 _NOT_PROJECT_FIELDS = ("project_path", "entries", "file_memory_index", "tag_memory_index")
 
 
 def _entry_print(entry: MemoryEntry) -> str:
-    row = {k: v for k, v in vars(entry).items() if k not in _ENTRY_USE_FIELDS}
+    row = {k: v for k, v in vars(entry).items() if k not in _NOT_AN_EDIT}
+    try:
+        row["relevance"] = int(row["relevance"])  # as a load reads it
+    except (TypeError, ValueError):
+        pass
     return hashlib.md5(json.dumps(row, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _merge_field(ours, was, theirs):
+    """A project's own setting, with this writer's change on the other's value:
+    per key for a table, per item for a list."""
+    if ours == was:
+        return theirs
+    if isinstance(ours, dict) and isinstance(was, dict) and isinstance(theirs, dict):
+        merged = dict(theirs)
+        for key in set(was) | set(ours):
+            if key not in ours:
+                merged.pop(key, None)
+            elif key not in was or ours[key] != was[key]:
+                merged[key] = ours[key]
+        return merged
+    if isinstance(ours, list) and isinstance(was, list) and isinstance(theirs, list):
+        return theirs + [item for item in ours if item not in was and item not in theirs]
+    return ours
 
 
 from windvane.archive import ArchiveMixin  # noqa: E402
@@ -360,6 +393,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         # or a hook wrote in the meantime.
         self._project_stamps: dict[str, tuple[int, int]] = {}
         self._unreadable_projects: set[str] = set()
+        self._moved_aside_projects: set[str] = set()
         # What each project held when loaded or last written: a save on a stale
         # copy then carries only what changed here. Fingerprints, not copies: a
         # store holds every project a daemon has touched.
@@ -421,6 +455,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         mem_file = pdir / "memory.json"
         empty = ProjectMemory(project_path=norm_path, project_name=Path(norm_path).name)
         self._unreadable_projects.discard(norm_path)
+        self._moved_aside_projects.discard(norm_path)
         if not mem_file.exists():
             return empty
         # A file that does not parse is moved aside, so the next save starts a
@@ -435,6 +470,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             return empty
         if proj_data is None:
             self._load_error = moved_aside
+            self._moved_aside_projects.add(norm_path)
             return empty
         try:
             proj_data["project_path"] = norm_path
@@ -443,6 +479,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         except Exception:
             if atomic.quarantine(mem_file):
                 self._load_error = moved_aside
+                self._moved_aside_projects.add(norm_path)
             else:
                 self._unreadable_projects.add(norm_path)
             return empty
@@ -730,9 +767,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         for entry in proj.entries:
             self._update_indexes(proj, entry)
 
-    def _save_manifest(self):
+    def _save_manifest(self) -> bool:
         if not self._manifest_dirty:
-            return
+            return True
         try:
             with atomic.locked(self._manifest_file):
                 # A project another writer registered since this one read the
@@ -747,29 +784,36 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 self._manifest_dirty = False
                 self._manifest_removed.clear()
                 self._manifest_stamp = self._disk_stamp(self._manifest_file)
+            return True
         except Exception as e:
             self._save_error = f"Failed to save manifest: {e}"
+            return False
 
-    def _save_global(self):
+    def _save_global(self) -> bool:
         """Global priorities, written only when changed here: every save wrote
         this process's copy, and a writer that loaded before another's priority
-        wiped it out. What another writer added stays; what it removed stays out."""
+        wiped it out. What another writer added stays; what it removed stays out.
+        A file that is damaged or gone says nothing about what was removed."""
         if not self._global_dirty:
-            return
+            return True
         try:
             with atomic.locked(self._global_file):
-                disk = atomic.read_json(self._global_file, {}) or {}
-                rows = disk.get("entries", []) if isinstance(disk, dict) else []
-                theirs = [MemoryEntry.from_dict(r) for r in rows if isinstance(r, dict)]
-                have, ours = {e.id for e in theirs}, {e.id for e in self._global_entries}
-                merged = [e for e in self._global_entries if e.id in have or e.id not in self._global_base]
-                merged += [e for e in theirs if e.id not in ours and e.id not in self._global_base]
+                disk = atomic.read_json(self._global_file)
+                merged = self._global_entries
+                if isinstance(disk, dict):
+                    rows = disk.get("entries", [])
+                    theirs = [MemoryEntry.from_dict(r) for r in rows if isinstance(r, dict)]
+                    have, ours = {e.id for e in theirs}, {e.id for e in self._global_entries}
+                    merged = [e for e in self._global_entries if e.id in have or e.id not in self._global_base]
+                    merged += [e for e in theirs if e.id not in ours and e.id not in self._global_base]
                 atomic.write_json(self._global_file, {"entries": [e.model_dump() for e in merged]}, indent=2)
                 self._global_entries = merged
                 self._global_base = {e.id for e in merged}
                 self._global_dirty = False
+            return True
         except Exception as e:
             self._save_error = f"Failed to save global: {e}"
+            return False
 
     def _note_base(self, norm_path: str, proj: ProjectMemory) -> None:
         fields = {k: copy.deepcopy(v) for k, v in vars(proj).items() if k not in _NOT_PROJECT_FIELDS}
@@ -778,9 +822,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
     def _merge_onto_disk(self, norm_path: str, proj: ProjectMemory, disk: ProjectMemory) -> None:
         """Bring this writer's changes onto the file's current state, in place,
         since a caller may be holding ``proj``. An entry neither edited, or only
-        one edited, needs no choice. Both edited, or edited here and deleted
-        there, raises _Conflict: one of two acknowledged changes would be lost.
-        An entry deleted here stays deleted."""
+        one edited, needs no choice. Both edited, or edited on one side and
+        deleted on the other, raises _Conflict: one of two acknowledged changes
+        would be lost. An entry deleted with no edit against it stays deleted."""
         base = self._project_bases.get(norm_path) or {}
         was, was_fields = base.get("entries", {}), base.get("fields", {})
         mine = {e.id: e for e in proj.entries}
@@ -798,6 +842,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             if ours is None:
                 if before is None:
                     merged.append(theirs)  # another writer's new entry
+                elif _entry_print(theirs) != before:
+                    raise _Conflict(f"memory {theirs.id} was changed by another writer at the same moment; nothing was written. Look at it again before repeating this")
                 continue  # deleted here
             if before is None:
                 merged.append(used(theirs, ours))  # the same id on both sides: the same text
@@ -821,8 +867,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
 
         last_updated = max(proj.last_updated, disk.last_updated)
         for key, value in vars(disk).items():
-            if key not in _NOT_PROJECT_FIELDS and key in was_fields and getattr(proj, key) == was_fields[key]:
-                setattr(proj, key, value)  # changed only there, or nowhere
+            if key not in _NOT_PROJECT_FIELDS and key in was_fields:
+                setattr(proj, key, _merge_field(getattr(proj, key), was_fields[key], value))
         proj.last_updated = last_updated
         proj.entries = merged
         self._rebuild_indexes(proj)
@@ -856,14 +902,11 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 if self._project_stale(norm_path):
                     if norm_path not in self._dirty_projects:
                         return True
-                    try:
-                        disk = self._load_project(norm_path, saving=True)
-                        if norm_path not in self._unreadable_projects:
-                            self._merge_onto_disk(norm_path, proj, disk)
-                    except _Conflict:
-                        raise
-                    except Exception:
-                        pass
+                    disk = self._load_project(norm_path, saving=True)
+                    # A damaged file was moved aside and says nothing about what
+                    # was deleted: this copy is whole, and starts the new file.
+                    if norm_path not in self._unreadable_projects and norm_path not in self._moved_aside_projects:
+                        self._merge_onto_disk(norm_path, proj, disk)
                     if norm_path in self._unreadable_projects:
                         if not unread:
                             self._unreadable_projects.discard(norm_path)  # this copy is whole; only the merge waits
@@ -903,8 +946,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                         self._dirty_projects.add(norm_path)
                     else:
                         self._dirty_projects.discard(norm_path)
-            self._save_global()
-            self._save_manifest()
+            ok = self._save_global() and ok
+            ok = self._save_manifest() and ok
             return ok
         except Exception as e:
             self._save_error = f"Failed to save memory: {e}"
@@ -1004,29 +1047,41 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             if project_path not in self._manifest.get("projects", {}) and project_path not in self._dirty_projects:
                 self._projects.pop(project_path, None)
                 self._project_bases.pop(project_path, None)
-        if self.get_project(project_path) is None:
-            self._projects[project_path] = ProjectMemory(
-                project_path=project_path, project_name=Path(project_path).name
-            )
-            self._project_dir(project_path)
-        proj = self._projects[project_path]
-        if summary:
-            proj.summary = summary
-        if language:
-            proj.language = language
-        if framework:
-            proj.framework = framework
-        proj.last_updated = time.time()
-        self._dirty_projects.add(project_path)
+
+        def updated() -> ProjectMemory:
+            if self.get_project(project_path) is None:
+                new = ProjectMemory(project_path=project_path, project_name=Path(project_path).name)
+                self._projects[project_path] = new
+                self._note_base(project_path, new)
+                self._project_dir(project_path)
+            proj = self._projects[project_path]
+            if summary:
+                proj.summary = summary
+            if language:
+                proj.language = language
+            if framework:
+                proj.framework = framework
+            proj.last_updated = time.time()
+            self._dirty_projects.add(project_path)
+            return proj
+
+        proj = updated()
         self._save()
+        if project_path in self._conflicted_projects:
+            # A change waiting here lost to another writer, and its own call was
+            # told so. This copy is dropped at the next save, with whatever the
+            # caller adds to it, so the caller gets the file as it stands.
+            proj = updated()
+            self._save()
         return proj
 
-    def remember_key_file(self, project_path: str, file_path: str, description: str):
+    def remember_key_file(self, project_path: str, file_path: str, description: str) -> bool:
         proj = self.remember_project(project_path)
         proj.key_files[file_path] = description
         proj.last_updated = time.time()
         self._dirty_projects.add(proj.project_path)
         self._save()
+        return proj.project_path not in self._dirty_projects
 
     def remember_discovery(
         self,
@@ -1052,6 +1107,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 duplicate.relevance = relevance
             self._dirty_projects.add(proj.project_path)
             self._save()
+            if proj.project_path in self._dirty_projects:
+                return (False, f"Not saved: {self._save_error}")
             return (False, f"Duplicate of existing memory (id={duplicate.id}), updated access count")
         if category == "mistake":
             # An acknowledged mistake lives in the archive. The same mistake
@@ -1094,8 +1151,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 pass  # vectors are optional
         return (True, f"Memory added with id={entry.id}, tags={entry.tags}")
 
-    def add_priority(self, content: str, project_path: Optional[str] = None, relevance: int = 8):
-        """A priority note (something important to remember)."""
+    def add_priority(self, content: str, project_path: Optional[str] = None, relevance: int = 8) -> bool:
+        """A priority note (something important to remember). False when it
+        could not be written; ``_save_error`` says why."""
         from windvane.privacy import redact
 
         content = redact(content)
@@ -1110,7 +1168,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             entry.id = self._generate_entry_id(content)
             self._global_entries.append(entry)
             self._global_dirty = True
-        self._save()
+        return self._save()
 
     def log_search(self, project_path: str, query: str, results_count: int, top_files: list):
         """Log a search so a later one can skip the same work."""
@@ -1505,6 +1563,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             entry.content = f"{entry.content} (Promoted to rule: {redact(reason)})"
         self._dirty_projects.add(proj.project_path)
         self._save()
+        if proj.project_path in self._dirty_projects:
+            return (False, f"Not saved: {self._save_error}")
         return (True, f"Promoted {memory_id} to rule")
 
     # ------------------------------------------------------------------

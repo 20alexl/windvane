@@ -479,6 +479,7 @@ def prune_task_files(storage: Path, keep_days: int = TASK_FILE_KEEP_DAYS) -> lis
                 continue
             f.unlink()
             removed.append(f)
+            atomic.lock_path(f).unlink(missing_ok=True)
         except Exception:
             continue
     return removed

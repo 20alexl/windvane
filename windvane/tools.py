@@ -397,10 +397,15 @@ def _memory(warm: Warm, op: str, args: dict, raw: dict) -> str:
         relevance = _int(args.get("relevance"), 5)
         try:
             if category == "priority":
-                store.add_priority(content, project_path, relevance)
+                landed = store.add_priority(content, project_path, relevance)
             else:
                 kind = category if category in ("decision", "discovery", "context") else "discovery"
-                store.remember_discovery(project_path, content, relevance=relevance, category=kind)
+                _added, said = store.remember_discovery(project_path, content, relevance=relevance, category=kind)
+                landed = not said.startswith("Not saved")
+            if not landed:
+                return Response(
+                    status="needs_clarification", confidence="high", reasoning=f"Not saved: {store._save_error}"
+                ).to_formatted_string()
             return Response(
                 status="success",
                 confidence="high",
@@ -614,7 +619,9 @@ def _memory(warm: Warm, op: str, args: dict, raw: dict) -> str:
             # only, and the entry stays restorable.
             if store._move_entries_to_archive(proj, [entry]) is None:
                 raise ToolError(f"Mistake [{mid}] stays active: the archive could not be written")
-            store._save()
+            why = store._save_move(proj, [entry])
+            if why:
+                raise ToolError(f"Mistake [{mid}] was not acknowledged. Not saved: {why}")
             return Response(
                 status="success",
                 confidence="high",
@@ -922,10 +929,15 @@ def run(request: dict, warm: Optional[Warm] = None) -> dict:
             if writes:
                 warm.store._save_error = None
             text = _answer(tool, arguments, warm)
-            if writes and warm.store._save_error:
+            why = warm.store._save_error if writes else None
+            if why:
                 # The store held on to the change, which a later process knows
-                # nothing of: an answer of success would be a promise it may not keep.
-                return _done(f"{text}\n\nNot saved: {warm.store._save_error}. Call this again in a moment.", True)
+                # nothing of: an answer of success would be a promise it may not
+                # keep. A change another writer's refused is not repeated blindly.
+                again = "" if warm.store._conflicted_projects else " Call this again in a moment."
+                head = "" if why in text else f"Not saved: {why}.{again}\n\n"
+                tail = again if why in text else ""
+                return _done(f"{head}{text}{tail}", True)
             return _done(text, False)
     except ToolError as e:
         return _done(str(e), True)

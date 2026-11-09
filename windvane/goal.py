@@ -40,6 +40,7 @@ from typing import Any, Optional
 
 DEFAULT_TURN_CAP = 150  # default of the goal_turn_cap knob
 TAIL_BYTES = 2_000_000
+RUNNING_GOAL_TAIL_BYTES = 32_000_000
 CLEAR_WORDS = frozenset({"clear", "stop", "off", "reset", "none", "cancel"})
 
 RUNNING = "running"
@@ -269,6 +270,11 @@ def observe(
     scan = scan_goal(tp)
     a = auto(state)
     if a and a.get("status") == RUNNING:
+        if not scan.get("seen"):
+            # A turn can write more than the tail holds, and not every Claude
+            # Code writes a verdict at each Stop, so a running goal's records may
+            # only be further back. Rare, and only for a goal that is running.
+            scan = scan_goal(tp, RUNNING_GOAL_TAIL_BYTES)
         if turn:
             a["turns"] = int(a.get("turns", 0)) + 1
         a["verdicts"] = int(scan.get("verdicts") or 0)
@@ -294,11 +300,10 @@ def observe(
             stop(state, str(scan["ended"]), scan.get("last_reason") or f"goal {scan['ended']}")
             return {"event": "ended", "auto": a}
         if not scan.get("seen"):
-            # Our record says running, the transcript tail shows no goal at
-            # all. A live /goal writes a verdict after every Stop, so a
-            # tail with none is a goal that is over (its records scrolled
-            # out of the window, or a shape the scan did not read). Never
-            # count toward the cap on a goal that cannot be seen.
+            # Our record says running, and even the wider tail shows no goal
+            # at all, so the goal is over (its records scrolled out of the
+            # window, or a shape the scan did not read). Never count toward
+            # the cap on a goal that cannot be seen.
             stop(state, "cleared", "no goal record in the transcript tail")
             return {"event": "ended", "auto": a}
         if turn and int(a["turns"]) >= int(a.get("max_turns") or DEFAULT_TURN_CAP):
@@ -328,7 +333,7 @@ def observe(
         if same:
             # Its end was on a branch rewound away. The turns it spent still count.
             for key in ("turns", "started_at", "max_turns"):
-                new[key] = a[key]
+                new[key] = a.get(key, new[key])
         if turn:
             new["turns"] += 1  # the Stop that first saw the goal is its first turn
         return {"event": "started", "auto": new}

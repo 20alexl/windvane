@@ -299,6 +299,8 @@ class RulesMixin:
                 duplicate.detector = dict(detector)
                 self._dirty_projects.add(proj.project_path)
                 self._save()
+                if proj.project_path in self._dirty_projects:
+                    return (False, f"Not saved: {self._save_error}")
                 return (False, f"Similar rule already exists (id={duplicate.id}); detector attached")
             return (False, f"Similar rule already exists (id={duplicate.id})")
         entry = MemoryEntry(
@@ -332,8 +334,10 @@ class RulesMixin:
             return (False, f"Memory {memory_id} is a {entry.category}, not a rule")
         entry.detector = dict(detector) if detector else None
         proj.last_updated = time.time()
-        self._dirty_projects.add(self._normalize_path(project_path))
+        self._dirty_projects.add(proj.project_path)
         self._save()
+        if proj.project_path in self._dirty_projects:
+            return (False, f"Not saved: {self._save_error}")
         return (True, f"Detector {'set' if entry.detector else 'cleared'} on rule {memory_id}")
 
     def get_rules(self, project_path: str) -> list:

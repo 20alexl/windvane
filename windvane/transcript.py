@@ -164,10 +164,10 @@ def live_records(path: str | Path, tail_bytes: Optional[int] = TAIL_BYTES) -> li
 def live_event_records(records: Iterable[dict]) -> list[dict]:
     """``records`` less what belongs to an abandoned branch or a subagent, for
     reading events such as a goal's. An event is not always on the walk from the
-    tip: a verdict can come after the last message, an attachment can be written
-    before the message it hangs from, and a record of an older shape has no ids
-    and belongs to the conversation record before it. With no chain to walk,
-    every record stands."""
+    tip: a verdict or a system record can come after the last message and hang
+    from it, an attachment can be written before the message it hangs from, and
+    a record of an older shape has no ids and belongs to the conversation record
+    before it. With no chain to walk, every record stands."""
     records = [d for d in records if isinstance(d, dict) and not d.get("isSidechain")]
     live = chain_of(records)
     if live is None:
@@ -187,11 +187,11 @@ def live_event_records(records: Iterable[dict]) -> list[dict]:
         elif not ident:
             if (parent or owner) is None or (parent or owner) in live or (parent or owner) in trailing:
                 kept.append(d)
-        elif d.get("type") == "attachment":
+        elif not is_message[i]:
             if i > tip_at and parent in trailing:
                 trailing.add(ident)
                 kept.append(d)
-            elif parent in live and position.get(parent, -1) > i:
+            elif d.get("type") == "attachment" and parent in live and position.get(parent, -1) > i:
                 kept.append(d)
     return kept
 

@@ -152,7 +152,9 @@ class ArchiveMixin:
             if self._move_entries_to_archive(proj, to_archive) is None:
                 report.update(archived_count=0, entries=[], error=ARCHIVE_WRITE_FAILED)
                 return report
-            self._save()
+            why = self._save_move(proj, to_archive)
+            if why:
+                report.update(archived_count=0, entries=[], error=why)
         return report
 
     def _copy_into_archive(self, proj, entries: list) -> bool:
@@ -187,6 +189,23 @@ class ArchiveMixin:
         self._dirty_projects.add(proj.project_path)
         return len(gone)
 
+    def _save_move(self, proj, entries: list) -> Optional[str]:
+        """The hot tier's half of a move into the archive; why it was not
+        saved, or None. A move another writer's edit refused comes back out of
+        the archive, since the hot copy now read holds the current text. One
+        waiting on a lock stays there: the copy waiting no longer holds them."""
+        self._save()
+        if proj.project_path not in self._dirty_projects:
+            return None
+        why = self._save_error or "the project could not be written"
+        if proj.project_path in self._conflicted_projects:
+            gone = {e.id for e in entries}
+            archive_proj = self._archive_project_for(self._normalize_path(proj.project_path), proj.project_name)
+            archive_proj.entries = [e for e in archive_proj.entries if e.id not in gone]
+            self._archive_removed.update(gone)
+            self._save_archive()
+        return why
+
     def archive_memory(self, project_path: str, memory_id: str) -> tuple[bool, str]:
         """Move one active memory to the archive by its id."""
         proj = self.get_project(project_path)
@@ -195,7 +214,9 @@ class ArchiveMixin:
             return (False, f"Memory {memory_id} not found in this project")
         if self._move_entries_to_archive(proj, [entry]) is None:
             return (False, f"Memory {memory_id} stays active: {ARCHIVE_WRITE_FAILED}")
-        self._save()
+        why = self._save_move(proj, [entry])
+        if why:
+            return (False, f"Not saved: {why}")
         return (True, f"Archived memory {memory_id}; memory(restore, memory_id='{memory_id}') brings it back")
 
     def _recurring_error_sigs(self, project_path: str) -> list:
@@ -297,7 +318,9 @@ class ArchiveMixin:
             if self._move_entries_to_archive(proj, to_archive) is None:
                 report.update(archived_count=0, entries=[], error=ARCHIVE_WRITE_FAILED)
                 return report
-            self._save()
+            why = self._save_move(proj, to_archive)
+            if why:
+                report.update(archived_count=0, entries=[], error=why)
         return report
 
     def restore_from_archive(self, project_path: str, memory_id: str) -> tuple[bool, str]:
@@ -556,6 +579,8 @@ class ArchiveMixin:
             proj.last_cleanup = time.time()
             self._dirty_projects.add(proj.project_path)
             self._save()
+            if proj.project_path in self._dirty_projects:
+                report["error"] = f"Not saved: {self._save_error}"
         return report
 
     def _is_broken_memory(self, content: str) -> Optional[str]:

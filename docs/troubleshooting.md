@@ -14,7 +14,7 @@ A save or `compact_now` that could not write to the project's checkpoint files, 
 
 ## Two sessions changed the same memory
 
-Changes from two sessions to different memories both stay, and a memory one of them deleted stays deleted. When both changed the same memory at the same moment, the second is refused with `Not saved`, and its next call reads the file again. Look at the memory before repeating the change.
+Changes from two sessions to different memories both stay, and a memory one of them deleted stays deleted. When both changed the same memory at the same moment, or one deleted what the other changed, the second is refused with `Not saved`, and its next call reads the file again. Look at the memory before repeating the change.
 
 ## The daemon
 

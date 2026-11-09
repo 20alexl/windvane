@@ -928,7 +928,8 @@ def session_inputs(session_id: str = "") -> tuple:
 
 def bank(record: dict, session_id: str, trigger: str = "bank") -> dict:
     """Write the draft to the ring as the PreCompact hook does; the ring
-    entry written."""
+    entry written. Raises OSError when a ring took nothing, so the caller does
+    not count it as banked."""
     from windvane import checkpoints as ck
 
     entry = ring_record(record, session_id, trigger)
@@ -949,7 +950,9 @@ def bank(record: dict, session_id: str, trigger: str = "bank") -> dict:
         ring = ck.register_project_ring(wp)
     if trigger != "compact_now":
         # A compaction comes whatever this does, and this is what it keeps.
-        ck.write_handoff(entry, [ring, ck.global_ring_dir()])
+        report = ck.write_handoff(entry, [ring, ck.global_ring_dir()])
+        if report["unread"]:
+            raise OSError(f"The checkpoint could not be written to {', '.join(report['unread'])}")
         return entry
     # Asked for by the model, so it can be told: no compaction on a record a
     # restore would not find. Its own file keeps it for a restore by id.
