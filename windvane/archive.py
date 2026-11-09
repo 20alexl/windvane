@@ -182,19 +182,19 @@ class ArchiveMixin:
         self._rebuild_indexes(proj)
         self._dirty_projects.add(proj.project_path)
 
-    def _write_queued_to_archive(self, norm_path: str, proj, on_file: Optional[set]) -> bool:
+    def _write_queued_to_archive(self, norm_path: str, proj, gone_elsewhere: set) -> bool:
         """The archive's half of a move, called by the project's save under the
         project's lock, once its merge has passed: another writer's edit has by
-        then refused the move with nothing written, and a row this copy read
-        before that writer moved or deleted it (``on_file``: the ids on the file
-        now, None when this copy is current) is left out, since it would replace
-        theirs. False, with the rows back in the copy, when the archive could
-        not be written. A crash before the hot write leaves a duplicate, never a
-        loss; the next move or restore reconciles it by id."""
+        then refused the move with nothing written, and a row that writer moved
+        or deleted since this copy read it (``gone_elsewhere``) is left out,
+        since it would replace theirs. False, with the rows back in the copy,
+        when the archive could not be written. A crash before the hot write
+        leaves a duplicate, never a loss; the next move or restore reconciles
+        it by id."""
         queued = self._pending_archive.pop(norm_path, None)
         if not queued:
             return True
-        rows = [row for row_id, row in queued.items() if on_file is None or row_id in on_file]
+        rows = [row for row_id, row in queued.items() if row_id not in gone_elsewhere]
         if not rows or self._copy_into_archive(proj, rows):
             return True
         proj.entries.extend(rows)
@@ -587,9 +587,14 @@ class ArchiveMixin:
             self._save()
             if proj.project_path in self._dirty_projects:
                 if self._save_error == ARCHIVE_WRITE_FAILED:
-                    # The rows are back in the copy. The rest of the cleanup still goes.
+                    # The rows are back in the copy, as they were. The rest of
+                    # the cleanup still goes, and the report says only that.
+                    back = {a["entry_id"] for a in report["archived"]}
                     report["archived"] = []
+                    report["decayed"] = [d for d in report["decayed"] if d["entry_id"] not in back]
+                    report["removed"] = [r for r in report["removed"] if r["entry_id"] not in back]
                     report["error"] = ARCHIVE_WRITE_FAILED
+                    report["summary"] = f"{report['summary']} But {ARCHIVE_WRITE_FAILED}."
                     self._save()
                 else:
                     report["error"] = f"Not saved: {self._save_error}"

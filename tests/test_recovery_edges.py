@@ -464,6 +464,38 @@ def test_a_move_whose_hot_write_failed_finishes_at_the_next_save(tmp_path, monke
     assert [e.id for e in MemoryStore().search_archive(project)] == [a]
 
 
+def test_a_memory_never_written_can_still_be_archived_on_a_stale_copy(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, (a, _b) = _two(project)
+    second = MemoryStore()
+    second.get_project(project)
+    with monkeypatch.context() as m:
+        _no_writes(m)
+        assert not second.remember_discovery(project, "india juliet kilo lima", auto_embed=False)[0]
+    new = next(e.id for e in second.get_project(project).entries if e.content.startswith("india"))
+    assert first.modify_memory(project, a, relevance=9)[0]
+    ok, _message = second.archive_memory(project, new)
+    assert ok
+    assert [e.id for e in MemoryStore().search_archive(project)] == [new]
+    got = _entries(project)
+    assert new not in got and got[a].relevance == 9
+
+
+def test_a_cleanup_the_archive_refused_reports_only_what_it_did(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    store, (a, b) = _two(project)
+    for entry in store.get_project(project).entries:
+        entry.last_accessed = time.time() - 60 * 86400
+        entry.relevance = 4
+    store._dirty_projects.add(store._normalize_path(project))
+    assert store._save()
+    monkeypatch.setattr(store, "_save_archive", lambda: False)
+    report = store.cleanup_memories(project, dry_run=False)
+    assert report["error"] and not report["archived"] and not report["decayed"] and not report["removed"]
+    got = _entries(project)
+    assert got[a].relevance == 4 and got[b].relevance == 4
+
+
 def _refreshable(monkeypatch, replaced: dict):
     monkeypatch.setattr(draft, "_hook", lambda _name: lambda *_a: ({"task_id": "t", "trigger": "manual"}, []))
     monkeypatch.setattr(draft, "merge_into_deliberate", lambda own, _record: (own, ["handoff_summary"]))

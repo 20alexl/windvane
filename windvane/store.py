@@ -909,7 +909,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 # Loaded as empty because the file could not be read: this copy
                 # holds only what was added since and must not replace the file.
                 unread = norm_path in self._unreadable_projects
-                on_file = None
+                gone_elsewhere: set = set()
                 # A project this process created has no stamp: a file there now
                 # is another writer's first save, stale like any other.
                 if self._project_stale(norm_path):
@@ -919,14 +919,15 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                     # A damaged file was moved aside and says nothing about what
                     # was deleted: this copy is whole, and starts the new file.
                     if norm_path not in self._unreadable_projects and norm_path not in self._moved_aside_projects:
+                        gone_elsewhere = set((self._project_bases.get(norm_path) or {}).get("entries", {}))
+                        gone_elsewhere -= {e.id for e in disk.entries}
                         self._merge_onto_disk(norm_path, proj, disk)
-                        on_file = {e.id for e in disk.entries}
                     if norm_path in self._unreadable_projects:
                         if not unread:
                             self._unreadable_projects.discard(norm_path)  # this copy is whole; only the merge waits
                         self._save_error = f"memory.json of {norm_path} could not be read; not written"
                         return False
-                if not self._write_queued_to_archive(norm_path, proj, on_file):
+                if not self._write_queued_to_archive(norm_path, proj, gone_elsewhere):
                     return False
                 proj_data = proj.model_dump()
                 proj_data.pop("project_path", None)
