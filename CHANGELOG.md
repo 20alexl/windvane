@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.22 (2026-11-09)
+
+What an outside patch against 1.0.21 claimed, reproduced first and fixed by hand with small changes, then two reviews of those fixes. The patch itself was not applied. A store written by 1.0.21 opens here, and 1.0.21 reads back what this version writes, so there is no migration.
+
+- **A save that missed its restore index says so.** A save or `compact_now` whose project checkpoint files stayed locked or could not be read answered success, and a restore would have resumed an older record. It now answers with an error and a task id, the record can be read by that id, and no compaction is requested. Deliberate writes wait 3 s and never write past a held lock. The automatic bank before a compaction still writes, since that compaction comes anyway, but one that failed is no longer counted as banked.
+- **A refresh cannot roll the checkpoint pointer back.** It read the pointer outside the lock and could write an older task over a newer save. A refresh a held ring refused stays owed and is tried again.
+- **Two sessions keep each other's memory changes.** An edit landing while another session saved was lost, and a deleted memory could come back. Changes to different memories now merge, and a project's key files, clusters and recent searches merge per key. When two sessions change the same memory at the same moment, or one deletes what the other changed, the second is refused with `Not saved` and reads the file again at its next call. Each project keeps a small fingerprint per entry for this, about 2.6 ms on 500 entries.
+- **Nothing answers success and then drops the change.** Promote, set_detector, archive, cleanup and global priorities report a refusal. A memory added after a refused edit lands on the file as it stands, and a rule with the same text as another session's new memory is refused, not lost.
+- **Moves into the archive.** A move wrote the archive first and the memory file after, with nothing holding the two together, so a stale copy could replace a newer archived row and only the old text survived. The archive row is now written inside the project's save, under its lock and after its merge, so a refused move writes nothing.
+- **A damaged file costs nothing held in memory.** A memory or priorities file that does not parse is moved aside as before, and the copy held here starts the new file instead of being read as everything deleted. A merge that fails leaves the file alone and says so.
+- **Global priorities.** One session's save wiped out what another had added. They are now written only when changed, and merged.
+- **A project forgotten elsewhere.** A memory saved after another session forgot the project was stored where nothing would find it. The project is registered again.
+- **Goals follow the live branch.** A goal, verdict or `/goal clear` on a branch that was rewound away, or in a subagent's records, no longer sets, ends or clears the run. A running goal whose records lie past the 2 MB tail is looked for in the last 32 MB before it is ended, about 0.14 s when it comes to that.
+- **Smaller.** A pruned task file takes its lock file with it. A row with a missing number loads with the default.
+
+Left out of the patch, on purpose: a merge engine that deep-copied every project at each load, refusing the automatic bank before a compaction, reserved id files, and parsing the transcript tail when it holds no goal. Its claim that a stale manifest restores a forgotten project did not reproduce.
+
+Tests: the suite passes on Windows and on Linux, including two real processes racing on one memory file. Not tested: macOS, and a live Claude Code session under this load. Sessions already running need `/reload-plugins` to pick this up.
+
 ## 1.0.21 (2026-11-08)
 
 What 1.0.20 left open, and what testing the untested parts turned up.
