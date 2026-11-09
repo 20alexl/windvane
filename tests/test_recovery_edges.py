@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from windvane import atomic, checkpoints as ck, draft, goal, tools
-from windvane.store import MemoryEntry, MemoryStore, ProjectMemory
+from windvane.store import MemoryEntry, MemoryStore, ProjectMemory, _entry_print
 
 
 @pytest.fixture(autouse=True)
@@ -280,6 +280,146 @@ def test_a_project_created_here_does_not_blank_another_writers_first_save(tmp_pa
         second.remember_project(project, language="python")
     proj = MemoryStore().get_project(project)
     assert proj.summary == "their summary" and proj.language == "python"
+
+
+# ── a second reading of the same fixes ──────────────────────────────────────
+
+
+def test_a_rule_with_the_same_text_as_another_writers_new_memory_is_not_lost(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, _ids = _two(project)
+    second = MemoryStore()
+    text = "the same words from two sessions"
+    save, saves = second._save, []
+
+    def at_its_second_save():
+        saves.append(1)
+        if len(saves) == 2:
+            assert first.remember_discovery(project, text, auto_embed=False)[0]
+        return save()
+
+    with monkeypatch.context() as m:
+        m.setattr(second, "_save", at_its_second_save)
+        ok, message = second.add_rule(project, text, detector={"command": "x"})
+    assert not ok and "another writer" in message
+    assert second.add_rule(project, text, detector={"command": "x"})[0]
+    rules = [e for e in _entries(project).values() if e.category == "rule"]
+    assert rules and rules[0].detector == {"command": "x"}
+
+
+def test_the_same_memory_written_by_two_writers_is_kept_once(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, _ids = _two(project)
+    second = MemoryStore()
+    text = "the same words from two sessions"
+    save, saves = second._save, []
+
+    def at_its_second_save():
+        saves.append(1)
+        if len(saves) == 2:
+            assert first.remember_discovery(project, text, auto_embed=False)[0]
+        return save()
+
+    with monkeypatch.context() as m:
+        m.setattr(second, "_save", at_its_second_save)
+        assert second.remember_discovery(project, text, auto_embed=False)[0]
+    assert [e.content for e in _entries(project).values()].count(text) == 1
+
+
+def test_the_order_of_tags_is_not_an_edit():
+    one = MemoryEntry(id="a", content="x", tags=["a", "b"], related_files=["f", "g"])
+    other = MemoryEntry(id="a", content="x", tags=["b", "a"], related_files=["g", "f"])
+    assert _entry_print(one) == _entry_print(other)
+
+
+def test_retrying_a_failed_write_does_not_bring_back_what_was_deleted_since(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, (a, _b) = _two(project)
+    second = MemoryStore()
+    real_write, fail = atomic.write_json, []
+
+    def write(path, data, **kwargs):
+        if fail and Path(path).name == "memory.json":
+            fail.clear()
+            raise OSError("disk full")
+        return real_write(path, data, **kwargs)
+
+    monkeypatch.setattr(atomic, "write_json", write)
+    save = second._save
+
+    def interleaved():
+        assert first.remember_discovery(project, "india juliet kilo lima", auto_embed=False)[0]
+        fail.append(1)
+        return save()
+
+    with monkeypatch.context() as m:
+        m.setattr(second, "_save", interleaved)
+        assert not second.modify_memory(project, a, relevance=9)[0]
+    added = next(e.id for e in first.get_project(project).entries if e.content.startswith("india"))
+    assert first.delete_memory(project, added)[0]
+    assert second._save()
+    got = _entries(project)
+    assert added not in got and got[a].relevance == 9
+
+
+def test_archiving_replaces_an_old_row_with_the_current_text(tmp_path):
+    project = str(tmp_path / "p")
+    store, (a, _b) = _two(project)
+    proj = store.get_project(project)
+    entry = next(e for e in proj.entries if e.id == a)
+    assert store._copy_into_archive(proj, [entry])
+    assert store.modify_memory(project, a, content="the corrected text")[0]
+    assert store.archive_memory(project, a)[0]
+    assert [e.content for e in MemoryStore().search_archive(project)] == ["the corrected text"]
+
+
+def test_a_refused_cleanup_takes_its_rows_back_out_of_the_archive(tmp_path, monkeypatch):
+    project = str(tmp_path / "p")
+    first, (a, b) = _two(project)
+    for entry in first.get_project(project).entries:
+        entry.last_accessed = 1.0
+        entry.relevance = 4
+    first._dirty_projects.add(first._normalize_path(project))
+    assert first._save()
+    second = MemoryStore()
+    with monkeypatch.context() as m:
+        _landing_first(m, second, lambda: first.modify_memory(project, a, content="their correction"))
+        report = second.cleanup_memories(project, dry_run=False, min_relevance=0)
+    assert "another writer" in report["error"]
+    assert _entries(project)[a].content == "their correction" and b in _entries(project)
+    assert not MemoryStore().search_archive(project)
+
+
+def _refreshable(monkeypatch, replaced: dict):
+    monkeypatch.setattr(draft, "_hook", lambda _name: lambda *_a: ({"task_id": "t", "trigger": "manual"}, []))
+    monkeypatch.setattr(draft, "merge_into_deliberate", lambda own, _record: (own, ["handoff_summary"]))
+    monkeypatch.setattr(ck, "replace_handoff", lambda _entry, _dirs: replaced)
+
+
+def test_a_refresh_a_held_ring_refused_stays_owed(tmp_path, monkeypatch):
+    from windvane import pressure
+
+    project = str(tmp_path)
+    state: dict = {"edits_total": 5}
+    pressure.pressure_state(state)["edits_at_manual_checkpoint"] = 3
+    _refreshable(monkeypatch, {"unread": ["ring"]})
+    assert draft.refresh_deliberate({}, project, "s", "", state) is None
+    assert pressure.pressure_state(state)["edits_at_manual_checkpoint"] == 3
+    _refreshable(monkeypatch, {"unread": []})
+    assert draft.refresh_deliberate({}, project, "s", "", state) is not None
+    assert pressure.pressure_state(state)["edits_at_manual_checkpoint"] == 5
+
+
+def test_a_refresh_of_this_turns_save_a_held_ring_refused_stays_owed(tmp_path, monkeypatch):
+    from windvane import pressure
+
+    project = str(tmp_path)
+    state: dict = {"edits_total": 5}
+    pressure.pressure_state(state)["edits_at_manual_checkpoint"] = 5
+    _refreshable(monkeypatch, {"unread": ["ring"]})
+    assert draft.refresh_deliberate({}, project, "s", "", state, turn_saved=True) is None
+    _refreshable(monkeypatch, {"unread": []})
+    assert draft.refresh_deliberate({}, project, "s", "", state) is not None
 
 
 # ── what is not an edit does not read as one ────────────────────────────────

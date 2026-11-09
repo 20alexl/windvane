@@ -1107,7 +1107,10 @@ def refresh_deliberate(record: dict, project_dir: str, session_id: str, transcri
             pass
         from windvane import checkpoints as ck
 
-        ck.replace_handoff(entry, dirs)
+        if ck.replace_handoff(entry, dirs)["unread"]:
+            # Still owed: below the count, so the next hook tries again.
+            ps["edits_at_manual_checkpoint"] = min(int(at_save or 0), edits - 1)
+            return None
         return entry
     except Exception:
         return None

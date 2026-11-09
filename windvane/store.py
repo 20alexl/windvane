@@ -321,6 +321,9 @@ def _entry_print(entry: MemoryEntry) -> str:
         row["relevance"] = int(row["relevance"])  # as a load reads it
     except (TypeError, ValueError):
         pass
+    # Built from sets, so their order differs between two writers of one text.
+    row["tags"] = sorted(map(str, row["tags"]))
+    row["related_files"] = sorted(map(str, row["related_files"]))
     return hashlib.md5(json.dumps(row, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
@@ -846,7 +849,11 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                     raise _Conflict(f"memory {theirs.id} was changed by another writer at the same moment; nothing was written. Look at it again before repeating this")
                 continue  # deleted here
             if before is None:
-                merged.append(used(theirs, ours))  # the same id on both sides: the same text
+                # The same id on both sides: the same text, but not always the
+                # same record (a rule here, a discovery there).
+                if _entry_print(ours) != _entry_print(theirs):
+                    raise _Conflict(f"memory {ours.id} was added by another writer at the same moment; nothing was written. Look at it again before repeating this")
+                merged.append(used(theirs, ours))
                 continue
             ours_print, theirs_print = _entry_print(ours), _entry_print(theirs)
             if ours_print == before or ours_print == theirs_print:
@@ -872,6 +879,9 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         proj.last_updated = last_updated
         proj.entries = merged
         self._rebuild_indexes(proj)
+        # This copy now stands on the file as read. Should the write fail, the
+        # retry must not take what it brought in for changes made here.
+        self._note_base(norm_path, disk)
 
     def _drop_conflicted(self) -> None:
         for norm_path in self._conflicted_projects:
