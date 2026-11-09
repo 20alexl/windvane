@@ -947,7 +947,24 @@ def bank(record: dict, session_id: str, trigger: str = "bank") -> dict:
     ring = ck.project_ring_dir(wp)
     if wp and ring is None:
         ring = ck.register_project_ring(wp)
-    ck.write_handoff(entry, [ring, ck.global_ring_dir()])
+    if trigger != "compact_now":
+        # A compaction comes whatever this does, and this is what it keeps.
+        ck.write_handoff(entry, [ring, ck.global_ring_dir()])
+        return entry
+    # Asked for by the model, so it can be told: no compaction on a record a
+    # restore would not find. Its own file keeps it for a restore by id.
+    report = ck.write_handoff(entry, [ring, ck.global_ring_dir()], must_land=False, wait=ck.DELIBERATE_LOCK_WAIT_S)
+    required = ring if wp else ck.global_ring_dir()
+    if required is None or str(required) in report["unread"]:
+        from windvane import atomic
+        from windvane.privacy import clean
+
+        task_id = entry.setdefault("task_id", ck.new_task_id())
+        atomic.write_json(ck.global_ring_dir() / f"{task_id}.json", clean(entry), indent=2)
+        raise OSError(
+            f"The checkpoint did not reach its restore index, so compaction was not requested. task_id: {task_id}. "
+            f"checkpoint(restore) with that task_id reads it; save again before compacting."
+        )
     return entry
 
 

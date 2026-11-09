@@ -152,13 +152,20 @@ def scan_goal(transcript_path: str, tail_bytes: int = TAIL_BYTES) -> dict:
     }
     if not transcript_path or not os.path.isfile(transcript_path):
         return out
-    for raw in _tail_lines(transcript_path, tail_bytes):
-        if b'"goal_status"' not in raw and b"<command-name>/goal</command-name>" not in raw:
-            continue
+    lines = list(_tail_lines(transcript_path, tail_bytes))
+    # This runs on every prompt and stop: a tail with no goal is not parsed.
+    if not any(b'"goal_status"' in raw or b"<command-name>/goal</command-name>" in raw for raw in lines):
+        return out
+    records = []
+    for raw in lines:
         try:
-            rec = json.loads(raw)
+            records.append(json.loads(raw))
         except Exception:
             continue
+    from windvane.transcript import live_event_records
+
+    # What a rewind left behind no longer sets, ends or clears the goal.
+    for rec in live_event_records(records):
         att = rec.get("attachment")
         if isinstance(att, dict) and att.get("type") == "goal_status":
             # The record that ends a goal can carry the sentinel flag too:
@@ -314,11 +321,16 @@ def observe(
             return {"event": "ended", "auto": a}
         return None
     if scan.get("active") and scan.get("seen"):
-        if a and a.get("set_at") and a["set_at"] == scan.get("set_at"):
-            return None  # the same goal, already ended in our record
+        same = bool(a and a.get("set_at") and a["set_at"] == scan.get("set_at"))
+        if same and a.get("status") not in ("met", "failed", "cleared"):
+            return None  # the same goal, stopped here: a rewind does not release that
         new = _start(state, scan, project_dir)
+        if same:
+            # Its end was on a branch rewound away. The turns it spent still count.
+            for key in ("turns", "started_at", "max_turns"):
+                new[key] = a[key]
         if turn:
-            new["turns"] = 1  # the Stop that first saw the goal is its first turn
+            new["turns"] += 1  # the Stop that first saw the goal is its first turn
         return {"event": "started", "auto": new}
     return None
 

@@ -346,8 +346,10 @@ def test_a_checkpoint_lands_even_when_the_ring_lock_is_held(tmp_path, monkeypatc
     lock = _busy_lock(ring / ck.HISTORY_FILENAME)
     report = ck.write_handoff({"kind": "manual", "task_id": "t1", "summary": "the state to keep"}, [ring])
     assert report["appended"] == [str(ring)]
-    assert ck.replace_handoff({"task_id": "t1", "summary": "the state, amended"}, [ring])["replaced"] == [str(ring)]
+    # A refresh is not owed, so it does not go past the lock.
+    assert ck.replace_handoff({"task_id": "t1", "summary": "the state, amended"}, [ring])["unread"] == [str(ring)]
     lock.release()
+    assert ck.replace_handoff({"task_id": "t1", "summary": "the state, amended"}, [ring])["replaced"] == [str(ring)]
     assert "amended" in (ring / ck.HISTORY_FILENAME).read_text(encoding="utf-8")
 
 

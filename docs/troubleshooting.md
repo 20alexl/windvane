@@ -8,6 +8,14 @@ python -m windvane.doctor
 
 It prints one JSON line with the interpreter, the store, the semantic tier and the daemon. It only reads. It never starts, stops or replaces the daemon.
 
+## A checkpoint did not reach its restore index
+
+A save or `compact_now` that could not write to the project's checkpoint files, because they stayed locked or could not be read, answers with an error and a `task_id`. `compact_now` does not ask for the compaction then, since a restore would resume an older record. `checkpoint(restore)` with that `task_id` reads the saved record. Save again once the store is free, and compact on a save that succeeds. The automatic bank before a compaction cannot be refused, so it writes anyway.
+
+## Two sessions changed the same memory
+
+Changes from two sessions to different memories both stay, and a memory one of them deleted stays deleted. When both changed the same memory at the same moment, the second is refused with `Not saved`, and its next call reads the file again. Look at the memory before repeating the change.
+
 ## The daemon
 
 The daemon is optional for correctness. Without it every hook still runs, in its own process, at the cost of the package imports on each call.

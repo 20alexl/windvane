@@ -322,21 +322,43 @@ def _should_promote(new: dict, existing: Optional[dict], stale_hours: float = 24
     return (time.time() - _created_ts(existing)) / 3600 > stale_hours
 
 
+def new_task_id() -> str:
+    """``task_<epoch seconds><six random digits>``. Sessions share one store,
+    and two saving in one second could each look for the other's file before
+    either had written it, then share an id and a task file. Digits only:
+    rewind detection and older versions read an id as ``task_`` and digits."""
+    return f"task_{int(time.time())}{secrets.randbelow(1_000_000):06d}"
+
+
+# A save the model asked for: a tool call has a minute where a hook has seconds,
+# and a held ring costs the model a retry, so it waits past the hooks' second.
+DELIBERATE_LOCK_WAIT_S = 3.0
+
+
 def write_handoff(
     handoff: dict,
     target_dirs: Sequence[Optional[Path]],
     *,
     history_limit: int = DEFAULT_HISTORY_LIMIT,
     stale_hours: float = 24.0,
+    must_land: bool = True,
+    wait: Optional[float] = None,
 ) -> dict:
     """Persist a record to each target ring. A deliberate (``manual``)
     record appends to the history AND contends for the ``latest`` pointer;
     an automatic one only contends for the pointer (a per-turn automatic
     entry in the history would evict real checkpoints from the capped ring).
     A trivial automatic record is skipped entirely. ``None`` dirs are
-    ignored. A ring whose files could not be read now is left as it is, for
-    this save only, and named in "unread": writing would replace its records.
-    Returns {"skipped", "appended", "promoted", "unread"}."""
+    ignored. A ring whose files could not be read or written now is left as
+    it is, for this save only, and named in "unread": writing would replace
+    its records. Returns {"skipped", "appended", "promoted", "unread"}.
+
+    The global ring is shared by every project: two saves at once read the
+    same history, and the later write dropped the other's record. ``must_land``
+    is for a bank a compaction will keep whatever happens, which cannot be
+    refused: past the wait it goes ahead, and the worst a lost race costs is
+    one record. A caller who can tell the model to try again passes False, and
+    a ring still held after ``wait`` is named in "unread" like one unreadable."""
     from windvane.privacy import clean
 
     handoff.update(clean(handoff))
@@ -349,36 +371,31 @@ def write_handoff(
     for d in target_dirs:
         if d is None:
             continue
-        # The global ring is shared by every project: two saves at once read
-        # the same history, and the later write dropped the other's record. A
-        # bank must land, since it is what a compaction keeps: past the wait it
-        # goes ahead, and the worst a lost race costs is one neighbour's record.
-        with atomic.locked(d / HISTORY_FILENAME, must_land=True):
-            try:
+        try:
+            with atomic.locked(d / HISTORY_FILENAME, wait=wait, must_land=must_land):
                 history = _load_history(d, for_write=True)
                 latest = atomic.read_json(d / LATEST_FILENAME)
-            except OSError:
-                report["unread"].append(str(d))
-                continue
-            history_changed = False
-            # Seed the history from a single-slot record written before the ring
-            # existed, so nothing that was there is silently dropped.
-            if not history:
-                if latest:
-                    history = [latest]
+                history_changed = False
+                # Seed the history from a single-slot record written before the ring
+                # existed, so nothing that was there is silently dropped.
+                if not history:
+                    if latest:
+                        history = [latest]
+                        history_changed = True
+                if handoff.get("kind") == "manual":
+                    history.append(handoff)
                     history_changed = True
-            if handoff.get("kind") == "manual":
-                history.append(handoff)
-                history_changed = True
-            if len(history) > history_limit:
-                history = history[-history_limit:]
-                history_changed = True
-            if history_changed:
-                _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
-                report["appended"].append(str(d))
-            if _should_promote(handoff, latest, stale_hours=stale_hours):
-                _atomic_write(d / LATEST_FILENAME, handoff)
-                report["promoted"].append(str(d))
+                if len(history) > history_limit:
+                    history = history[-history_limit:]
+                    history_changed = True
+                if history_changed:
+                    _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
+                    report["appended"].append(str(d))
+                if _should_promote(handoff, latest, stale_hours=stale_hours):
+                    _atomic_write(d / LATEST_FILENAME, handoff)
+                    report["promoted"].append(str(d))
+        except OSError:
+            report["unread"].append(str(d))
     return report
 
 
@@ -386,39 +403,46 @@ def replace_handoff(entry: dict, target_dirs: Sequence[Optional[Path]]) -> dict:
     """Rewrite a deliberate record in place: the history entry with the same
     ``task_id`` in each target ring, the ``latest`` pointer where it names
     that task, and the per-task file. Nothing is appended, so the ring's
-    order and count stay. Returns {"replaced", "promoted", "task_file"}."""
+    order and count stay. A refresh is not owed: a ring held past the wait, or
+    unreadable, is left alone and named in "unread". The pointer is read under
+    the same lock, since one read outside it could write this older task over
+    a newer save. Returns {"replaced", "promoted", "task_file", "unread"}."""
     from windvane.privacy import clean
 
     entry.update(clean(entry))
-    report: dict = {"replaced": [], "promoted": [], "task_file": ""}
+    report: dict = {"replaced": [], "promoted": [], "task_file": "", "unread": []}
     tid = str(entry.get("task_id") or "")
     if not tid:
         return report
     for d in target_dirs:
         if d is None:
             continue
-        with atomic.locked(d / HISTORY_FILENAME, must_land=True):
-            history = _load_history(d)
-            at = [i for i, h in enumerate(history) if str((h or {}).get("task_id") or "") == tid]
-            if at:
-                history[at[-1]] = entry
-                _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
-                report["replaced"].append(str(d))
-        ptr = _read_json(d / LATEST_FILENAME)
-        if ptr and str(ptr.get("task_id") or "") == tid:
-            _atomic_write(d / LATEST_FILENAME, entry)
-            report["promoted"].append(str(d))
+        try:
+            with atomic.locked(d / HISTORY_FILENAME):
+                history = _load_history(d, for_write=True)
+                ptr = atomic.read_json(d / LATEST_FILENAME)
+                at = [i for i, h in enumerate(history) if str((h or {}).get("task_id") or "") == tid]
+                if at:
+                    history[at[-1]] = entry
+                    _atomic_write(d / HISTORY_FILENAME, {"handoffs": history})
+                    report["replaced"].append(str(d))
+                if ptr and str(ptr.get("task_id") or "") == tid:
+                    _atomic_write(d / LATEST_FILENAME, entry)
+                    report["promoted"].append(str(d))
+        except OSError:
+            report["unread"].append(str(d))
     try:
         task_file = global_ring_dir() / f"{tid}.json"
-        data = _read_json(task_file)
-        if data:
-            for k in ("task_description", "current_step", "completed_steps", "pending_steps", "files_involved",
-                      "key_decisions", "handoff_summary", "handoff_context_needed", "handoff_warnings",
-                      "metadata", "commit"):
-                if k in entry:
-                    data[k] = entry[k]
-            _atomic_write(task_file, data)
-            report["task_file"] = str(task_file)
+        with atomic.locked(task_file):
+            data = _read_json(task_file)
+            if data:
+                for k in ("task_description", "current_step", "completed_steps", "pending_steps", "files_involved",
+                          "key_decisions", "handoff_summary", "handoff_context_needed", "handoff_warnings",
+                          "metadata", "commit"):
+                    if k in entry:
+                        data[k] = entry[k]
+                _atomic_write(task_file, data)
+                report["task_file"] = str(task_file)
     except Exception:
         pass
     return report
@@ -563,11 +587,7 @@ class ContextGuard:
         self._actual_verifications: list = []
 
     def _task_id(self) -> str:
-        """``task_<epoch seconds><six random digits>``. Sessions share one store,
-        and two saving in one second could each look for the other's file before
-        either had written it, then share an id and a task file. Digits only:
-        rewind detection and older versions read an id as ``task_`` and digits."""
-        return f"task_{int(time.time())}{secrets.randbelow(1_000_000):06d}"
+        return new_task_id()
 
     def save_checkpoint(
         self,
@@ -666,15 +686,27 @@ class ContextGuard:
             proj_dir = project_ring_dir(project_path) if project_path else None
             if project_path and proj_dir is None:
                 proj_dir = register_project_ring(project_path)
-            written = write_handoff(ring, [proj_dir, global_ring_dir()])
-            # Only a store that could not be opened, or a ring that could not
-            # be read just now, leaves a project without this record in a ring
-            # of its own: worth saying, since a project-scoped restore does not
-            # look in the global folder first.
-            in_own = project_path and proj_dir and str(proj_dir) not in written["unread"]
-            filed_to = Path(project_path).name if in_own else "global checkpoints"
+            written = write_handoff(ring, [proj_dir, global_ring_dir()], must_land=False, wait=DELIBERATE_LOCK_WAIT_S)
+            # A restore reads the project's own ring first, so a save that
+            # missed it would resume the older record there, whatever the global
+            # folder holds.
+            required = proj_dir if project_path else global_ring_dir()
+            if required is not None and str(required) not in written["unread"]:
+                filed_to = Path(project_path).name if project_path else "global checkpoints"
         except Exception:
             pass
+
+        if not filed_to:
+            work_log.what_failed.append("the restore index did not take this record")
+            return Response(
+                status="failed",
+                confidence="high",
+                reasoning="The checkpoint is saved but did not reach its restore index, so a restore would resume an "
+                          "older record: do not compact on this save. Save again in a moment.",
+                work_log=work_log,
+                data={"task_id": task_id, "checkpoint_file": str(checkpoint_file), "filed_to": ""},
+                suggestions=[f"checkpoint(restore) with task_id={task_id} reads this record"],
+            )
 
         # A deliberate save resets the turns-since-checkpoint cadence.
         try:

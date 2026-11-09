@@ -161,6 +161,41 @@ def live_records(path: str | Path, tail_bytes: Optional[int] = TAIL_BYTES) -> li
     return [recs[i] for i in sorted(_walk(recs))]
 
 
+def live_event_records(records: Iterable[dict]) -> list[dict]:
+    """``records`` less what belongs to an abandoned branch or a subagent, for
+    reading events such as a goal's. An event is not always on the walk from the
+    tip: a verdict can come after the last message, an attachment can be written
+    before the message it hangs from, and a record of an older shape has no ids
+    and belongs to the conversation record before it. With no chain to walk,
+    every record stands."""
+    records = [d for d in records if isinstance(d, dict) and not d.get("isSidechain")]
+    live = chain_of(records)
+    if live is None:
+        return records
+    is_message = [d.get("type") in ("user", "assistant") for d in records]
+    tip_at = max((i for i, d in enumerate(records) if is_message[i] and d.get("uuid") in live), default=-1)
+    trailing = {records[tip_at]["uuid"]} if tip_at >= 0 else set()
+    position = {d["uuid"]: i for i, d in enumerate(records) if d.get("uuid")}
+    owner = None
+    kept = []
+    for i, d in enumerate(records):
+        ident, parent = d.get("uuid"), d.get("parentUuid")
+        if ident and is_message[i]:
+            owner = ident
+        if ident in live:
+            kept.append(d)
+        elif not ident:
+            if (parent or owner) is None or (parent or owner) in live or (parent or owner) in trailing:
+                kept.append(d)
+        elif d.get("type") == "attachment":
+            if i > tip_at and parent in trailing:
+                trailing.add(ident)
+                kept.append(d)
+            elif parent in live and position.get(parent, -1) > i:
+                kept.append(d)
+    return kept
+
+
 def live_chain(path: str | Path, tail_bytes: Optional[int] = None) -> Optional[set]:
     """The uuids on the live branch of the transcript at ``path`` (the whole
     file by default; ``tail_bytes`` bounds the read for a hook). None when

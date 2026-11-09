@@ -21,6 +21,7 @@ copied from an older install opens unchanged.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import json
@@ -293,6 +294,21 @@ def _embed_signature() -> tuple[str, str]:
         return "", ""
 
 
+class _Conflict(OSError):
+    """Two writers changed the same entry: keeping either loses the other."""
+
+
+# Counters of use, which merge on their own and are no one's edit.
+_ENTRY_USE_FIELDS = ("access_count", "last_accessed")
+# Not a project's own settings: the entries merge one by one, the rest is derived.
+_NOT_PROJECT_FIELDS = ("project_path", "entries", "file_memory_index", "tag_memory_index")
+
+
+def _entry_print(entry: MemoryEntry) -> str:
+    row = {k: v for k, v in vars(entry).items() if k not in _ENTRY_USE_FIELDS}
+    return hashlib.md5(json.dumps(row, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
 from windvane.archive import ArchiveMixin  # noqa: E402
 from windvane.rules import RulesMixin  # noqa: E402
 
@@ -344,6 +360,15 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         # or a hook wrote in the meantime.
         self._project_stamps: dict[str, tuple[int, int]] = {}
         self._unreadable_projects: set[str] = set()
+        # What each project held when loaded or last written: a save on a stale
+        # copy then carries only what changed here. Fingerprints, not copies: a
+        # store holds every project a daemon has touched.
+        self._project_bases: dict[str, dict] = {}
+        # Refused for a change another writer made to the same entry. The caller
+        # was told; this copy is dropped so the next call reads the file.
+        self._conflicted_projects: set[str] = set()
+        self._global_dirty = False
+        self._global_base: set[str] = set()
         self._archive_stamp: tuple[int, int] = (0, 0)
         # What this process took out, until a write says so: a merge with the
         # disk reads anything missing here as new, and would bring these back.
@@ -526,6 +551,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 global_data = json.loads(self._global_file.read_text(encoding="utf-8"))
                 for entry_data in global_data.get("entries", []):
                     self._global_entries.append(MemoryEntry.from_dict(entry_data))
+                self._global_base = {e.id for e in self._global_entries}
             except Exception:
                 pass
 
@@ -559,6 +585,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 if version == 1:
                     entry_data = self._migrate_entry_v1_to_v2(entry_data)
                 self._global_entries.append(MemoryEntry.from_dict(entry_data))
+                self._global_dirty = True  # it moves to its own file at the next save
 
             legacy_emb_file = self.storage_dir / "embeddings.json"
             legacy_embeddings = {}
@@ -724,13 +751,88 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             self._save_error = f"Failed to save manifest: {e}"
 
     def _save_global(self):
-        if not self._global_entries and not self._global_file.exists():
+        """Global priorities, written only when changed here: every save wrote
+        this process's copy, and a writer that loaded before another's priority
+        wiped it out. What another writer added stays; what it removed stays out."""
+        if not self._global_dirty:
             return
-        data = {"entries": [e.model_dump() for e in self._global_entries]}
         try:
-            atomic.write_json(self._global_file, data, indent=2)
+            with atomic.locked(self._global_file):
+                disk = atomic.read_json(self._global_file, {}) or {}
+                rows = disk.get("entries", []) if isinstance(disk, dict) else []
+                theirs = [MemoryEntry.from_dict(r) for r in rows if isinstance(r, dict)]
+                have, ours = {e.id for e in theirs}, {e.id for e in self._global_entries}
+                merged = [e for e in self._global_entries if e.id in have or e.id not in self._global_base]
+                merged += [e for e in theirs if e.id not in ours and e.id not in self._global_base]
+                atomic.write_json(self._global_file, {"entries": [e.model_dump() for e in merged]}, indent=2)
+                self._global_entries = merged
+                self._global_base = {e.id for e in merged}
+                self._global_dirty = False
         except Exception as e:
             self._save_error = f"Failed to save global: {e}"
+
+    def _note_base(self, norm_path: str, proj: ProjectMemory) -> None:
+        fields = {k: copy.deepcopy(v) for k, v in vars(proj).items() if k not in _NOT_PROJECT_FIELDS}
+        self._project_bases[norm_path] = {"entries": {e.id: _entry_print(e) for e in proj.entries}, "fields": fields}
+
+    def _merge_onto_disk(self, norm_path: str, proj: ProjectMemory, disk: ProjectMemory) -> None:
+        """Bring this writer's changes onto the file's current state, in place,
+        since a caller may be holding ``proj``. An entry neither edited, or only
+        one edited, needs no choice. Both edited, or edited here and deleted
+        there, raises _Conflict: one of two acknowledged changes would be lost.
+        An entry deleted here stays deleted."""
+        base = self._project_bases.get(norm_path) or {}
+        was, was_fields = base.get("entries", {}), base.get("fields", {})
+        mine = {e.id: e for e in proj.entries}
+        have = {e.id for e in disk.entries}
+        merged = []
+
+        def used(kept: MemoryEntry, other: MemoryEntry) -> MemoryEntry:
+            kept.access_count = max(kept.access_count, other.access_count)
+            kept.last_accessed = max(kept.last_accessed, other.last_accessed)
+            return kept
+
+        for theirs in disk.entries:
+            ours = mine.get(theirs.id)
+            before = was.get(theirs.id)
+            if ours is None:
+                if before is None:
+                    merged.append(theirs)  # another writer's new entry
+                continue  # deleted here
+            if before is None:
+                merged.append(used(theirs, ours))  # the same id on both sides: the same text
+                continue
+            ours_print, theirs_print = _entry_print(ours), _entry_print(theirs)
+            if ours_print == before or ours_print == theirs_print:
+                merged.append(used(theirs, ours))
+            elif theirs_print == before:
+                merged.append(used(ours, theirs))
+            else:
+                raise _Conflict(f"memory {ours.id} was changed by another writer at the same moment; nothing was written. Look at it again before repeating this")
+        for ours in proj.entries:
+            if ours.id in have:
+                continue
+            before = was.get(ours.id)
+            if before is None:
+                merged.append(ours)  # new here
+            elif _entry_print(ours) != before:
+                raise _Conflict(f"memory {ours.id} was deleted by another writer at the same moment; nothing was written. Look at it again before repeating this")
+            # else: deleted there, and nothing here to keep
+
+        last_updated = max(proj.last_updated, disk.last_updated)
+        for key, value in vars(disk).items():
+            if key not in _NOT_PROJECT_FIELDS and key in was_fields and getattr(proj, key) == was_fields[key]:
+                setattr(proj, key, value)  # changed only there, or nowhere
+        proj.last_updated = last_updated
+        proj.entries = merged
+        self._rebuild_indexes(proj)
+
+    def _drop_conflicted(self) -> None:
+        for norm_path in self._conflicted_projects:
+            self._dirty_projects.discard(norm_path)
+            self._projects.pop(norm_path, None)
+            self._project_bases.pop(norm_path, None)
+        self._conflicted_projects.clear()
 
     def _save_project(self, norm_path: str) -> bool:
         """Save one project.
@@ -738,10 +840,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         Another process may have written the file since this one loaded it.
         A project this process did not mutate is then not written (the
         ``_save()`` all-loaded fallback is how a stale copy used to land on a
-        fresh file). A project this process DID mutate on a stale base is
-        merged by entry id: our copy plus any entry on disk we never saw.
-        That can resurrect an entry the other writer deleted in the same
-        instant; it can never lose a write."""
+        fresh file). A project this process DID mutate on a stale base has its
+        changes brought onto the file (``_merge_onto_disk``)."""
         proj = self._projects.get(norm_path)
         if not proj:
             return False
@@ -758,21 +858,10 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                         return True
                     try:
                         disk = self._load_project(norm_path, saving=True)
-                        if unread:
-                            # The file is the base: this copy has no summary,
-                            # language or key files of its own to keep. In place,
-                            # since a caller may be holding this object.
-                            mine = list(proj.entries)
-                            have = {e.id for e in disk.entries}
-                            vars(proj).update(vars(disk))
-                            proj.entries = disk.entries + [e for e in mine if e.id not in have]
-                            self._rebuild_indexes(proj)
-                        else:
-                            seen = {e.id for e in proj.entries}
-                            added = [e for e in disk.entries if e.id and e.id not in seen]
-                            if added:
-                                proj.entries.extend(added)
-                                self._rebuild_indexes(proj)
+                        if norm_path not in self._unreadable_projects:
+                            self._merge_onto_disk(norm_path, proj, disk)
+                    except _Conflict:
+                        raise
                     except Exception:
                         pass
                     if norm_path in self._unreadable_projects:
@@ -784,7 +873,12 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 proj_data.pop("project_path", None)
                 atomic.write_json(pdir / "memory.json", proj_data, indent=2)
                 self._project_stamps[norm_path] = self._disk_stamp(pdir / "memory.json")
+                self._note_base(norm_path, proj)
             return True
+        except _Conflict as e:
+            self._conflicted_projects.add(norm_path)
+            self._save_error = str(e)
+            return False
         except Exception as e:
             self._save_error = f"Failed to save project {norm_path}: {e}"
             return False
@@ -797,6 +891,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         the last save could not do."""
         ok = True
         self._save_error = None
+        self._drop_conflicted()
         try:
             projects_to_save = self._dirty_projects if self._dirty_projects else set(self._projects.keys())
             for norm_path in list(projects_to_save):
@@ -858,6 +953,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         stamp = self._disk_stamp(self._project_dir(norm_path) / "memory.json")
         proj = self._load_project(norm_path)
         self._project_stamps[norm_path] = stamp
+        self._note_base(norm_path, proj)
         return proj
 
     # ------------------------------------------------------------------
@@ -877,6 +973,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         """A project's memory, lazy-loaded, and reloaded when the file on
         disk is newer than the copy held here."""
         project_path = self._normalize_path(project_path)
+        self._drop_conflicted()
         if project_path in self._projects:
             # A copy still waiting to be written is not dropped for the disk's:
             # its save merges the two.
@@ -899,6 +996,14 @@ class MemoryStore(RulesMixin, ArchiveMixin):
     ) -> ProjectMemory:
         """Create or update a project's memory (registering it)."""
         project_path = self._normalize_path(project_path)
+        if not self._manifest_dirty:
+            # Forgotten by another writer since this copy was loaded: a save of
+            # this copy would land in a file no manifest row points at, and what
+            # it says was remembered would never be found.
+            self._refresh_manifest_if_changed()
+            if project_path not in self._manifest.get("projects", {}) and project_path not in self._dirty_projects:
+                self._projects.pop(project_path, None)
+                self._project_bases.pop(project_path, None)
         if self.get_project(project_path) is None:
             self._projects[project_path] = ProjectMemory(
                 project_path=project_path, project_name=Path(project_path).name
@@ -1004,6 +1109,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         else:
             entry.id = self._generate_entry_id(content)
             self._global_entries.append(entry)
+            self._global_dirty = True
         self._save()
 
     def log_search(self, project_path: str, query: str, results_count: int, top_files: list):
@@ -1089,6 +1195,7 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         """Clear every loaded memory (use with caution)."""
         self._projects = {}
         self._global_entries = []
+        self._global_dirty = True
         self._save()
 
     def get_stats(self) -> dict:
@@ -1329,6 +1436,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
                 self._rebuild_indexes(proj)
             self._dirty_projects.add(proj.project_path)
             self._save()
+            if proj.project_path in self._dirty_projects:
+                return (False, f"Not saved: {self._save_error}")
             return (True, f"Modified: {', '.join(changes)}")
         return (False, "No changes specified")
 
@@ -1343,6 +1452,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
         self._rebuild_indexes(proj)
         self._dirty_projects.add(proj.project_path)
         self._save()
+        if proj.project_path in self._dirty_projects:
+            return (False, f"Not saved: {self._save_error}")
         return (True, f"Deleted memory {memory_id}")
 
     def batch_delete(
@@ -1370,6 +1481,8 @@ class MemoryStore(RulesMixin, ArchiveMixin):
             self._rebuild_indexes(proj)
             self._dirty_projects.add(proj.project_path)
             self._save()
+            if proj.project_path in self._dirty_projects:
+                return (0, f"Not saved: {self._save_error}")
         return (deleted, f"Deleted {deleted} memories")
 
     def promote_to_rule(self, project_path: str, memory_id: str, reason: Optional[str] = None) -> tuple[bool, str]:

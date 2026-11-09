@@ -329,6 +329,8 @@ def _checkpoint(warm: Warm, op: str, args: dict, raw: dict) -> str:
             drafted_fields=drafted,
         )
         text = response.to_formatted_string()
+        if response.status != "success":
+            raise ToolError(text)  # its answer must not read as a save the model can compact on
         if drafted:
             text += "\nDrafted by the recorder: " + ", ".join(drafted)
         ctx = _context_after_save(args["project_path"])
