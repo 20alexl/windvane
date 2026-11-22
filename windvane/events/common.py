@@ -784,7 +784,10 @@ def _own_session_checkpoint(dirs: list, session_id: str, transcript_path: str) -
         sid = str(session_id or "")
         if not sid:
             return None, []
-        mine = [h for h in _hs.read_history(dirs)  # newest first
+        # Every record, not the newest twenty: under a folder many sessions
+        # share, the newest twenty of all rings were other sessions', and a
+        # resumed session was handed one of theirs.
+        mine = [h for h in _hs.read_history(dirs, limit=None)  # newest first
                 if h.get("kind") == "manual" and str(h.get("session_id") or "") == sid]
         if not mine:
             return None, []
@@ -831,9 +834,11 @@ def _format_restored_full(entry: dict, skipped: "list | None" = None) -> list[st
     and shows three next steps; after a compaction the model would have to
     call the restore to read what it had banked. A checkpoint of this session
     that sits on a rewound branch is named so the model knows the ring holds a
-    future it no longer remembers."""
+    future it no longer remembers. Another session's record stays a pointer."""
     if not entry:
         return []
+    if entry.get("_another_session"):
+        return _format_restored_context(entry)
     out = list(_format_restored_context(entry)[:1])  # the self-identifying header line
     task = entry.get("task_description") or ""
     if task and task != (entry.get("summary") or ""):
@@ -926,8 +931,13 @@ def _format_restored_context(entry: dict) -> list[str]:
     # match what was teased.
     if entry.get("task_id"):
         label += f", {entry['task_id']}"
+    if entry.get("_another_session"):
+        label += f", {ANOTHER_SESSION}"
     headline = entry.get("summary") or entry.get("task_description") or "?"
     out = [f"CHECKPOINT [{label}]: {_truncate(headline, 100)}"]
+    if entry.get("_another_session"):
+        out.append("  Saved by another session in this folder, not this one's state. Restore it by its task_id"
+                   " only if it is the work you were asked to continue.")
 
     step = entry.get("current_step")
     if step and step != "Context was compacted":
@@ -1854,7 +1864,21 @@ def _banner_checkpoint(project_dir: str, work_project: str, source: str, has_res
         restored = _subtree_manual_handoff(project_dir)
     if not restored:
         restored = get_handoff_data(project_dir)
-    return restored or {}, skipped
+    return _not_this_sessions(restored, _session_id), skipped
+
+
+ANOTHER_SESSION = "another session's"
+
+
+def _not_this_sessions(record: "dict | None", session_id: str) -> dict:
+    """A copy marked when another session saved ``record``: the banner then
+    shows it as a pointer, never as this session's state. Many sessions can
+    share one folder, and the newest record there is often someone else's."""
+    if not record:
+        return {}
+    if session_id and str(record.get("session_id") or "") == str(session_id):
+        return record
+    return dict(record, _another_session=True)
 
 
 def _compaction_briefed(source: str, session_id: str) -> bool:

@@ -76,6 +76,24 @@ def should_show_full_reminder(project_dir: str, prompt: str = "") -> tuple[bool,
     return (False, "no_reminder_needed")
 
 
+def _restored_lines(project_dir: str) -> list:
+    """The newest checkpoint in the folder, for a session whose start hook did
+    not run. Another session's record is named as such, with no word to carry
+    it on: several sessions can share the folder."""
+    from windvane.events import common as _c
+
+    restored = _c._not_this_sessions(get_handoff_data(project_dir), _c._session_id)
+    if not restored:
+        return []
+    own = not restored.get("_another_session")
+    lines = ["---", "", "CONTEXT RESTORED FROM PREVIOUS SESSION" if own else "LAST CHECKPOINT IN THIS FOLDER", ""]
+    lines.extend(_format_restored_context(restored))
+    lines.append("")
+    if own:
+        lines += ["CONTINUE FROM WHERE YOU LEFT OFF", ""]
+    return lines + ["---", ""]
+
+
 def reminder_for_prompt(project_dir: str, prompt: str = "") -> str:
     """
     Generate the reminder for the UserPromptSubmit hook.
@@ -101,19 +119,7 @@ def reminder_for_prompt(project_dir: str, prompt: str = "") -> str:
         lines.append("windvane session auto-started")
         lines.append("")
 
-        # AUTO-LOAD restored context (checkpoint + handoff are one ring construct)
-        restored = get_handoff_data(project_dir)
-        if restored:
-            lines.append("---")
-            lines.append("")
-            lines.append("CONTEXT RESTORED FROM PREVIOUS SESSION")
-            lines.append("")
-            lines.extend(_format_restored_context(restored))
-            lines.append("")
-            lines.append("CONTINUE FROM WHERE YOU LEFT OFF")
-            lines.append("")
-            lines.append("---")
-            lines.append("")
+        lines.extend(_restored_lines(project_dir))
 
         # Show RULES first (always follow these) - with IDs for management.
         # Rules already present in CLAUDE.md are skipped: that file is in

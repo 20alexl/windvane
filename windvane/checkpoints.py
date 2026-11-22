@@ -485,9 +485,10 @@ def prune_task_files(storage: Path, keep_days: int = TASK_FILE_KEEP_DAYS) -> lis
     return removed
 
 
-def read_history(candidate: Sequence[Optional[Path]], *, limit: int = DEFAULT_HISTORY_LIMIT) -> list:
+def read_history(candidate: Sequence[Optional[Path]], *, limit: Optional[int] = DEFAULT_HISTORY_LIMIT) -> list:
     """The merged history of the candidate rings, newest first, deduplicated
-    by (time, summary opening); each ring's ``latest`` pointer is folded in."""
+    by (time, summary opening); each ring's ``latest`` pointer is folded in.
+    ``limit`` None keeps every record."""
     seen = set()
     out = []
     for d in candidate:
@@ -506,7 +507,7 @@ def read_history(candidate: Sequence[Optional[Path]], *, limit: int = DEFAULT_HI
             seen.add(key)
             out.append(h)
     out.sort(key=_created_ts, reverse=True)
-    return out[:limit]
+    return out if limit is None else out[:limit]
 
 
 def read_latest(candidate: Sequence[Optional[Path]], *, max_age_hours: Optional[float] = None) -> Optional[dict]:
