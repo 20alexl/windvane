@@ -128,21 +128,30 @@ def _result_blocks(msg: dict) -> list[dict]:
     return [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
 
 
+def _as_text(value, depth: int = 0) -> str:
+    """The first text in a result's content: a string, or blocks holding one,
+    to any depth. A part's content can itself be a list of blocks, and that
+    list reached the redaction raw and failed the whole index (2026-11-12)."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and depth < 4:
+        for part in value:
+            if isinstance(part, dict):
+                text = _as_text(part.get("content"), depth + 1) or _as_text(part.get("text"), depth + 1)
+            else:
+                text = _as_text(part, depth + 1)
+            if text:
+                return text
+    return ""
+
+
 def _result_text(block: dict) -> tuple[str, bool]:
-    """A result block's text and whether it reported an error."""
+    """A result block's text, always a string, and whether it reported an error."""
     is_error = bool(block.get("is_error"))
     content = block.get("content", "")
-    if isinstance(content, str):
-        return content, is_error
     if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict):
-                if part.get("is_error"):
-                    is_error = True
-                text = part.get("content", "") or part.get("text", "")
-                if text:
-                    return text, is_error
-    return "", is_error
+        is_error = is_error or any(isinstance(p, dict) and p.get("is_error") for p in content)
+    return _as_text(content), is_error
 
 
 def _extract_tool_chunks(
@@ -193,8 +202,8 @@ def _extract_tool_chunks(
         if len(blocks) <= 1 and (len(tool_uses) == 1 or block):
             tur = curr_msg.get("toolUseResult", {})
             if isinstance(tur, dict):
-                stdout = tur.get("stdout", "")
-                stderr = tur.get("stderr", "")
+                stdout = _as_text(tur.get("stdout", ""))
+                stderr = _as_text(tur.get("stderr", ""))
                 if stderr:
                     result_text = stderr
                     is_error = True
@@ -287,6 +296,16 @@ def _extract_tool_chunks(
         # and bloats the index. File paths are captured in related_files on edits.
 
     return chunks
+
+
+def _tool_chunks_or_none(prev_msg: dict, curr_msg: dict, *args) -> list:
+    """``_extract_tool_chunks``, with a record of a shape it does not know
+    costing that record only. One such record failed the embedding phase of
+    every later run, and the index of every session stopped growing."""
+    try:
+        return _extract_tool_chunks(prev_msg, curr_msg, *args)
+    except Exception:
+        return []
 
 
 def _month_of(ts: str) -> str:
@@ -482,7 +501,7 @@ def _scan_session_chunks(
                 # messages too, so a result that lands just past the watermark
                 # still finds its tool_use.
                 if prev_msg and msg.get("type") == "user":
-                    for tool_chunk, tool_text in _extract_tool_chunks(
+                    for tool_chunk, tool_text in _tool_chunks_or_none(
                         prev_msg, msg, session_id, jfile, msg_idx, ts, pending_uses
                     ):
                         chunks.append(tool_chunk)
@@ -543,7 +562,7 @@ def _scan_session_chunks(
                         texts.append(text[:500])
 
                     if sub_prev_msg and msg.get("type") == "user":
-                        for tool_chunk, tool_text in _extract_tool_chunks(
+                        for tool_chunk, tool_text in _tool_chunks_or_none(
                             sub_prev_msg, msg, session_id, sub_jsonl.name, sub_idx, ts, sub_pending
                         ):
                             tool_chunk.msg_type = "subagent_tool"
