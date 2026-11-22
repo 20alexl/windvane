@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.23 (2026-11-22)
+
+Three defects seen across several sessions that share one folder, each measured on real transcripts first.
+
+- **A session is shown its own checkpoint.** The lookup for a session's own record read only the newest twenty records of every project under the folder. Where several sessions share a folder those were other sessions', so a resumed session found nothing of its own and was handed the newest record of any project, in full. It now reads every record (76 projects and 600 records in 76 ms). A record another session saved, which a session with nothing banked still falls back to, is shown as a labelled pointer with its task id, never in full and never with a word to carry it on.
+- **Session search keeps indexing.** A tool result whose content held a list of blocks inside a list failed the embedding phase of every mining run, so the session index stopped growing for every project and nothing said after that day could be found. Result text is always read as text now, and a record of a shape the indexer does not know costs that record only.
+- **A compaction that is waiting says so.** A message queued during the turn that called `compact_now` starts the next turn first, and the compaction runs one turn late (in a week of transcripts: 400 on time, 90 one turn late, 13 later, none lost). The model on that turn saw no compaction and often called `compact_now` again. A prompt that arrives while the compaction waits now carries a note: it runs when this turn ends.
+
+Tests: the suite passes on Windows and Linux. Sessions already running need `/reload-plugins` to pick this up.
+
 ## 1.0.22 (2026-11-09)
 
 What an outside patch against 1.0.21 claimed, reproduced first and fixed by hand with small changes, then two reviews of those fixes. The patch itself was not applied. A store written by 1.0.21 opens here, and 1.0.21 reads back what this version writes, so there is no migration.
