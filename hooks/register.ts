@@ -90,6 +90,12 @@ const MIRROR_EVERY_MS = 10_000
 const CONTINUE_TEXT =
   'The conversation was compacted with the checkpoint banked. The rules and the checkpoint are in the session-start brief beside this message. Continue from the checkpoint: its current step first, then the pending steps. End your reply with what is done and what is next. If the person has already sent a prompt since the compaction, say so in one line and stop.'
 
+// Beside a prompt that starts a turn while a compact_now compaction is still
+// waiting: a message queued during the asking turn starts the next one before
+// the compaction can run, and the model, seeing no compaction, asked again.
+const PENDING_NOTE =
+  'windvane: compact_now already asked for a compaction, and it runs when the current turn ends. Do not call compact_now again, and keep this turn short.'
+
 // The engine's pressure constants (its config knobs' defaults), mirrored.
 // Keep in step with the engine.
 const OUTPUT_RESERVE = 32_000
@@ -511,6 +517,7 @@ export const register: Register = (on, options) => {
     const ours = origin?.kind === 'plugin' && origin.name === PLUGIN
     if (!ours) {
       if ((origin?.kind === 'composer' || origin?.kind === 'bridge') && e.turnId === undefined) personPromptAt = await $.clock.now()
+      if (compactAsked && !compactRequested) return next({ ...e, context: [...(e.context ?? []), PENDING_NOTE] })
       return next(e)
     }
     if (e.text === CONTINUE_TEXT && continueStale()) return { drop: `${PLUGIN}: the session already continued, so the resume prompt was dropped` }

@@ -171,6 +171,7 @@ type Counters = {
   statuses: string[]
   briefs: number
   prompts?: string[]
+  contexts?: (readonly string[] | undefined)[]
   veto?: boolean
   // The engine refuses the compaction (a turn had begun): the call rejects.
   refuse?: boolean
@@ -212,6 +213,7 @@ function inBand(
   // The engine beneath a plugin's $.prompt.submit: the prompt enters.
   on('prompt.submit', ($, e) => {
     ;(counters.prompts ??= []).push(e.text)
+    ;(counters.contexts ??= []).push(e.context)
     return { text: e.text }
   })
   on('fs.exists', ($, e) => ({ value: counters.noSessions !== true && e.path.replace(/\\/g, '/').endsWith('/sessions') }))
@@ -373,6 +375,32 @@ test('a slow mirror tick is not overlapped by the next one', async ($, on) => {
   expect(reached).toBe(stuck + 2)
   holding = false
   for (const go of waiting) go()
+})
+
+test('a prompt that comes before a pending compaction tells the model it is pending', async ($, on) => {
+  // A queued message started the next turn first, so the compaction was
+  // refused; the model on that turn must not ask for it again.
+  const counters: Counters = { compactions: 0, statuses: [], briefs: 0, refuse: true, logs: [] }
+  const clock = mock.clock(on)
+  inBand(on, counters)
+
+  await $.session.start(START)
+  await $.prompt.submit({ text: 'before any compact_now', wait: false, origin: { kind: 'peer' } } as never)
+  await $.tool.call({ tool: 'mcp__windvane__compact_now' } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  await $.prompt.submit({ text: 'a message from another session', wait: false, origin: { kind: 'peer' } } as never)
+  expect(counters.contexts?.[0] ?? []).toEqual([])
+  const note = (counters.contexts?.[1] ?? []).join('\n')
+  expect(note).toContain('compaction')
+  expect(note.toLowerCase()).toContain('do not call compact_now again')
+
+  counters.refuse = false
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_000)
+  expect(counters.compactions).toBe(1)
+  await $.prompt.submit({ text: 'after the compaction', wait: false, origin: { kind: 'peer' } } as never)
+  expect((counters.contexts?.at(-1) ?? []).join('\n')).not.toContain('compact_now')
 })
 
 test('a compaction the engine refuses is asked for again at the next turn end, with nothing said', async ($, on) => {
