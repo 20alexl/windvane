@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.24 (2026-11-28)
+
+Checked against Claude Code 2.1.332 and its changelog since 2.1.289.
+
+- **The window variable takes its suffixes.** Since Claude Code 2.1.304, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` may be written as `200k` or `1M`. windvane read such a value as unset, so its marks stood at the setting or the model default instead. A bare number is still a token count.
+- **A locked semantic row is not offered.** When managed settings or an organization's policy own the `semantic` row, a change to it is refused. The first-run offer installed the extra, several hundred MB, for a row it could not turn on, and asked again a week later. It is not offered while the row is locked, and comes once the lock is lifted.
+- **The 2.1.332 plugin API.** The mod type-checks clean against it and against 2.1.289, and its tests use the newer shapes (the band's collapsed state, a request body that may be base64, a config row's owner and lock).
+
+Tests: the suite passes on Windows and Linux. Sessions already running need `/reload-plugins` to pick this up.
+
 ## 1.0.23 (2026-11-22)
 
 Three defects seen across several sessions that share one folder, each measured on real transcripts first.
