@@ -163,14 +163,18 @@ def get_state_file() -> Path:
 
 
 def _prune_session_states(max_age_days: float = 7.0):
-    """Delete per-session hook-state files older than ``max_age_days``. They
-    accumulate one per session under <store>/sessions/; each session keys its
-    own, so a stale one is never read again -- pure clutter."""
+    """Delete per-session files older than ``max_age_days``. They accumulate
+    under <store>/sessions/, each keyed by its session, so a stale one is
+    never read again: the state and the mirror (``.json``), the mod's markers
+    (``.mod``, ``.briefed``), a write's half-written temp file and a damaged
+    copy moved aside. Only ``.json`` went, and the rest piled up."""
     sessions_dir = get_windvane_storage_dir() / "sessions"
     if not sessions_dir.is_dir():
         return
     cutoff = time.time() - max_age_days * 86400
-    for f in sessions_dir.glob("*.json"):
+    for f in sessions_dir.iterdir():
+        if not (f.suffix in (".json", ".mod", ".briefed", ".tmp") or ".corrupt-" in f.name):
+            continue
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
