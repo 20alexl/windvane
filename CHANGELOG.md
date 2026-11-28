@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.25 (2026-11-28)
+
+windvane's own upkeep, each defect measured on a long-lived store first.
+
+- **A moved project's memory can follow it.** The store files memory under the folder's path, so a project moved to another folder started empty while its rules, mistakes and decisions stayed under a path nothing read again. `python <plugin folder>/windvane/move.py OLD NEW` brings the memories the new project lacks and the archived rows, points file references at the new folder, and forgets the old project only once both are written. The session-start banner names the command when a project of the folder's name is filed under a folder that is gone and still holds memories.
+- **Store hygiene reaches every project.** It cleaned only the project whose session was mined, and only when a session ended, which a standing session rarely does. Once a day, from a live tick too, every other project whose folder exists has its broken entries removed and doubles merged. Those projects are never aged: decay judges an entry by when it was last read, and in a project nobody opened for months it would remove entries that are still true. A project whose folder is gone is forgotten when it holds no memory and no archived rows, its store folder has been quiet for 30 days, and a folder above it still exists, so a drive that is away is not taken for a deleted project.
+- **The sessions folder is pruned whole.** The weekly prune took only the state files, so the mod's markers, half-written temporary files and damaged copies moved aside stayed for good.
+- **Session search keeps half its page for the conversation.** Tool output outnumbers the conversation about five to one and quotes paths, which the project-name boost lifts: a query for a ruling the person typed came back as ten tool chunks. Up to half of the results are now the best conversation chunks that cleared the bar, and tool chunks fill the rest by score.
+- **Session vectors are kept at half precision.** New vectors are written as float16 and older shards are narrowed once by the miner, which halves the vector store on disk. A search widens a block of rows at a time and never copies a whole shard.
+
+Tests: the suite passes on Windows and Linux. Sessions already running need `/reload-plugins` to pick this up.
+
 ## 1.0.24 (2026-11-28)
 
 Checked against Claude Code 2.1.332 and its changelog since 2.1.289.
