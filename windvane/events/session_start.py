@@ -322,6 +322,14 @@ def _hook_session_start(project_dir: str) -> None:
 
         lines.extend(_last_session_lines(project_dir, work_project, resume_files, str(source or "startup")))
         lines.extend(_damaged_memory_lines(work_project))
+        # A project of this folder's name whose folder is gone still holds
+        # memories: likely this project, moved. The banner names the command.
+        try:
+            from windvane.move import moved_hint
+
+            lines.extend(moved_hint(work_project))
+        except Exception:
+            pass
 
         # Never set hookSpecificOutput.sessionTitle here. The session name
         # belongs to Claude Code and the user's /rename; this hook also fires
