@@ -1,8 +1,11 @@
 // windvane: the first interactive session is offered the semantic tier
 // once; the answer installs the extra and turns the row on, or is kept so
 // the question is not asked again (for a week, or ever).
-import type { SessionUsage } from 'claude-code'
+import type { On, SessionUsage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+
+// The test runner has timers; a hooks module's environment declares none.
+declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
 
 import {
   EXTRA_PACKAGES,
@@ -64,7 +67,7 @@ function usage(): SessionUsage {
 }
 
 type Run = { argv: readonly string[]; init?: { env?: Record<string, string>; timeoutMs?: number } }
-type World = { row: boolean; installed: boolean; answer: string | Error; pipExit?: number; prior?: unknown; env?: Record<string, string> }
+type World = { row: boolean; installed: boolean; answer: string | Error; pipExit?: number; prior?: unknown; env?: Record<string, string>; locked?: boolean }
 
 function ran(stdout: string, exitCode = 0, stderr = '') {
   return { value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } }
@@ -79,7 +82,7 @@ async function settled(w: { stored: Record<string, unknown>; asked: string[] }, 
   }
 }
 
-function world(on: Parameters<Parameters<typeof test>[1]>[1], w: World) {
+function world(on: On, w: World) {
   const runs: Run[] = []
   const sets: Array<{ key: string; value: unknown }> = []
   const stored: Record<string, unknown> = {}
@@ -107,7 +110,9 @@ function world(on: Parameters<Parameters<typeof test>[1]>[1], w: World) {
     stored[e.key] = e.value
     return { value: undefined }
   })
-  on('config.list', () => ({ value: [{ key: SEMANTIC_ROW, label: 'Semantic scoring', kind: 'toggle', value: w.row }] }))
+  on('config.list', () => ({
+    value: [{ key: SEMANTIC_ROW, label: 'Semantic scoring', kind: 'boolean', value: w.row, provider: { kind: 'plugin', name: 'windvane' } as never, isLocked: w.locked === true }],
+  }))
   on('config.set', ($, e) => {
     sets.push({ key: e.key, value: e.value })
     return { value: e.value }
@@ -147,6 +152,18 @@ test('a fresh interactive session is asked once; yes installs the extra and turn
   expect(pip?.init?.env?.PYTHONPATH?.endsWith('/windvane')).toBe(true)
   expect(w.sets).toEqual([{ key: SEMANTIC_ROW, value: true }])
   expect((w.stored[SEMANTIC_OFFER_KEY] as { answer: string }).answer).toBe('done')
+})
+
+test('a row a policy locks is not offered: nothing is asked, installed or set, and nothing recorded', async ($, on) => {
+  const w = world(on, { row: false, installed: false, answer: 'Install and turn on', locked: true })
+  await $.session.start(START)
+  await w.clock.advance(1)
+  await settled(w, true)
+  expect(w.asked).toEqual([])
+  expect(w.runs.some(r => r.argv[2] === 'pip')).toBe(false)
+  expect(w.sets).toEqual([])
+  // Nothing recorded, so the offer comes once the lock is lifted.
+  expect(w.stored[SEMANTIC_OFFER_KEY]).toBeUndefined()
 })
 
 test('the extra already there: only the row is offered; both in place: nothing is asked', async ($, on) => {

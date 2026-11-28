@@ -59,6 +59,7 @@ import {
   offerDue,
   offerFor,
   recordOf,
+  rowLockedFrom,
   rowOnFrom,
 } from './setup'
 import { ageText, normalizePath, readLatest, readManifest, ringsFor, storePath } from './ring'
@@ -332,7 +333,12 @@ async function offerSemantic($: EngineInterface, e: { isInteractive: boolean }, 
   if (((await $.env.get('WINDVANE_SEMANTIC')) ?? '').trim() !== '') return
   const python = pythonOf(await $.env.get('WINDVANE_PYTHON'), settings.python)
   const env = engineEnv($.plugin.root, storePath(await $.env.get('WINDVANE_DIR'), await $.env.get('USERPROFILE'), await $.env.get('HOME')))
-  const rowOn = rowOnFrom(await $.config.list())
+  const rows = await $.config.list()
+  // A row a policy owns refuses the change: installing the extra for a row
+  // that cannot be turned on costs several hundred MB for nothing. Nothing is
+  // recorded, so the offer comes once the lock is lifted.
+  if (rowLockedFrom(rows)) return
+  const rowOn = rowOnFrom(rows)
   let installed = false
   try {
     installed = extraInstalledFrom(await $.process.run(checkArgv(python), { env, timeoutMs: CHECK_TIMEOUT_MS }))
@@ -849,7 +855,7 @@ export const register: Register = (on, options) => {
       const pct = stale ? undefined : percentOf(usage.context, bandState.point)
       // The mark the fill stands at, in the segment's words: the engine's
       // last call, or the early_compaction row's mark under it.
-      const mark = bandState.enteredAt === undefined ? undefined : bandState.early ? 'early' : 'checkpoint'
+      const mark = bandState.enteredAt === undefined ? undefined : bandState.early ? ('early' as const) : ('checkpoint' as const)
       const band = mark === 'checkpoint' ? ' · checkpoint now' : mark === 'early' ? ' · compact at step end' : ''
       if (settings.statusSegment) $.ui.status(`${PLUGIN} ctx ${pct === undefined ? '?' : pct + '%'} · ${ageText(latest?.created)}${band}`)
       // The same figures for the band above the prompt and the pane.

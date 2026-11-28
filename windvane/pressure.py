@@ -476,10 +476,16 @@ def compaction_point_detail(window: int, project_dir: str = "", session_id: str 
     source = "model-default"
     env = os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "").strip()
     if env:
-        try:
-            n = int(env)
-        except ValueError:
-            n = 0
+        # A k or M suffix too, since 2.1.304: a plain int() read "200k" as
+        # nothing and the marks stood elsewhere. A bare number stays a token
+        # count here; the bare 100..1000 meaning thousands is the setting's.
+        if env[-1:].lower() in ("k", "m"):
+            n = parse_window_value(env) or 0
+        else:
+            try:
+                n = int(env)
+            except ValueError:
+                n = 0
         if n >= _ENV_MIN_WINDOW:
             configured, source = n, "env"
     if not configured and session_id:

@@ -41,6 +41,12 @@ export function rowOnFrom(rows: ReadonlyArray<{ key: string; value: unknown }>):
   return row?.value === true || row?.value === 'true'
 }
 
+// Whether a trusted source (managed settings, an organization's policy) owns
+// the semantic row. Engines before the field read as unlocked.
+export function rowLockedFrom(rows: ReadonlyArray<{ key: string; isLocked?: boolean }>): boolean {
+  return rows.find(r => r.key === SEMANTIC_ROW)?.isLocked === true
+}
+
 // The engine's own check of the extra: the modules are looked up, torch is
 // not imported.
 export function checkArgv(python: string): string[] {
