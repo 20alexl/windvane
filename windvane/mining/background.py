@@ -521,7 +521,11 @@ def run_mining(project_path: str, mode: str, windvane_storage_dir: str):
         # so hybrid_search "just works" without a manual embed_all — fixing the
         # stale embeddings.npy. Both reuse one store; embedding has its own try
         # so a cleanup failure never blocks it.
-        if mode in ("post_session", "bootstrap", "full"):
+        # A standing session rarely ends, so its live ticks take the phase
+        # too, at most once a day (windvane.hygiene.due).
+        from windvane import hygiene
+
+        if mode in ("post_session", "bootstrap", "full") or (mode == "live" and hygiene.due(windvane_storage_dir)):
             _phase_status("memory_maintenance")
             try:
                 from windvane.store import MemoryStore
@@ -576,6 +580,16 @@ def run_mining(project_path: str, mode: str, windvane_storage_dir: str):
                     store.embed_all_memories(project_path)
                 except Exception as e:
                     phase_errors["memory_embedding"] = str(e)[:200]
+                # Every other project: cleaned without aging, and the gone
+                # empty ones forgotten (windvane.hygiene), once a day.
+                if hygiene.due(windvane_storage_dir):
+                    try:
+                        swept = hygiene.sweep_projects(store, project_path)
+                        if swept["errors"]:
+                            phase_errors["project_sweep"] = str(swept["errors"])[:200]
+                    except Exception as e:
+                        phase_errors["project_sweep"] = str(e)[:200]
+                    hygiene.stamp(windvane_storage_dir)
             except Exception as e:
                 phase_errors["memory_maintenance"] = str(e)[:200]
 

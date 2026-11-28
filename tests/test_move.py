@@ -84,7 +84,7 @@ def test_the_hint_names_a_gone_project_with_this_folders_name(tmp_path):
     MemoryStore().remember_project(new)
     lines = move.moved_hint(new)
     text = "\n".join(lines)
-    assert "3 memories" in text or "2 memories" in text
+    assert "3 memories" in text  # two live, one archived
     assert "move.py" in text and Path(old).name in text
     move.move_project(old, new)
     assert move.moved_hint(new) == []

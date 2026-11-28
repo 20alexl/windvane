@@ -115,10 +115,12 @@ def moved_hint(project_path: str, store=None) -> list:
             if not os.path.isdir(str(Path(path).parent)) and not os.path.isdir(str(Path(path).anchor)):
                 continue  # the drive is not there now: the folder may only be away
             proj = store.get_project(path)
-            count = len(proj.entries) if proj else 0
+            store._load_archive()
+            shelved = store._archive_projects.get(path)
+            count = (len(proj.entries) if proj else 0) + (len(shelved.entries) if shelved else 0)
             if count:
                 lines.append(
-                    f"windvane: {count} memories of a project named {Path(path).name} are filed under {path},"
+                    f"windvane: {count} memories (archived ones counted) of a project named {Path(path).name} are filed under {path},"
                     f" a folder that no longer exists. If this is that project moved, bring them here with:"
                     f' python "{script}" "{path}" "{here}"'
                 )
