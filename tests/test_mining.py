@@ -398,7 +398,8 @@ def test_the_sharded_embedding_store(tmp_path: Path, monkeypatch):
     idx2 = json.loads((hash_dir2 / "session_embeddings_index.json").read_text())
     assert idx2["version"] == 2 and "2026-01" in idx2["shards"]
     assert not (hash_dir2 / "session_embeddings.npy").exists()
-    assert np.allclose(np.load(str(hash_dir2 / "session_embeddings" / "2026-01.npy")), vecs)
+    migrated = np.load(str(hash_dir2 / "session_embeddings" / "2026-01.npy"))
+    assert np.allclose(migrated.astype(np.float32), vecs, atol=2e-3)  # kept at half precision
     assert search.search_sessions(proj2, "quantum flux capacitors", limit=3, method="hybrid", windvane_storage_dir=str(storage))
 
     monkeypatch.setenv("WINDVANE_SESSION_RETENTION_DAYS", "30")
@@ -1260,3 +1261,51 @@ def test_a_live_tick_restarts_its_interval_when_it_ends(tmp_path: Path, monkeypa
     assert meter.seconds()["indexing"] >= 0.05 and "extracting" in meter.seconds()
     meter.stop()
     assert set(meter.seconds()) == {"indexing", "extracting"}
+
+
+def test_people_s_words_rank_above_tool_output_that_says_the_same(tmp_path: Path):
+    """A query for a ruling the user typed came back as ten tool chunks: tool
+    output outnumbers the conversation five to one and quotes paths the
+    project-name boost lifts, so it filled the page. Up to half the page is
+    kept for the conversation; tool chunks still fill the rest."""
+    storage = tmp_path / "store"
+    hash_dir = storage / "projects" / "abc12345"
+    hash_dir.mkdir(parents=True)
+    proj = "/proj/ranks"
+    (storage / "manifest.json").write_text(json.dumps({"version": 5, "projects": {search._normalize_path(proj): {"hash": "abc12345"}}}))
+    said = "paper and live use one broker code path"
+
+    def chunk(kind, n):
+        return {"session_id": f"s{n}", "jsonl_file": "t.jsonl", "msg_offset": n, "timestamp": "2026-11-22T10:00:00",
+                "msg_type": kind, "preview": said, "related_files": []}
+
+    kinds = ["subagent_tool", "tool", "tool", "subagent_tool", "tool", "tool", "user", "subagent_tool", "assistant"]
+    chunks = [chunk(k, i) for i, k in enumerate(kinds)]
+    for c in chunks[:6]:
+        c["preview"] += " in E:/proj/ranks/src/broker.py"  # paths: the tool chunks score higher
+    (hash_dir / "session_embeddings_index.json").write_text(json.dumps(
+        {"version": 2, "model": "none", "shards": {"2026-11": {"chunks": chunks}}}))
+    got = [r.msg_type for r in search.search_sessions(proj, said, limit=4, method="keyword", windvane_storage_dir=str(storage))]
+    assert sorted(k for k in got if k in ("user", "assistant")) == ["assistant", "user"]
+    assert len(got) == 4 and sum(k.endswith("tool") for k in got) == 2  # tool chunks still found
+
+
+def test_session_vectors_are_kept_at_half_precision(tmp_path: Path):
+    """The vectors were float32, two of the store's 2.4 GB; float16 halves it
+    and the cosine ranking does not move. An old float32 shard is narrowed in
+    place, and a search reads either kind."""
+    np = pytest.importorskip("numpy")
+    shard_dir = tmp_path / "session_embeddings"
+    shard_dir.mkdir()
+    rng = np.random.default_rng(7)
+    m = rng.standard_normal((300, 32)).astype(np.float32)
+    m /= np.linalg.norm(m, axis=1, keepdims=True)
+    np.save(str(shard_dir / "2026-10.npy"), m)
+    q = m[17]
+    before = np.argsort(-(m @ q))[:10]
+    assert search._narrow_shards(shard_dir) == 1
+    narrowed = np.load(str(shard_dir / "2026-10.npy"), mmap_mode="r")
+    assert narrowed.dtype == np.float16
+    after = np.argsort(-search._dot_rows(narrowed, q.astype(np.float32)))[:10]
+    assert list(after) == list(before)
+    assert search._narrow_shards(shard_dir) == 0  # already narrow

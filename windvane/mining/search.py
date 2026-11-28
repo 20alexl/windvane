@@ -814,6 +814,8 @@ def build_session_embeddings(
         new_texts.extend(texts)
 
     shard_dir = hash_dir / "session_embeddings"
+    if shard_dir.is_dir():
+        _narrow_shards(shard_dir)  # shards from before half precision, once
 
     if not new_texts:
         # Nothing to embed, but watermark/size bookkeeping and retention
@@ -868,7 +870,7 @@ def build_session_embeddings(
     shard_dir.mkdir(exist_ok=True)
 
     for key, vecs in shard_new_vecs.items():
-        new_matrix = np.array(vecs, dtype=np.float32)
+        new_matrix = np.array(vecs, dtype=np.float16)
         entry = shards.setdefault(key, {"chunks": []})
         shard_path = shard_dir / f"{key}.npy"
 
@@ -890,7 +892,7 @@ def build_session_embeddings(
             if old.shape[1] != new_matrix.shape[1]:
                 _wipe_embedding_store(hash_dir)
                 return 0
-            combined = np.vstack([old, new_matrix])
+            combined = np.vstack([old, new_matrix]).astype(np.float16)
         else:
             combined = new_matrix
 
@@ -910,6 +912,67 @@ def build_session_embeddings(
     tmp.replace(idx_path)
 
     return valid_count
+
+
+# Tool output outnumbers the conversation about five to one, and it quotes
+# paths, which the project-name boost lifts: a query for a ruling the person
+# typed came back as ten tool chunks, the ruling itself 15th. Up to half of
+# the results are kept for the conversation's own words (the people and the
+# model) that cleared the bar; tool chunks fill the rest by score.
+CONVERSATION_KINDS = ("user", "assistant", "subagent")
+
+
+def _mixed(results: list, limit: int) -> list:
+    """The top ``limit`` by score, with up to half of them conversation."""
+    if limit < 2:
+        return results[:limit]
+    talk = [r for r in results if r.msg_type in CONVERSATION_KINDS][: limit // 2]
+    kept = {id(r) for r in talk}
+    rest = [r for r in results if id(r) not in kept][: limit - len(talk)]
+    return sorted(talk + rest, key=lambda r: -r.score)
+
+# Rows a search widens to float32 at a time: the vectors are kept at half
+# precision, and a dot product over a whole float16 shard would first copy
+# it to float32 whole.
+DOT_BLOCK = 65536
+
+
+def _dot_rows(matrix, query):
+    """``matrix @ query`` for a float16 or float32 matrix, a block at a time."""
+    import numpy as np
+
+    if matrix.dtype == np.float32:
+        return np.dot(matrix, query)
+    out = np.empty(matrix.shape[0], dtype=np.float32)
+    for start in range(0, matrix.shape[0], DOT_BLOCK):
+        block = np.asarray(matrix[start : start + DOT_BLOCK], dtype=np.float32)
+        out[start : start + DOT_BLOCK] = block @ query
+    return out
+
+
+def _narrow_shards(shard_dir: Path) -> int:
+    """Rewrite each float32 shard at half precision; the count rewritten.
+    Shards written before vectors were kept narrow are converted once."""
+    import numpy as np
+
+    done = 0
+    for shard in sorted(Path(shard_dir).glob("*.npy")):
+        if shard.stem.endswith("_tmp"):
+            continue
+        try:
+            m = np.load(str(shard), mmap_mode="r")
+            wide = m.dtype == np.float32 and len(m.shape) == 2
+            narrow = np.asarray(m, dtype=np.float16) if wide else None
+            del m  # Windows refuses to replace a file still mapped
+            if narrow is None:
+                continue
+            tmp_stem = shard.with_name(f"{shard.stem}_tmp")
+            np.save(str(tmp_stem), narrow)
+            tmp_stem.with_suffix(".npy").replace(shard)
+            done += 1
+        except Exception:
+            continue  # left as it is: a search reads float32 as well
+    return done
 
 
 def search_sessions(
@@ -1078,7 +1141,7 @@ def search_sessions(
                         # row first copied the matrix on each call, most of
                         # a warm hybrid search's time (measured 2026-10-05).
                         whole_shard = len(rows) == m.shape[0] and rows == list(range(m.shape[0]))
-                        sims = np.dot(m if whole_shard else np.asarray(m[rows]), query_arr)
+                        sims = _dot_rows(m if whole_shard else np.asarray(m[rows]), query_arr)
                         for (pos, _), val in zip(items, sims.tolist()):
                             semantic_scores[pos] = float(val)
                 else:
@@ -1087,9 +1150,9 @@ def search_sessions(
                         matrix = np.load(str(emb_path), mmap_mode="r")
                         rows = [r for _, r in chunk_locs]
                         if len(rows) < matrix.shape[0]:
-                            sims = np.dot(matrix[rows], query_arr)
+                            sims = _dot_rows(np.asarray(matrix[rows]), query_arr)
                         else:
-                            sims = np.dot(matrix, query_arr)
+                            sims = _dot_rows(matrix, query_arr)
                         semantic_scores = sims.tolist()
         except Exception:
             pass
@@ -1121,7 +1184,7 @@ def search_sessions(
             )
 
     results.sort(key=lambda r: -r.score)
-    return results[:limit]
+    return _mixed(results, limit)
 
 
 def find_decision(
