@@ -52,7 +52,8 @@ function engine(on: On, setup: { daemon: Daemon; reply?: ReturnType<typeof ran> 
     throw new Error(`ENOENT ${p}`)
   })
   on('http.fetch', ($, e) => {
-    fetched.push({ url: e.url, headers: e.init?.headers ?? {}, body: JSON.parse(e.init?.body ?? '{}') })
+    const sent = e.init?.body
+    fetched.push({ url: e.url, headers: e.init?.headers ?? {}, body: JSON.parse(typeof sent === 'string' ? sent : '{}') })
     const d = setup.daemon
     if (d === 'throws') throw new Error('ECONNREFUSED')
     if (d === 'hangs') return new Promise<never>(() => {})

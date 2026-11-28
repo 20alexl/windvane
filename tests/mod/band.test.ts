@@ -22,7 +22,7 @@ const SURFACES = ['terminal', 'desktop'] as const
 
 const BAND = {
   component: 'AbovePrompt' as const,
-  props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 100, scroll: { offset: 0, bodyRows: 6 }, view: {} },
+  props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 6, bodyColumns: 100, scroll: { offset: 0, bodyRows: 6 }, view: {} },
 }
 
 let rows = 0

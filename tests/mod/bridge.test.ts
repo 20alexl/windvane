@@ -95,7 +95,8 @@ function engine(on: On, setup: Setup) {
     return { value: files[p]! }
   })
   on('http.fetch', ($, e) => {
-    const body = JSON.parse(e.init?.body ?? '{}')
+    const sent = e.init?.body
+    const body = JSON.parse(typeof sent === 'string' ? sent : '{}')
     fetched.push({ url: e.url, hook: body.hook_event, stdin: JSON.parse(body.stdin), env: body.env, headers: e.init?.headers ?? {} })
     const a = (setup.answer ?? (() => ({ status: 200, text: JSON.stringify({ output: '' }) })))(body.hook_event)
     if (a === 'throw') throw new Error('ECONNREFUSED')
